@@ -2,25 +2,34 @@
 
 An AI-powered meeting assistant that captures live meeting audio, transcribes it in real-time, and generates summaries while ensuring user privacy. Perfect for teams who want to focus on discussions while automatically capturing and organizing meeting content.
 
+## Why?
+
+While there are many meeting transcription tools available, this solution stands out by offering:
+- **Privacy First**: All processing happens locally on your device
+- **Cost Effective**: Uses open-source AI models instead of expensive APIs
+- **Flexible**: Works offline, supports multiple meeting platforms
+- **Customizable**: Self-host and modify for your specific needs
+- **Intelligent**: Built-in knowledge graph for semantic search across meetings
+
 ## Features
 
- Modern, responsive UI with real-time updates
+✅ Modern, responsive UI with real-time updates
 
- Export to Markdown/PDF
+✅ Export to Markdown/PDF
 
- Real-time audio capture using SoundDevice
+🚧 Real-time audio capture using SoundDevice
 
- Real-time audio visualization
+🚧 Real-time audio visualization
 
- Automatic meeting detection (Zoom, Google Meet, Teams)
+🚧 Automatic meeting detection (Zoom, Google Meet, Teams)
 
- Live audio transcription using OpenAI's Whisper
+🚧 Live audio transcription using OpenAI's Whisper
 
- Real-time display of transcription
+🚧 Real-time display of transcription
 
- Post-meeting summarization
+🚧 Post-meeting summarization
 
- Local processing for privacy
+🚧 Local processing for privacy
 
 ## System Architecture
 
