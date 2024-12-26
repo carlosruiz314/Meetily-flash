@@ -1,69 +1,125 @@
 # Meeting Minutes - AI-Powered Meeting Assistant
 
-An AI-powered meeting assistant that captures live meeting audio, transcribes it in real-time, and generates summaries while ensuring user privacy.
+An AI-powered meeting assistant that captures live meeting audio, transcribes it in real-time, and generates summaries while ensuring user privacy. Perfect for teams who want to focus on discussions while automatically capturing and organizing meeting content.
 
 ## Features
 
-- Automatic meeting detection (Zoom, Google Meet, Teams)
-- Live audio transcription using OpenAI's Whisper
-- Real-time display of transcription
-- Post-meeting summarization
-- Local processing for privacy
-- Export to Markdown/PDF
+ Modern, responsive UI with real-time updates
+
+ Export to Markdown/PDF
+
+ Real-time audio capture using SoundDevice
+
+ Real-time audio visualization
+
+ Automatic meeting detection (Zoom, Google Meet, Teams)
+
+ Live audio transcription using OpenAI's Whisper
+
+ Real-time display of transcription
+
+ Post-meeting summarization
+
+ Local processing for privacy
+
+## System Architecture
+
+The application is built with a modern stack focusing on performance and user privacy. For detailed architecture documentation and diagrams, see [Architecture Documentation](docs/architecture.md).
+
+![High Level Architecture](docs/Diagram-High%20level%20architecture%20diagram.jpg)
+
+Key Components:
+
+- **Frontend** (Electron JS + Next JS)
+  - User interface and real-time updates
+  - Cross-platform desktop application
+  - WebSocket communication
+
+- **Backend** (FastAPI)
+  - Audio processing pipeline
+  - AI integration and coordination
+  - Database operations
+  
+- **AI Engine** (Whisper + Qwen/Llama 3.2)
+  - Real-time transcription
+  - Meeting summarization
+  - Natural language processing
+
+- **Storage**
+  - Local SQLite database for secure data storage
+  - Knowledge Graph/VectorDB for semantic search
+
+- **Integration**
+  - Virtual Audio Driver for system-level audio capture
+  - Ollama with Agentic Tools for extended AI capabilities
 
 ## Prerequisites
 
 - Node.js >= 18
 - Python >= 3.9
-- Virtual audio driver (BlackHole recommended for macOS)
+- Virtual audio driver:
+  - macOS: BlackHole (recommended)
+  - Windows: Virtual Audio Cable
+  - Linux: PulseAudio
 
-## Setup
+## Setup Instructions
 
-### Backend Setup
+### 1. Frontend Setup
 
-1. Create a Python virtual environment:
 ```bash
+# Navigate to frontend directory
+cd frontend
+
+# Install dependencies
+npm install
+
+# Start development server (Terminal 1)
+npm run dev
+
+# Start Electron app (Terminal 2)
+npm start
+```
+
+### 2. Backend Setup
+
+```bash
+# Create and activate virtual environment
 python -m venv venv
-source venv/bin/activate  # On Windows: .\venv\Scripts\activate
-```
+source venv/bin/activate  # Windows: .\venv\Scripts\activate
 
-2. Install dependencies:
-```bash
+# Navigate to backend directory
 cd backend
-pip install -r requirements.txt
-```
 
-3. Start the backend server:
-```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Start backend server
 cd app
 uvicorn main:app --reload
 ```
 
-### Frontend Setup
+### 3. Audio Setup
 
-1. Install dependencies:
-```bash
-cd frontend
-npm install
-```
+1. Install the virtual audio driver for your OS
+2. Configure system audio to route through the virtual device
+3. Verify audio routing in the application settings
 
-2. Start the development server:
-```bash
-npm run dev
-```
+## Development Guidelines
 
-3. In a new terminal, start the Electron app:
-```bash
-npm start
-```
+- Follow the established project structure
+- Write tests for new features
+- Document API changes
+- Use type hints in Python code
+- Follow ESLint configuration for JavaScript/TypeScript
 
-## Development
+## Contributing
 
-- Frontend: Next.js + Electron application in `frontend/`
-- Backend: FastAPI application in `backend/`
-- Real-time communication via WebSocket
-- Local SQLite database for storing meeting data
+1. Fork the repository
+2. Create a feature branch
+3. Submit a pull request
 
 ## License
 
-MIT
+MIT License - Feel free to use this project for your own purposes.
+
+Last updated: December 26, 2024
