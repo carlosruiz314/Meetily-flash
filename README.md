@@ -132,3 +132,7 @@ uvicorn main:app --reload
 MIT License - Feel free to use this project for your own purposes.
 
 Last updated: December 26, 2024
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Zackriya-Solutions/meeting-minutes&type=Date)](https://star-history.com/#Zackriya-Solutions/meeting-minutes&Date)
