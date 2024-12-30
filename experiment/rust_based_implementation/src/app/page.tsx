@@ -8,6 +8,13 @@ import { RecordingControls } from '@/components/RecordingControls';
 import { AISummary } from '@/components/AISummary';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import MainNav from '@/components/MainNav';
+import { listen } from '@tauri-apps/api/event';
+
+interface TranscriptUpdate {
+  text: string;
+  timestamp: string;
+  source: string;
+}
 
 export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
@@ -67,7 +74,6 @@ export default function Home() {
     }
 });
 
-
   const [isCollapsed, setIsCollapsed] = useState(false);
 
   const { setCurrentMeeting } = useSidebar();
@@ -92,6 +98,41 @@ export default function Home() {
     }
   }, [isRecording]);
 
+  useEffect(() => {
+    let unlistenFn: (() => void) | undefined;
+
+    const setupListener = async () => {
+      try {
+        unlistenFn = await listen<TranscriptUpdate>('transcript-update', (event) => {
+          console.log('Received transcript update:', event.payload);
+          setTranscripts(prev => {
+            const exists = prev.some(
+              t => t.text === event.payload.text && t.timestamp === event.payload.timestamp
+            );
+            if (exists) {
+              return prev;
+            }
+            return [...prev, {
+              id: Date.now().toString(),
+              text: event.payload.text,
+              timestamp: event.payload.timestamp
+            }];
+          });
+        });
+      } catch (error) {
+        console.error('Failed to setup transcript listener:', error);
+      }
+    };
+
+    setupListener();
+
+    return () => {
+      if (unlistenFn) {
+        unlistenFn();
+      }
+    };
+  }, []);
+
   const handleRecordingStop = () => {
     setIsRecording(false);
     setShowSummary(true);
@@ -110,17 +151,6 @@ export default function Home() {
   const handleTitleChange = (newTitle: string) => {
     setMeetingTitle(newTitle);
     setCurrentMeeting({ id: 'intro-call', title: newTitle });
-  };
-
-  const handleTranscriptUpdate = (update: any) => {
-    const newTranscript = {
-      id: Date.now().toString(),
-      speaker: 'Speaker',
-      text: update.text,
-      timestamp: update.timestamp,
-      source: update.source,
-    };
-    setTranscripts(prev => [...prev, newTranscript]);
   };
 
   return (
@@ -148,7 +178,6 @@ export default function Home() {
                 onRecordingStop={handleRecordingStop}
                 onRecordingStart={() => setIsRecording(true)}
                 barHeights={barHeights}
-                onTranscriptUpdate={handleTranscriptUpdate}
               />
             </div>
           </div>

@@ -5,12 +5,6 @@ import { appDataDir } from '@tauri-apps/api/path';
 import { useCallback, useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';
 
-interface TranscriptUpdate {
-  text: string;
-  timestamp: string;
-  source: string;
-}
-
 interface RecordingControlsProps {
   isRecording: boolean;
   barHeights: string[];
@@ -26,32 +20,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   onRecordingStart,
   onTranscriptUpdate,
 }) => {
-  // Listen for transcript updates
-  useEffect(() => {
-    let unlistenFn: (() => void) | undefined;
-
-    const setupListener = async () => {
-      // Clean up any existing listener first
-      if (unlistenFn) {
-        unlistenFn();
-      }
-
-      // Set up new listener
-      unlistenFn = await listen<TranscriptUpdate>('transcript-update', (event) => {
-        console.log('Received transcript update:', event.payload);
-        onTranscriptUpdate(event.payload);
-      });
-    };
-
-    setupListener().catch(console.error);
-
-    return () => {
-      if (unlistenFn) {
-        unlistenFn();
-      }
-    };
-  }, []);
-
   const handleStartRecording = useCallback(async () => {
     console.log('Starting recording...');
     try {

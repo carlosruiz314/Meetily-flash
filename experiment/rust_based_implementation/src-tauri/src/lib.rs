@@ -25,7 +25,7 @@ const WAV_SAMPLE_RATE: u32 = 44100; // WAV file sample rate
 const WAV_CHANNELS: u16 = 2; // Stereo for WAV files
 const WHISPER_CHANNELS: u16 = 1; // Mono for Whisper API
 const SENTENCE_TIMEOUT_MS: u64 = 1000; // Emit incomplete sentence after 1 second of silence
-const MIN_CHUNK_DURATION_MS: u32 = 5000; // Minimum duration before sending chunk
+const MIN_CHUNK_DURATION_MS: u32 = 2000; // Minimum duration before sending chunk
 
 #[derive(Debug, Deserialize)]
 struct RecordingArgs {
@@ -72,13 +72,33 @@ impl TranscriptAccumulator {
     }
 
     fn add_segment(&mut self, segment: &TranscriptSegment) -> Option<TranscriptUpdate> {
+        log_debug!("Processing new transcript segment: {:?}", segment);
+        
         // Update the last update time
         self.last_update_time = std::time::Instant::now();
+
+        // Clean up the text (remove [BLANK_AUDIO], [AUDIO OUT] and trim)
+        let clean_text = segment.text
+            .replace("[BLANK_AUDIO]", "")
+            .replace("[AUDIO OUT]", "")
+            .trim()
+            .to_string();
+            
+        if !clean_text.is_empty() {
+            log_debug!("Clean transcript text: {}", clean_text);
+        }
+
+        // Skip empty segments or very short segments (less than 1 second)
+        if clean_text.is_empty() || (segment.t1 - segment.t0) < 1.0 {
+            return None;
+        }
 
         // Calculate hash of this segment to detect duplicates
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         segment.text.hash(&mut hasher);
+        segment.t0.to_bits().hash(&mut hasher);
+        segment.t1.to_bits().hash(&mut hasher);
         let segment_hash = hasher.finish();
 
         // Skip if this is a duplicate segment
@@ -87,37 +107,27 @@ impl TranscriptAccumulator {
         }
         self.last_segment_hash = segment_hash;
 
-        // Clean up the text (remove [BLANK_AUDIO] and trim)
-        let clean_text = segment.text
-            .replace("[BLANK_AUDIO]", "")
-            .trim()
-            .to_string();
+        // If this is the start of a new sentence, store the start time
+        if self.current_sentence.is_empty() {
+            self.sentence_start_time = segment.t0;
+        }
 
-        // Only process if there's actual content
-        if !clean_text.is_empty() {
-            // If this is the start of a new sentence, store the start time
-            if self.current_sentence.is_empty() {
-                self.sentence_start_time = segment.t0;
-            }
+        // Add the new text with proper spacing
+        if !self.current_sentence.is_empty() && !self.current_sentence.ends_with(' ') {
+            self.current_sentence.push(' ');
+        }
+        self.current_sentence.push_str(&clean_text);
 
-            // Add the new text with proper spacing
-            if !self.current_sentence.is_empty() && !self.current_sentence.ends_with(' ') {
-                self.current_sentence.push(' ');
-            }
-            self.current_sentence.push_str(&clean_text);
-
-            // Check if we have a complete sentence
-            if clean_text.ends_with('.') || clean_text.ends_with('?') || clean_text.ends_with('!') {
-                let sentence = std::mem::take(&mut self.current_sentence);
-                let update = TranscriptUpdate {
-                    text: sentence.trim().to_string(),
-                    timestamp: format!("{:.1} - {:.1}", segment.t0, segment.t1),
-                    source: "Mixed Audio".to_string(),
-                };
-                Some(update)
-            } else {
-                None
-            }
+        // Check if we have a complete sentence
+        if clean_text.ends_with('.') || clean_text.ends_with('?') || clean_text.ends_with('!') {
+            let sentence = std::mem::take(&mut self.current_sentence);
+            let update = TranscriptUpdate {
+                text: sentence.trim().to_string(),
+                timestamp: format!("{:.1} - {:.1}", self.sentence_start_time, segment.t1),
+                source: "Mixed Audio".to_string(),
+            };
+            log_info!("Generated transcript update: {:?}", update);
+            Some(update)
         } else {
             None
         }
@@ -141,6 +151,8 @@ impl TranscriptAccumulator {
 }
 
 async fn send_audio_chunk(chunk: Vec<f32>, client: &reqwest::Client) -> Result<TranscriptResponse, String> {
+    log_debug!("Preparing to send audio chunk of size: {}", chunk.len());
+    
     // Convert f32 samples to bytes
     let bytes: Vec<u8> = chunk.iter()
         .flat_map(|&sample| {
@@ -166,18 +178,21 @@ async fn send_audio_chunk(chunk: Vec<f32>, client: &reqwest::Client) -> Result<T
 
 #[tauri::command]
 async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    log_info!("Starting recording...");
-    if RECORDING_FLAG.load(Ordering::SeqCst) {
+    log_info!("Attempting to start recording...");
+    
+    if is_recording() {
+        log_error!("Recording already in progress");
         return Err("Recording already in progress".to_string());
     }
-    
-    // Initialize recording
+
+    // Initialize recording flag and buffers
     RECORDING_FLAG.store(true, Ordering::SeqCst);
-    
-    // Create buffers
+    log_info!("Recording flag set to true");
+
     unsafe {
         MIC_BUFFER = Some(Mutex::new(Vec::new()));
         SYSTEM_BUFFER = Some(Mutex::new(Vec::new()));
+        log_info!("Audio buffers initialized");
     }
     
     // Initialize audio recording devices
@@ -346,6 +361,7 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                 
                 // Process chunk for Whisper API
                 let whisper_samples = if mic_config.sample_rate().0 != WHISPER_SAMPLE_RATE {
+                    log_debug!("Resampling audio from {} to {}", mic_config.sample_rate().0, WHISPER_SAMPLE_RATE);
                     resample_audio(
                         &chunk_to_send,
                         mic_config.sample_rate().0,
@@ -354,15 +370,19 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                 } else {
                     chunk_to_send
                 };
-                
+
                 // Send chunk for transcription
                 match send_audio_chunk(whisper_samples, &client).await {
                     Ok(response) => {
+                        log_info!("Received {} transcript segments", response.segments.len());
                         for segment in response.segments {
+                            log_info!("Processing segment: {} ({:.1}s - {:.1}s)", 
+                                     segment.text.trim(), segment.t0, segment.t1);
                             // Add segment to accumulator and check for complete sentence
                             if let Some(update) = accumulator.add_segment(&segment) {
+                                // Emit the update
                                 if let Err(e) = app_handle.emit("transcript-update", update) {
-                                    log_error!("Failed to send transcript update: {}", e);
+                                    log_error!("Failed to emit transcript update: {}", e);
                                 }
                             }
                         }
@@ -391,10 +411,15 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
 
 #[tauri::command]
 async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
-    log_info!("Stopping recording...");
+    log_info!("Attempting to stop recording...");
     
-    // Stop all tasks
+    if !is_recording() {
+        log_error!("No recording in progress");
+        return Err("No recording in progress".to_string());
+    }
+
     RECORDING_FLAG.store(false, Ordering::SeqCst);
+    log_info!("Recording flag set to false");
     unsafe {
         if let Some(is_running) = &IS_RUNNING {
             is_running.store(false, Ordering::SeqCst);
@@ -508,6 +533,9 @@ fn stereo_to_mono(samples: &[f32]) -> Vec<f32> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    env_logger::init();
+    log::set_max_level(log::LevelFilter::Debug);
+    
     tauri::Builder::default()
         .setup(|_app| {
             log_info!("Application setup complete");
