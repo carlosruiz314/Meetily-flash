@@ -3,14 +3,12 @@
 import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import { useCallback, useEffect } from 'react';
-import { listen } from '@tauri-apps/api/event';
 
 interface RecordingControlsProps {
   isRecording: boolean;
   barHeights: string[];
   onRecordingStop: () => void;
   onRecordingStart: () => void;
-  onTranscriptUpdate: (update: TranscriptUpdate) => void;
 }
 
 export const RecordingControls: React.FC<RecordingControlsProps> = ({
@@ -18,8 +16,21 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   barHeights,
   onRecordingStop,
   onRecordingStart,
-  onTranscriptUpdate,
 }) => {
+  // Check if Tauri is initialized
+  useEffect(() => {
+    const checkTauri = async () => {
+      try {
+        // Try a simple invoke call to check if Tauri is ready
+        await invoke('is_recording');
+        console.log('Tauri is initialized and ready');
+      } catch (error) {
+        console.error('Tauri initialization error:', error);
+      }
+    };
+    checkTauri();
+  }, []);
+
   const handleStartRecording = useCallback(async () => {
     console.log('Starting recording...');
     try {
@@ -28,6 +39,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       onRecordingStart();
     } catch (error) {
       console.error('Failed to start recording:', error);
+      // Log more details about the error
+      if (error instanceof Error) {
+        console.error('Error details:', {
+          message: error.message,
+          name: error.name,
+          stack: error.stack
+        });
+      }
     }
   }, [onRecordingStart]);
 
@@ -44,6 +63,13 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       onRecordingStop();
     } catch (error) {
       console.error('Failed to stop recording:', error);
+      if (error instanceof Error) {
+        console.error('Error details:', {
+          message: error.message,
+          name: error.name,
+          stack: error.stack
+        });
+      }
       onRecordingStop();
     }
   }, [onRecordingStop]);

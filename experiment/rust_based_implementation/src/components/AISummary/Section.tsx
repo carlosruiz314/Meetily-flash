@@ -4,6 +4,7 @@ import { Section as SectionType, Block } from '@/types';
 import { BlockComponent } from './Block';
 import { EditableTitle } from '../EditableTitle';
 import { useState, useRef } from 'react';
+import { motion } from 'framer-motion';
 
 interface SectionProps {
   section: SectionType;
@@ -54,8 +55,13 @@ export const Section: React.FC<SectionProps> = ({
   };
 
   return (
-    <section>
-      <div className="group relative mb-3">
+    <motion.div
+      initial={{ opacity: 0, y: 20 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.5 }}
+      className="mb-8"
+    >
+      <div className="flex items-center justify-between mb-4">
         <EditableTitle
           title={section.title}
           isEditing={isEditingTitle}
@@ -64,25 +70,45 @@ export const Section: React.FC<SectionProps> = ({
           onChange={handleTitleChange}
           onDelete={onSectionDelete ? () => onSectionDelete(sectionKey) : undefined}
         />
+        {onSectionDelete && (
+          <button
+            onClick={() => onSectionDelete(sectionKey)}
+            className="text-gray-400 hover:text-gray-600"
+          >
+            Delete
+          </button>
+        )}
       </div>
-      <div className="space-y-2">
-        {section.blocks.map((block) => (
-          <BlockComponent
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.5, delay: 0.2 }}
+      >
+        {section.blocks.map((block, index) => (
+          <motion.div
             key={block.id}
-            block={block}
-            isSelected={selectedBlocks.includes(block.id)}
-            onTypeChange={(type) => onBlockTypeChange(block.id, type)}
-            onChange={(content) => onBlockChange(block.id, content)}
-            onMouseDown={(e) => onBlockMouseDown(block.id, e)}
-            onMouseEnter={() => onBlockMouseEnter(block.id)}
-            onMouseUp={(e) => onBlockMouseUp(block.id, e)}
-            onKeyDown={(e) => onKeyDown(e, block.id)}
-            onDelete={() => onBlockDelete(block.id)}
-            onContextMenu={onContextMenu}
-            onNavigate={(direction, cursorPosition) => onBlockNavigate?.(block.id, direction, cursorPosition)}
-          />
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ duration: 0.3, delay: index * 0.1 }}
+          >
+            <BlockComponent
+              block={block}
+              isSelected={selectedBlocks.includes(block.id)}
+              onTypeChange={(type) => onBlockTypeChange(block.id, type)}
+              onChange={(content) => onBlockChange(block.id, content)}
+              onMouseDown={(e) => onBlockMouseDown(block.id, e)}
+              onMouseEnter={() => onBlockMouseEnter(block.id)}
+              onMouseUp={(e) => onBlockMouseUp(block.id, e)}
+              onKeyDown={(e) => onKeyDown(e, block.id)}
+              onDelete={() => onBlockDelete(block.id)}
+              onContextMenu={onContextMenu}
+              onNavigate={onBlockNavigate ? 
+                (direction, cursorPosition) => onBlockNavigate(block.id, direction, cursorPosition)
+                : undefined}
+            />
+          </motion.div>
         ))}
-      </div>
-    </section>
+      </motion.div>
+    </motion.div>
   );
 };

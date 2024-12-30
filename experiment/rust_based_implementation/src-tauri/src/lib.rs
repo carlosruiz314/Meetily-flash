@@ -19,13 +19,13 @@ static mut SYSTEM_STREAM: Option<Arc<AudioStream>> = None;
 static mut IS_RUNNING: Option<Arc<AtomicBool>> = None;
 
 // Audio configuration constants
-const CHUNK_DURATION_MS: u32 = 30000; // 30 seconds per chunk for better sentence processing
+const CHUNK_DURATION_MS: u32 = 15000; // 30 seconds per chunk for better sentence processing
 const WHISPER_SAMPLE_RATE: u32 = 16000; // Whisper's required sample rate
 const WAV_SAMPLE_RATE: u32 = 44100; // WAV file sample rate
 const WAV_CHANNELS: u16 = 2; // Stereo for WAV files
 const WHISPER_CHANNELS: u16 = 1; // Mono for Whisper API
 const SENTENCE_TIMEOUT_MS: u64 = 1000; // Emit incomplete sentence after 1 second of silence
-const MIN_CHUNK_DURATION_MS: u32 = 2000; // Minimum duration before sending chunk
+const MIN_CHUNK_DURATION_MS: u32 = 1000; // Minimum duration before sending chunk
 
 #[derive(Debug, Deserialize)]
 struct RecordingArgs {

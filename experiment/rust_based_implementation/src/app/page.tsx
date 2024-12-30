@@ -20,11 +20,14 @@ export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
   const [showSummary, setShowSummary] = useState(false);
+  const [isSummaryLoading, setIsSummaryLoading] = useState(false);
   const [barHeights, setBarHeights] = useState(['58%', '76%', '58%']);
-  const [meetingTitle, setMeetingTitle] = useState('Intro call: AllFound');
+  const [meetingTitle, setMeetingTitle] = useState('New Call');
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [aiSummary, setAiSummary] = useState<Summary>({
     podcastOverview: {
+
+      
         title: 'Podcast Discussion Highlights',
         blocks: [
             { id: '1', type: 'bullet', content: 'Exploration of venture capital (VC) sourcing strategies and challenges.', color: 'default' },
@@ -105,18 +108,20 @@ export default function Home() {
       try {
         unlistenFn = await listen<TranscriptUpdate>('transcript-update', (event) => {
           console.log('Received transcript update:', event.payload);
+          const newTranscript = {
+            id: Date.now().toString(),
+            text: event.payload.text,
+            timestamp: event.payload.timestamp,
+          };
           setTranscripts(prev => {
+            // Check if this transcript already exists
             const exists = prev.some(
               t => t.text === event.payload.text && t.timestamp === event.payload.timestamp
             );
             if (exists) {
               return prev;
             }
-            return [...prev, {
-              id: Date.now().toString(),
-              text: event.payload.text,
-              timestamp: event.payload.timestamp
-            }];
+            return [...prev, newTranscript];
           });
         });
       } catch (error) {
@@ -135,8 +140,32 @@ export default function Home() {
 
   const handleRecordingStop = () => {
     setIsRecording(false);
-    setShowSummary(true);
-    generateAISummary();
+    setIsSummaryLoading(true);
+    // Show summary after 3 seconds
+    setTimeout(() => {
+      setShowSummary(true);
+      setIsSummaryLoading(false);
+      generateAISummary();
+    }, 3000);
+  };
+
+  const handleTranscriptUpdate = (update: any) => {
+    console.log('Handling transcript update:', update);
+    const newTranscript = {
+      id: Date.now().toString(),
+      text: update.text,
+      timestamp: update.timestamp,
+    };
+    setTranscripts(prev => {
+      // Check if this transcript already exists
+      const exists = prev.some(
+        t => t.text === update.text && t.timestamp === update.timestamp
+      );
+      if (exists) {
+        return prev;
+      }
+      return [...prev, newTranscript];
+    });
   };
 
   const generateAISummary = () => {
@@ -185,7 +214,14 @@ export default function Home() {
 
         {/* Right side - AI Summary */}
         <div className="flex-1 overflow-y-auto bg-white">
-          {showSummary && (
+          {isSummaryLoading ? (
+            <div className="flex items-center justify-center h-full">
+              <div className="text-center">
+                <div className="inline-block animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mb-4"></div>
+                <p className="text-gray-600">Generating AI Summary...</p>
+              </div>
+            </div>
+          ) : showSummary && (
             <div className="max-w-4xl mx-auto p-6">
               <AISummary summary={aiSummary} onSummaryChange={setAiSummary} />
             </div>
