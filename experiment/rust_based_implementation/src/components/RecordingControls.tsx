@@ -31,6 +31,12 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     let unlistenFn: (() => void) | undefined;
 
     const setupListener = async () => {
+      // Clean up any existing listener first
+      if (unlistenFn) {
+        unlistenFn();
+      }
+
+      // Set up new listener
       unlistenFn = await listen<TranscriptUpdate>('transcript-update', (event) => {
         console.log('Received transcript update:', event.payload);
         onTranscriptUpdate(event.payload);
@@ -44,7 +50,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         unlistenFn();
       }
     };
-  }, [onTranscriptUpdate]);
+  }, []);
 
   const handleStartRecording = useCallback(async () => {
     console.log('Starting recording...');

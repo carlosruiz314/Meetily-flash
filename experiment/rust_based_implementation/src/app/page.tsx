@@ -17,38 +17,56 @@ export default function Home() {
   const [meetingTitle, setMeetingTitle] = useState('Intro call: AllFound');
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [aiSummary, setAiSummary] = useState<Summary>({
-    overview: {
-      title: 'AllFound Overview',
-      blocks: [
-        { id: '1', type: 'bullet', content: '100 employees, adding 20 more next quarter', color: 'default' },
-        { id: '2', type: 'bullet', content: 'Office in San Francisco and Austin', color: 'gray' }
-      ]
+    podcastOverview: {
+        title: 'Podcast Discussion Highlights',
+        blocks: [
+            { id: '1', type: 'bullet', content: 'Exploration of venture capital (VC) sourcing strategies and challenges.', color: 'default' },
+            { id: '2', type: 'bullet', content: 'Insights on investment risk and the role of accredited investors.', color: 'gray' },
+            { id: '3', type: 'bullet', content: 'Discussion on the evolution and specialization of VC practices.', color: 'default' }
+        ]
     },
-    provider: {
-      title: 'Current Provider (Tuesday.ai)',
-      blocks: [
-        { id: '3', type: 'bullet', content: 'Data input is too manual', color: 'default' },
-        { id: '4', type: 'bullet', content: 'Too complex for non-technical team members', color: 'gray' },
-        { id: '5', type: 'bullet', content: '$180 per employee per year ("too expensive")', color: 'default' }
-      ]
+    sourcingInsights: {
+        title: 'How VC Firms Source Investments',
+        blocks: [
+            { id: '4', type: 'bullet', content: 'Companies often found through public announcements, events, and conferences.', color: 'default' },
+            { id: '5', type: 'bullet', content: 'Venture arms play a key role in identifying startups seeking funding.', color: 'gray' },
+            { id: '6', type: 'bullet', content: 'Networking at industry forums and academic gatherings is crucial.', color: 'default' }
+        ]
     },
-    requirements: {
-      title: 'Their Requirements',
-      blocks: [
-        { id: '6', type: 'bullet', content: 'Finding a better employee engagement tool is "a priority for Q2"', color: 'default' },
-        { id: '7', type: 'bullet', content: 'Need secure information sharing capabilities', color: 'gray' },
-        { id: '8', type: 'bullet', content: 'One-way or two-way data sharing required, contingent on internal approval', color: 'gray' }
-      ]
+    investmentChallenges: {
+        title: 'Challenges in Venture Investments',
+        blocks: [
+            { id: '7', type: 'bullet', content: 'High-risk business with only 1 out of 100 investments typically succeeding.', color: 'default' },
+            { id: '8', type: 'bullet', content: 'Success rates vary significantly between established and new VC firms.', color: 'gray' },
+            { id: '9', type: 'bullet', content: 'Equity investments can result in total loss if the company fails.', color: 'default' }
+        ]
     },
-    nextSteps: {
-      title: 'Next steps',
-      blocks: [
-        { id: '9', type: 'bullet', content: 'Jess to send over information pack', color: 'gray' },
-        { id: '10', type: 'bullet', content: 'Jess to send contract if we want to proceed', color: 'gray' },
-        { id: '11', type: 'bullet', content: 'Catchup scheduled for next week to figure out contractual details', color: 'gray' }
-      ]
+    perspectivesOnVC: {
+        title: 'Perspectives on VC Practices',
+        blocks: [
+            { id: '10', type: 'bullet', content: 'Comparison of VCs to the evolution of surgeons highlights growth potential.', color: 'default' },
+            { id: '11', type: 'bullet', content: 'Role of trust in the people behind startups as a key investment factor.', color: 'gray' },
+            { id: '12', type: 'bullet', content: 'Challenges in maintaining value and protecting investments discussed.', color: 'default' }
+        ]
+    },
+    personalReflections: {
+        title: 'Personal Reflections and Insights',
+        blocks: [
+            { id: '13', type: 'bullet', content: 'Importance of the ability to “get things done” highlighted.', color: 'default' },
+            { id: '14', type: 'bullet', content: 'Inspirations from Steve Jobs and his approach to innovation.', color: 'gray' },
+            { id: '15', type: 'bullet', content: 'Reflections on the significance of academic and early professional experiences.', color: 'default' }
+        ]
+    },
+    closingRemarks: {
+        title: 'Closing Remarks',
+        blocks: [
+            { id: '16', type: 'bullet', content: 'Appreciation for the conversation and insights shared.', color: 'default' },
+            { id: '17', type: 'bullet', content: 'Emphasis on the lasting impact of early professional relationships.', color: 'gray' },
+            { id: '18', type: 'bullet', content: 'Host expresses gratitude for the guest’s participation.', color: 'default' }
+        ]
     }
-  });
+});
+
 
   const [isCollapsed, setIsCollapsed] = useState(false);
 
@@ -74,36 +92,10 @@ export default function Home() {
     }
   }, [isRecording]);
 
-  useEffect(() => {
-    if (isRecording) {
-      const interval = setInterval(() => {
-        const newTranscript = generateTranscript();
-        setTranscripts(prev => [...prev, newTranscript]);
-      }, 2000);
-
-      return () => clearInterval(interval);
-    }
-  }, [isRecording]);
-
   const handleRecordingStop = () => {
     setIsRecording(false);
     setShowSummary(true);
     generateAISummary();
-  };
-
-  const generateTranscript = () => {
-    const texts = [
-      "We need to focus on user engagement metrics.",
-      "The current system is too complex for our needs.",
-      "Security is a top priority for us.",
-      "We're looking to implement this by Q2 next year.",
-      "Integration with existing tools is crucial.",
-    ];
-    return {
-      id: Date.now().toString(),
-      text: texts[Math.floor(Math.random() * texts.length)],
-      timestamp: new Date().toLocaleTimeString(),
-    };
   };
 
   const generateAISummary = () => {
