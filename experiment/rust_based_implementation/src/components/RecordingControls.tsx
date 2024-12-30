@@ -1,6 +1,6 @@
 'use client';
 
-import { invoke } from '@tauri-apps/api/tauri';
+import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import { useCallback, useEffect } from 'react';
 import { listen } from '@tauri-apps/api/event';

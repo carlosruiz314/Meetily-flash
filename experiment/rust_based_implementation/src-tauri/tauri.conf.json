@@ -33,19 +33,5 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
-  },
-  "tauri": {
-    "allowlist": {
-      "fs": {
-        "all": true,
-        "scope": ["$APPDATA/**", "$APPDATA/*"]
-      },
-      "path": {
-        "all": true
-      },
-      "shell": {
-        "all": true
-      }
-    }
   }
 }
