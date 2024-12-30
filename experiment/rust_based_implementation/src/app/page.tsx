@@ -120,6 +120,17 @@ export default function Home() {
     setCurrentMeeting({ id: 'intro-call', title: newTitle });
   };
 
+  const handleTranscriptUpdate = (update: any) => {
+    const newTranscript = {
+      id: Date.now().toString(),
+      speaker: 'Speaker',
+      text: update.text,
+      timestamp: update.timestamp,
+      source: update.source,
+    };
+    setTranscripts(prev => [...prev, newTranscript]);
+  };
+
   return (
     <div className="flex flex-col h-screen bg-gray-50">
       <MainNav />
@@ -145,6 +156,7 @@ export default function Home() {
                 onRecordingStop={handleRecordingStop}
                 onRecordingStart={() => setIsRecording(true)}
                 barHeights={barHeights}
+                onTranscriptUpdate={handleTranscriptUpdate}
               />
             </div>
           </div>

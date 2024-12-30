@@ -8,6 +8,7 @@ import { listen } from '@tauri-apps/api/event';
 interface TranscriptUpdate {
   text: string;
   timestamp: string;
+  source: string;
 }
 
 interface RecordingControlsProps {
@@ -64,7 +65,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       const savePath = `${dataDir}/recording-${timestamp}.wav`;
       
       console.log('Saving recording to:', savePath);
-      await invoke('stop_recording', { savePath });
+      await invoke('stop_recording', { args: { save_path: savePath } });
       console.log('Recording stopped and saved successfully');
       onRecordingStop();
     } catch (error) {
