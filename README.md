@@ -11,15 +11,24 @@ While there are many meeting transcription tools available, this solution stands
 - **Customizable**: Self-host and modify for your specific needs
 - **Intelligent**: Built-in knowledge graph for semantic search across meetings
 
+> **Note**: We have an experimental Rust-based implementation that explores better performance and native integration. It currently implements:
+> - ✅ Real-time audio capture from both microphone and system audio
+> - ✅ Live transcription using locally-running Whisper
+> - ✅ Speaker diarization
+> - ✅ Rich text editor for notes
+> 
+> See [Rust Implementation](experiment/rust_based_implementation) for details.
+
+
 ## Features
 
 ✅ Modern, responsive UI with real-time updates
 
 ✅ Export to Markdown/PDF
 
-🚧 Real-time audio capture using SoundDevice
+🚧 Real-time audio capture
 
-🚧 Real-time audio visualization
+🚧 Real-time audio transcript
 
 🚧 Automatic meeting detection (Zoom, Google Meet, Teams)
 
@@ -61,6 +70,7 @@ Key Components:
 - **Integration**
   - Virtual Audio Driver for system-level audio capture
   - Ollama with Agentic Tools for extended AI capabilities
+
 
 ## Prerequisites
 
@@ -132,3 +142,7 @@ uvicorn main:app --reload
 MIT License - Feel free to use this project for your own purposes.
 
 Last updated: December 26, 2024
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Zackriya-Solutions/meeting-minutes&type=Date)](https://star-history.com/#Zackriya-Solutions/meeting-minutes&Date)
