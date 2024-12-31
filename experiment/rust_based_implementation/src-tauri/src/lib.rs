@@ -245,11 +245,22 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let mut system_receiver = system_stream.subscribe().await;
     
     // Create debug directory for chunks in temp
-    let debug_dir = std::env::temp_dir().join("meeting_minutes_debug");
+    let temp_dir = std::env::temp_dir();
+    log_info!("System temp directory: {:?}", temp_dir);
+    let debug_dir = temp_dir.join("meeting_minutes_debug");
+    log_info!("Full debug directory path: {:?}", debug_dir);
+    
+    // Create directory and check if it exists
     fs::create_dir_all(&debug_dir).map_err(|e| {
         log_error!("Failed to create debug directory: {}", e);
         e.to_string()
     })?;
+    
+    if debug_dir.exists() {
+        log_info!("Debug directory successfully created and exists");
+    } else {
+        log_error!("Failed to create debug directory - path does not exist after creation");
+    }
     
     let chunk_counter = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let chunk_counter_clone = chunk_counter.clone();
@@ -284,15 +295,29 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
             let mut system_samples = Vec::new();
             
             // Get microphone samples
-            if let Ok(chunk) = mic_receiver.try_recv() {
+            let mut got_mic_samples = false;
+            while let Ok(chunk) = mic_receiver.try_recv() {
+                got_mic_samples = true;
                 log_debug!("Received {} mic samples", chunk.len());
                 mic_samples.extend(chunk);
             }
+            // If we didn't get any samples, try to resubscribe to clear any backlog
+            if !got_mic_samples {
+                log_debug!("No mic samples received, resubscribing to clear channel");
+                mic_receiver = mic_stream.subscribe().await;
+            }
             
             // Get system audio samples
-            if let Ok(chunk) = system_receiver.try_recv() {
+            let mut got_system_samples = false;
+            while let Ok(chunk) = system_receiver.try_recv() {
+                got_system_samples = true;
                 log_debug!("Received {} system samples", chunk.len());
                 system_samples.extend(chunk);
+            }
+            // If we didn't get any samples, try to resubscribe to clear any backlog
+            if !got_system_samples {
+                log_debug!("No system samples received, resubscribing to clear channel");
+                system_receiver = system_stream.subscribe().await;
             }
             
             // Mix samples with debug info
@@ -300,7 +325,8 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
             for i in 0..max_len {
                 let mic_sample = if i < mic_samples.len() { mic_samples[i] } else { 0.0 };
                 let system_sample = if i < system_samples.len() { system_samples[i] } else { 0.0 };
-                new_samples.push((mic_sample + system_sample) * 0.5);
+                // Increase mic sensitivity by giving it more weight in the mix (80% mic, 20% system)
+                new_samples.push((mic_sample * 0.7) + (system_sample * 0.3));
             }
             
             log_debug!("Mixed {} samples", new_samples.len());
@@ -316,15 +342,66 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                              last_chunk_time.elapsed() >= Duration::from_millis(CHUNK_DURATION_MS as u64));
             
             if should_send {
+                log_info!("Should send chunk with {} samples", current_chunk.len());
                 let chunk_to_send = current_chunk.clone();
                 current_chunk.clear();
                 last_chunk_time = std::time::Instant::now();
                 
-                // Save original chunk for debugging (stereo WAV)
+                // Save debug chunks
                 let chunk_num = chunk_counter_clone.fetch_add(1, Ordering::SeqCst);
-                let chunk_path = debug_dir.join(format!("chunk_{}.wav", chunk_num));
+                log_info!("Processing chunk {}", chunk_num);
                 
-                // Convert chunk to bytes
+                // Save mic chunk
+                if !mic_samples.is_empty() {
+                    let mic_chunk_path = debug_dir.join(format!("chunk_{}_mic.wav", chunk_num));
+                    log_info!("Saving mic chunk to {:?}", mic_chunk_path);
+                    let mic_bytes: Vec<u8> = mic_samples.iter()
+                        .flat_map(|&sample| {
+                            let clamped = sample.max(-1.0).min(1.0);
+                            clamped.to_le_bytes().to_vec()
+                        })
+                        .collect();
+                    if let Err(e) = encode_single_audio(
+                        &mic_bytes,
+                        WAV_SAMPLE_RATE,
+                        1, // Mono for mic
+                        &mic_chunk_path,
+                    ) {
+                        log_error!("Failed to save mic chunk {}: {}", chunk_num, e);
+                    } else {
+                        log_info!("Successfully saved mic chunk {} with {} samples", chunk_num, mic_samples.len());
+                    }
+                } else {
+                    log_info!("No mic samples to save for chunk {}", chunk_num);
+                }
+
+                // Save system chunk
+                if !system_samples.is_empty() {
+                    let system_chunk_path = debug_dir.join(format!("chunk_{}_system.wav", chunk_num));
+                    log_info!("Saving system chunk to {:?}", system_chunk_path);
+                    let system_bytes: Vec<u8> = system_samples.iter()
+                        .flat_map(|&sample| {
+                            let clamped = sample.max(-1.0).min(1.0);
+                            clamped.to_le_bytes().to_vec()
+                        })
+                        .collect();
+                    if let Err(e) = encode_single_audio(
+                        &system_bytes,
+                        WAV_SAMPLE_RATE,
+                        2, // Stereo for system
+                        &system_chunk_path,
+                    ) {
+                        log_error!("Failed to save system chunk {}: {}", chunk_num, e);
+                    } else {
+                        log_info!("Successfully saved system chunk {} with {} samples", chunk_num, system_samples.len());
+                    }
+                } else {
+                    log_info!("No system samples to save for chunk {}", chunk_num);
+                }
+                
+                // Save mixed chunk
+                let mixed_chunk_path = debug_dir.join(format!("chunk_{}_mixed.wav", chunk_num));
+                log_info!("Saving mixed chunk to {:?}", mixed_chunk_path);
                 let chunk_bytes: Vec<u8> = chunk_to_send.iter()
                     .flat_map(|&sample| {
                         let clamped = sample.max(-1.0).min(1.0);
@@ -332,27 +409,26 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                     })
                     .collect();
                 
-                // Save original chunk as WAV
                 if let Err(e) = encode_single_audio(
                     &chunk_bytes,
                     WAV_SAMPLE_RATE,
                     WAV_CHANNELS,
-                    &chunk_path,
+                    &mixed_chunk_path,
                 ) {
-                    log_error!("Failed to save debug chunk {}: {}", chunk_num, e);
+                    log_error!("Failed to save mixed chunk {}: {}", chunk_num, e);
                 } else {
-                    log_debug!("Saved chunk {} with {} samples", chunk_num, chunk_to_send.len());
-                    
-                    // Delete old chunks to avoid filling up temp directory
-                    if chunk_num > 10 {
-                        if let Ok(entries) = fs::read_dir(&debug_dir) {
-                            for entry in entries.flatten() {
-                                if let Some(name) = entry.file_name().to_str() {
-                                    if name.starts_with("chunk_") && 
-                                       name.ends_with(".wav") && 
-                                       name != format!("chunk_{}.wav", chunk_num) {
-                                        let _ = fs::remove_file(entry.path());
-                                    }
+                    log_info!("Successfully saved mixed chunk {} with {} samples", chunk_num, chunk_to_send.len());
+                }
+                
+                // Keep only last 10 chunks
+                if chunk_num > 10 {
+                    if let Ok(entries) = fs::read_dir(&debug_dir) {
+                        for entry in entries.flatten() {
+                            if let Some(name) = entry.file_name().to_str() {
+                                if name.starts_with("chunk_") && 
+                                   name.ends_with(".wav") && 
+                                   !name.contains(&format!("chunk_{}", chunk_num)) {
+                                    let _ = fs::remove_file(entry.path());
                                 }
                             }
                         }

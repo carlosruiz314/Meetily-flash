@@ -7,7 +7,7 @@ rm -rf dist
 # rm -rf src-tauri/target
 
 echo "Installing dependencies..."
-# pnpm install
+pnpm install
 
 echo "Building Tauri app..."
 pnpm run tauri dev
