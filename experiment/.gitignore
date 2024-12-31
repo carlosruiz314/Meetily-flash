@@ -6,6 +6,7 @@ screenpipe/
 **/dist/
 **/.next/
 
+/debug_chunks
 # Rust
 **/target/
 **/*.rs.bk

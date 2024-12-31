@@ -16,7 +16,9 @@
         "width": 1200,
         "height": 800,
         "resizable": true,
-        "fullscreen": false
+        "fullscreen": false,
+        "theme": "Light",
+        "decorations": true
       }
     ],
     "security": {
