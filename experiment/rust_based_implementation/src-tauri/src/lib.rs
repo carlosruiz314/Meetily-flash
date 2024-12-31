@@ -418,16 +418,43 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
         return Err("No recording in progress".to_string());
     }
 
+    // First set the recording flag to false to prevent new data from being processed
     RECORDING_FLAG.store(false, Ordering::SeqCst);
     log_info!("Recording flag set to false");
+    
     unsafe {
+        // Stop the running flag for audio streams
         if let Some(is_running) = &IS_RUNNING {
             is_running.store(false, Ordering::SeqCst);
         }
     }
     
-    // Small delay to ensure tasks have stopped
-    tokio::time::sleep(Duration::from_millis(100)).await;
+    // Give time for the background task to complete
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    
+    unsafe {
+        // Now try to stop the streams
+        if let Some(mic_stream) = MIC_STREAM.take() {
+            // Drop any remaining subscribers first
+            if let Ok(stream) = Arc::try_unwrap(mic_stream) {
+                if let Err(e) = stream.stop().await {
+                    log_error!("Error stopping mic stream: {}", e);
+                }
+            } else {
+                log_error!("Could not get exclusive ownership of mic stream");
+            }
+        }
+
+        if let Some(system_stream) = SYSTEM_STREAM.take() {
+            if let Ok(stream) = Arc::try_unwrap(system_stream) {
+                if let Err(e) = stream.stop().await {
+                    log_error!("Error stopping system stream: {}", e);
+                }
+            } else {
+                log_error!("Could not get exclusive ownership of system stream");
+            }
+        }
+    }
     
     // Get final buffers
     let mic_data = unsafe {
