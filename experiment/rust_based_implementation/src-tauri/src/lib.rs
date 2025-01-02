@@ -345,7 +345,7 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                 let mic_sample = if i < mic_samples.len() { mic_samples[i] } else { 0.0 };
                 let system_sample = if i < system_samples.len() { system_samples[i] } else { 0.0 };
                 // Increase mic sensitivity by giving it more weight in the mix (80% mic, 20% system)
-                new_samples.push((mic_sample * 0.5) + (system_sample * 0.5));
+                new_samples.push((mic_sample * 0.9) + (system_sample * 0.1));
             }
             
             log_debug!("Mixed {} samples", new_samples.len());
@@ -419,24 +419,35 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                 }
                 
                 // Save mixed chunk
-                let mixed_chunk_path = debug_dir.join(format!("chunk_{}_mixed.wav", chunk_num));
-                log_info!("Saving mixed chunk to {:?}", mixed_chunk_path);
-                let chunk_bytes: Vec<u8> = chunk_to_send.iter()
-                    .flat_map(|&sample| {
-                        let clamped = sample.max(-1.0).min(1.0);
-                        clamped.to_le_bytes().to_vec()
-                    })
-                    .collect();
-                
-                if let Err(e) = encode_single_audio(
-                    &chunk_bytes,
-                    WAV_SAMPLE_RATE,
-                    WAV_CHANNELS,
-                    &mixed_chunk_path,
-                ) {
-                    log_error!("Failed to save mixed chunk {}: {}", chunk_num, e);
+                if !chunk_to_send.is_empty() {
+                    let mixed_chunk_path = debug_dir.join(format!("chunk_{}_mixed.wav", chunk_num));
+                    log_info!("Saving mixed chunk to {:?}", mixed_chunk_path);
+                    let mixed_bytes: Vec<u8> = chunk_to_send.iter()
+                        .flat_map(|&sample| {
+                            let clamped = sample.max(-1.0).min(1.0);
+                            clamped.to_le_bytes().to_vec()
+                        })
+                        .collect();
+                    match encode_single_audio(
+                        &mixed_bytes,
+                        WAV_SAMPLE_RATE,
+                        WAV_CHANNELS,
+                        &mixed_chunk_path,
+                    ) {
+                        Ok(_) => {
+                            log_info!("Successfully saved mixed chunk {} with {} samples", chunk_num, chunk_to_send.len());
+                        }
+                        Err(e) => {
+                            // Check if it's a broken pipe error
+                            if e.to_string().contains("Broken pipe") {
+                                log_debug!("Broken pipe while saving chunk {} - this is expected during cleanup", chunk_num);
+                            } else {
+                                log_error!("Failed to save mixed chunk {}: {}", chunk_num, e);
+                            }
+                        }
+                    }
                 } else {
-                    log_info!("Successfully saved mixed chunk {} with {} samples", chunk_num, chunk_to_send.len());
+                    log_info!("No mixed samples to save for chunk {}", chunk_num);
                 }
                 
                 // Keep only last 10 chunks
@@ -525,16 +536,16 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
         }
     }
     
-    // Give time for the background task to complete
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    // Give more time for the background task to complete and ensure synchronization
+    tokio::time::sleep(Duration::from_secs(1)).await;
     
     unsafe {
-        // Now try to stop the streams
+        // Now try to stop the streams with proper synchronization
         if let Some(mic_stream) = MIC_STREAM.take() {
-            // Drop any remaining subscribers first
             if let Ok(stream) = Arc::try_unwrap(mic_stream) {
-                if let Err(e) = stream.stop().await {
-                    log_error!("Error stopping mic stream: {}", e);
+                match stream.stop().await {
+                    Ok(_) => log_info!("Successfully stopped mic stream"),
+                    Err(e) => log_error!("Error stopping mic stream: {}", e),
                 }
             } else {
                 log_error!("Could not get exclusive ownership of mic stream");
@@ -543,13 +554,17 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
 
         if let Some(system_stream) = SYSTEM_STREAM.take() {
             if let Ok(stream) = Arc::try_unwrap(system_stream) {
-                if let Err(e) = stream.stop().await {
-                    log_error!("Error stopping system stream: {}", e);
+                match stream.stop().await {
+                    Ok(_) => log_info!("Successfully stopped system stream"),
+                    Err(e) => log_error!("Error stopping system stream: {}", e),
                 }
             } else {
                 log_error!("Could not get exclusive ownership of system stream");
             }
         }
+        
+        // Additional cleanup to ensure streams are fully stopped
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
     
     // Get final buffers
