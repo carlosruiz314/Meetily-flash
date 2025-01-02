@@ -1,5 +1,4 @@
 use std::fs;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
@@ -12,20 +11,20 @@ use log::{info as log_info, error as log_error, debug as log_debug};
 use reqwest::multipart::{Form, Part};
 
 static RECORDING_FLAG: AtomicBool = AtomicBool::new(false);
-static mut MIC_BUFFER: Option<Mutex<Vec<f32>>> = None;
-static mut SYSTEM_BUFFER: Option<Mutex<Vec<f32>>> = None;
+static mut MIC_BUFFER: Option<Arc<Mutex<Vec<f32>>>> = None;
+static mut SYSTEM_BUFFER: Option<Arc<Mutex<Vec<f32>>>> = None;
 static mut MIC_STREAM: Option<Arc<AudioStream>> = None;
 static mut SYSTEM_STREAM: Option<Arc<AudioStream>> = None;
 static mut IS_RUNNING: Option<Arc<AtomicBool>> = None;
 
 // Audio configuration constants
-const CHUNK_DURATION_MS: u32 = 15000; // 30 seconds per chunk for better sentence processing
+const CHUNK_DURATION_MS: u32 = 30000; // 30 seconds per chunk for better sentence processing
 const WHISPER_SAMPLE_RATE: u32 = 16000; // Whisper's required sample rate
 const WAV_SAMPLE_RATE: u32 = 44100; // WAV file sample rate
 const WAV_CHANNELS: u16 = 2; // Stereo for WAV files
 const WHISPER_CHANNELS: u16 = 1; // Mono for Whisper API
 const SENTENCE_TIMEOUT_MS: u64 = 1000; // Emit incomplete sentence after 1 second of silence
-const MIN_CHUNK_DURATION_MS: u32 = 1000; // Minimum duration before sending chunk
+const MIN_CHUNK_DURATION_MS: u32 = 2000; // Minimum duration before sending chunk
 
 #[derive(Debug, Deserialize)]
 struct RecordingArgs {
@@ -189,13 +188,14 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     RECORDING_FLAG.store(true, Ordering::SeqCst);
     log_info!("Recording flag set to true");
 
+    // Initialize audio buffers
     unsafe {
-        MIC_BUFFER = Some(Mutex::new(Vec::new()));
-        SYSTEM_BUFFER = Some(Mutex::new(Vec::new()));
-        log_info!("Audio buffers initialized");
+        MIC_BUFFER = Some(Arc::new(Mutex::new(Vec::new())));
+        SYSTEM_BUFFER = Some(Arc::new(Mutex::new(Vec::new())));
+        log_info!("Initialized audio buffers");
     }
     
-    // Initialize audio recording devices
+    // Get default devices
     let mic_device = Arc::new(default_input_device().map_err(|e| {
         log_error!("Failed to get default input device: {}", e);
         e.to_string()
@@ -222,12 +222,11 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let system_stream = AudioStream::from_device(system_device.clone(), is_running.clone())
         .await
         .map_err(|e| {
-            log_error!("Failed to create system audio stream: {}", e);
+            log_error!("Failed to create system stream: {}", e);
             e.to_string()
         })?;
     let system_stream = Arc::new(system_stream);
 
-    // Initialize shared state
     unsafe {
         MIC_STREAM = Some(mic_stream.clone());
         SYSTEM_STREAM = Some(system_stream.clone());
@@ -299,7 +298,17 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
             while let Ok(chunk) = mic_receiver.try_recv() {
                 got_mic_samples = true;
                 log_debug!("Received {} mic samples", chunk.len());
+                let chunk_clone = chunk.clone();
                 mic_samples.extend(chunk);
+                
+                // Store in global buffer
+                unsafe {
+                    if let Some(buffer) = &MIC_BUFFER {
+                        if let Ok(mut guard) = buffer.lock() {
+                            guard.extend(chunk_clone);
+                        }
+                    }
+                }
             }
             // If we didn't get any samples, try to resubscribe to clear any backlog
             if !got_mic_samples {
@@ -312,7 +321,17 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
             while let Ok(chunk) = system_receiver.try_recv() {
                 got_system_samples = true;
                 log_debug!("Received {} system samples", chunk.len());
+                let chunk_clone = chunk.clone();
                 system_samples.extend(chunk);
+                
+                // Store in global buffer
+                unsafe {
+                    if let Some(buffer) = &SYSTEM_BUFFER {
+                        if let Ok(mut guard) = buffer.lock() {
+                            guard.extend(chunk_clone);
+                        }
+                    }
+                }
             }
             // If we didn't get any samples, try to resubscribe to clear any backlog
             if !got_system_samples {
@@ -326,7 +345,7 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                 let mic_sample = if i < mic_samples.len() { mic_samples[i] } else { 0.0 };
                 let system_sample = if i < system_samples.len() { system_samples[i] } else { 0.0 };
                 // Increase mic sensitivity by giving it more weight in the mix (80% mic, 20% system)
-                new_samples.push((mic_sample * 0.7) + (system_sample * 0.3));
+                new_samples.push((mic_sample * 0.5) + (system_sample * 0.5));
             }
             
             log_debug!("Mixed {} samples", new_samples.len());
@@ -502,6 +521,7 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
         // Stop the running flag for audio streams
         if let Some(is_running) = &IS_RUNNING {
             is_running.store(false, Ordering::SeqCst);
+            log_info!("Audio stream running flag set to false");
         }
     }
     
@@ -557,7 +577,7 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
         }
     };
     
-    // Mix the audio
+    // Mix the audio and convert to 16-bit PCM
     let max_len = mic_data.len().max(system_data.len());
     let mut mixed_data = Vec::with_capacity(max_len);
     
@@ -566,22 +586,58 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
         let system_sample = if i < system_data.len() { system_data[i] } else { 0.0 };
         mixed_data.push((mic_sample + system_sample) * 0.5);
     }
+
+    if mixed_data.is_empty() {
+        log_error!("No audio data captured");
+        return Err("No audio data captured".to_string());
+    }
     
-    // Convert to bytes
-    let bytes: Vec<u8> = mixed_data.iter()
-        .flat_map(|&sample| {
-            let clamped = sample.max(-1.0).min(1.0);
-            clamped.to_le_bytes().to_vec()
-        })
-        .collect();
+    log_info!("Mixed {} audio samples", mixed_data.len());
+    
+    // Convert to 16-bit PCM samples
+    let mut bytes = Vec::with_capacity(mixed_data.len() * 2);
+    for &sample in mixed_data.iter() {
+        let value = (sample.max(-1.0).min(1.0) * 32767.0) as i16;
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    
+    log_info!("Converted to {} bytes of PCM data", bytes.len());
+
+    // Create WAV header
+    let data_size = bytes.len() as u32;
+    let file_size = 36 + data_size;
+    let sample_rate = 48000u32; // Standard sample rate
+    let channels = 1u16; // Mono
+    let bits_per_sample = 16u16;
+    let block_align = channels * (bits_per_sample / 8);
+    let byte_rate = sample_rate * block_align as u32;
+    
+    let mut wav_file = Vec::with_capacity(44 + bytes.len());
+    
+    // RIFF header
+    wav_file.extend_from_slice(b"RIFF");
+    wav_file.extend_from_slice(&file_size.to_le_bytes());
+    wav_file.extend_from_slice(b"WAVE");
+    
+    // fmt chunk
+    wav_file.extend_from_slice(b"fmt ");
+    wav_file.extend_from_slice(&16u32.to_le_bytes()); // fmt chunk size
+    wav_file.extend_from_slice(&1u16.to_le_bytes()); // audio format (PCM)
+    wav_file.extend_from_slice(&channels.to_le_bytes()); // num channels
+    wav_file.extend_from_slice(&sample_rate.to_le_bytes()); // sample rate
+    wav_file.extend_from_slice(&byte_rate.to_le_bytes()); // byte rate
+    wav_file.extend_from_slice(&block_align.to_le_bytes()); // block align
+    wav_file.extend_from_slice(&bits_per_sample.to_le_bytes()); // bits per sample
+    
+    // data chunk
+    wav_file.extend_from_slice(b"data");
+    wav_file.extend_from_slice(&data_size.to_le_bytes());
+    wav_file.extend_from_slice(&bytes);
+    
+    log_info!("Created WAV file with {} bytes total", wav_file.len());
     
     // Save the recording
-    encode_single_audio(
-        &bytes,
-        WAV_SAMPLE_RATE,
-        WAV_CHANNELS,
-        &PathBuf::from(&args.save_path),
-    ).map_err(|e| {
+    fs::write(&args.save_path, wav_file).map_err(|e| {
         log_error!("Failed to save recording: {}", e);
         e.to_string()
     })?;
@@ -601,6 +657,35 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
 #[tauri::command]
 fn is_recording() -> bool {
     RECORDING_FLAG.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
+fn read_audio_file(file_path: String) -> Result<Vec<u8>, String> {
+    match std::fs::read(&file_path) {
+        Ok(data) => {
+            // Verify WAV header
+            if data.len() < 44 {
+                return Err(format!("File too small to be WAV: {} bytes", data.len()));
+            }
+            
+            let header = &data[0..12];
+            log_info!("WAV header: {:?}", String::from_utf8_lossy(header));
+            
+            if &data[0..4] != b"RIFF" {
+                return Err("Missing RIFF marker".to_string());
+            }
+            if &data[8..12] != b"WAVE" {
+                return Err("Missing WAVE marker".to_string());
+            }
+            
+            // Get format chunk
+            let format_chunk = &data[12..20];
+            log_info!("Format chunk: {:?}", String::from_utf8_lossy(format_chunk));
+            
+            Ok(data)
+        },
+        Err(e) => Err(format!("Failed to read audio file: {}", e))
+    }
 }
 
 // Helper function to resample audio
@@ -647,7 +732,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             start_recording,
             stop_recording,
-            is_recording
+            is_recording,
+            read_audio_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
