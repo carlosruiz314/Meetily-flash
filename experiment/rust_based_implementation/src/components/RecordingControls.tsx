@@ -143,16 +143,24 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             <div className="text-sm text-gray-600 min-w-[40px]">
               {formatTime(currentTime)}
             </div>
-            <div className="relative w-24 h-1 bg-gray-200 rounded-full">
+            <div 
+              className="relative w-24 h-1 bg-gray-200 rounded-full cursor-pointer hover:bg-gray-300 transition-colors"
+              onClick={async (e) => {
+                try {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const x = e.clientX - rect.left;
+                  const percent = Math.max(0, Math.min(1, x / rect.width));
+                  const newTime = duration * percent;
+                  console.log('Timeline clicked:', { percent, newTime });
+                  await seek(newTime);
+                } catch (error) {
+                  console.error('Error seeking:', error);
+                }
+              }}
+            >
               <div 
                 className="absolute h-full bg-blue-500 rounded-full" 
                 style={{ width: `${progress}%` }}
-                onClick={(e) => {
-                  const rect = e.currentTarget.getBoundingClientRect();
-                  const x = e.clientX - rect.left;
-                  const percent = x / rect.width;
-                  seek(duration * percent);
-                }}
               />
             </div>
             <div className="text-sm text-gray-600 min-w-[40px]">

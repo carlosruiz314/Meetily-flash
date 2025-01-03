@@ -11,6 +11,7 @@ export const useAudioPlayer = (audioPath: string | null) => {
   const startTimeRef = useRef<number>(0);
   const audioBufferRef = useRef<AudioBuffer | null>(null);
   const rafRef = useRef<number>();
+  const seekTimeRef = useRef<number>(0);
 
   const initAudioContext = async () => {
     try {
@@ -191,15 +192,16 @@ export const useAudioPlayer = (audioPath: string | null) => {
         setCurrentTime(0);
       };
       
-      // Start playback
-      startTimeRef.current = audioRef.current.currentTime - currentTime;
+      // Start playback from the seek time
+      const startTime = seekTimeRef.current;
+      startTimeRef.current = audioRef.current.currentTime - startTime;
       console.log('Starting playback', {
-        startTime: startTimeRef.current,
-        currentTime,
-        contextTime: audioRef.current.currentTime
+        startTime,
+        contextTime: audioRef.current.currentTime,
+        seekTime: seekTimeRef.current
       });
       
-      sourceRef.current.start(0, currentTime);
+      sourceRef.current.start(0, startTime);
       setIsPlaying(true);
       setError(null);
 
@@ -211,18 +213,15 @@ export const useAudioPlayer = (audioPath: string | null) => {
         }
         
         const newTime = audioRef.current.currentTime - startTimeRef.current;
-        console.log('Updating time:', {
-          newTime,
-          contextTime: audioRef.current.currentTime,
-          startTime: startTimeRef.current
-        });
         
         if (newTime >= duration) {
           console.log('Playback finished');
           stopPlayback();
           setCurrentTime(0);
+          seekTimeRef.current = 0;
         } else {
           setCurrentTime(newTime);
+          seekTimeRef.current = newTime;
           rafRef.current = requestAnimationFrame(updateTime);
         }
       };
@@ -230,29 +229,35 @@ export const useAudioPlayer = (audioPath: string | null) => {
       rafRef.current = requestAnimationFrame(updateTime);
     } catch (error) {
       console.error('Error during playback:', error);
-      if (error instanceof Error) {
-        console.error('Error details:', {
-          message: error.message,
-          name: error.name,
-          stack: error.stack
-        });
-      }
       setError('Failed to play audio');
       stopPlayback();
+    }
+  };
+
+  const seek = async (time: number) => {
+    console.log('Seek requested:', time);
+    if (time < 0) time = 0;
+    if (time > duration) time = duration;
+    
+    const wasPlaying = isPlaying;
+    
+    // Stop current playback
+    stopPlayback();
+    
+    // Update both current time and seek time reference
+    seekTimeRef.current = time;
+    setCurrentTime(time);
+    
+    // If it was playing before, restart playback at new position
+    if (wasPlaying) {
+      console.log('Restarting playback at:', time);
+      await play();
     }
   };
 
   const pause = () => {
     console.log('Pause requested');
     stopPlayback();
-  };
-
-  const seek = (time: number) => {
-    console.log('Seek requested:', time);
-    setCurrentTime(time);
-    if (isPlaying) {
-      play();
-    }
   };
 
   return {
