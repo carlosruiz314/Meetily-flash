@@ -9,6 +9,7 @@ use screenpipe_audio::{
 use tauri::{Runtime, AppHandle, Emitter};
 use log::{info as log_info, error as log_error, debug as log_debug};
 use reqwest::multipart::{Form, Part};
+use tauri_plugin_log::Builder;
 
 static RECORDING_FLAG: AtomicBool = AtomicBool::new(false);
 static mut MIC_BUFFER: Option<Arc<Mutex<Vec<f32>>>> = None;
@@ -71,7 +72,7 @@ impl TranscriptAccumulator {
     }
 
     fn add_segment(&mut self, segment: &TranscriptSegment) -> Option<TranscriptUpdate> {
-        log_debug!("Processing new transcript segment: {:?}", segment);
+        log_info!("Processing new transcript segment: {:?}", segment);
         
         // Update the last update time
         self.last_update_time = std::time::Instant::now();
@@ -84,7 +85,7 @@ impl TranscriptAccumulator {
             .to_string();
             
         if !clean_text.is_empty() {
-            log_debug!("Clean transcript text: {}", clean_text);
+            log_info!("Clean transcript text: {}", clean_text);
         }
 
         // Skip empty segments or very short segments (less than 1 second)
@@ -160,19 +161,50 @@ async fn send_audio_chunk(chunk: Vec<f32>, client: &reqwest::Client) -> Result<T
         })
         .collect();
     
-    // Create multipart form
-    let part = Part::bytes(bytes).file_name("audio.raw").mime_str("audio/x-raw").unwrap();
-    let form = Form::new().part("audio", part);
-    
-    // Send request
-    client.post("http://127.0.0.1:8080/stream")
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .json::<TranscriptResponse>()
-        .await
-        .map_err(|e| e.to_string())
+    // Retry configuration
+    let max_retries = 3;
+    let mut retry_count = 0;
+    let mut last_error = String::new();
+
+    while retry_count <= max_retries {
+        if retry_count > 0 {
+            // Exponential backoff: wait 2^retry_count * 100ms
+            let delay = Duration::from_millis(100 * (2_u64.pow(retry_count as u32)));
+            log::info!("Retry attempt {} of {}. Waiting {:?} before retry...", 
+                      retry_count, max_retries, delay);
+            tokio::time::sleep(delay).await;
+        }
+
+        // Create fresh multipart form for each attempt since Form can't be reused
+        let part = Part::bytes(bytes.clone())
+            .file_name("audio.raw")
+            .mime_str("audio/x-raw")
+            .unwrap();
+        let form = Form::new().part("audio", part);
+
+        match client.post("http://127.0.0.1:8178/stream")
+            .multipart(form)
+            .send()
+            .await {
+                Ok(response) => {
+                    match response.json::<TranscriptResponse>().await {
+                        Ok(transcript) => return Ok(transcript),
+                        Err(e) => {
+                            last_error = e.to_string();
+                            log::error!("Failed to parse response: {}", last_error);
+                        }
+                    }
+                }
+                Err(e) => {
+                    last_error = e.to_string();
+                    log::error!("Request failed: {}", last_error);
+                }
+            }
+
+        retry_count += 1;
+    }
+
+    Err(format!("Failed after {} retries. Last error: {}", max_retries, last_error))
 }
 
 #[tauri::command]
@@ -345,7 +377,7 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                 let mic_sample = if i < mic_samples.len() { mic_samples[i] } else { 0.0 };
                 let system_sample = if i < system_samples.len() { system_samples[i] } else { 0.0 };
                 // Increase mic sensitivity by giving it more weight in the mix (80% mic, 20% system)
-                new_samples.push((mic_sample * 0.9) + (system_sample * 0.1));
+                new_samples.push((mic_sample * 0.7) + (system_sample * 0.3));
             }
             
             log_debug!("Mixed {} samples", new_samples.len());
@@ -677,30 +709,63 @@ fn is_recording() -> bool {
 #[tauri::command]
 fn read_audio_file(file_path: String) -> Result<Vec<u8>, String> {
     match std::fs::read(&file_path) {
-        Ok(data) => {
-            // Verify WAV header
-            if data.len() < 44 {
-                return Err(format!("File too small to be WAV: {} bytes", data.len()));
-            }
-            
-            let header = &data[0..12];
-            log_info!("WAV header: {:?}", String::from_utf8_lossy(header));
-            
-            if &data[0..4] != b"RIFF" {
-                return Err("Missing RIFF marker".to_string());
-            }
-            if &data[8..12] != b"WAVE" {
-                return Err("Missing WAVE marker".to_string());
-            }
-            
-            // Get format chunk
-            let format_chunk = &data[12..20];
-            log_info!("Format chunk: {:?}", String::from_utf8_lossy(format_chunk));
-            
-            Ok(data)
-        },
+        Ok(data) => Ok(data),
         Err(e) => Err(format!("Failed to read audio file: {}", e))
     }
+}
+
+#[tauri::command]
+async fn save_transcript(file_path: String, content: String) -> Result<(), String> {
+    log::info!("Saving transcript to: {}", file_path);
+
+    // Ensure parent directory exists
+    if let Some(parent) = std::path::Path::new(&file_path).parent() {
+        if !parent.exists() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("Failed to create directory: {}", e))?;
+        }
+    }
+
+    // Write content to file
+    std::fs::write(&file_path, content)
+        .map_err(|e| format!("Failed to write transcript: {}", e))?;
+
+    log::info!("Transcript saved successfully");
+    Ok(())
+}
+
+// Helper function to convert stereo to mono
+fn stereo_to_mono(stereo: &[i16]) -> Vec<i16> {
+    let mut mono = Vec::with_capacity(stereo.len() / 2);
+    for chunk in stereo.chunks_exact(2) {
+        let left = chunk[0] as i32;
+        let right = chunk[1] as i32;
+        let combined = ((left + right) / 2) as i16;
+        mono.push(combined);
+    }
+    mono
+}
+
+pub fn run() {
+    log::set_max_level(log::LevelFilter::Info);
+    
+    tauri::Builder::default()
+        .plugin(tauri_plugin_log::Builder::default()
+            .level(log::LevelFilter::Info)
+            .build())
+        .setup(|_app| {
+            log::info!("Application setup complete");
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            start_recording,
+            stop_recording,
+            is_recording,
+            read_audio_file,
+            save_transcript
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }
 
 // Helper function to resample audio
@@ -721,35 +786,4 @@ fn resample_audio(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     }
     
     resampled
-}
-
-// Helper function to convert stereo to mono
-fn stereo_to_mono(samples: &[f32]) -> Vec<f32> {
-    let mut mono = Vec::with_capacity(samples.len() / 2);
-    for chunk in samples.chunks(2) {
-        if chunk.len() == 2 {
-            mono.push((chunk[0] + chunk[1]) * 0.5);
-        }
-    }
-    mono
-}
-
-#[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
-    env_logger::init();
-    log::set_max_level(log::LevelFilter::Debug);
-    
-    tauri::Builder::default()
-        .setup(|_app| {
-            log_info!("Application setup complete");
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
-            start_recording,
-            stop_recording,
-            is_recording,
-            read_audio_file
-        ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
 }

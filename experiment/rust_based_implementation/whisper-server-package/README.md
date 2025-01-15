@@ -21,11 +21,11 @@ This package contains a pre-built Whisper server for real-time speech recognitio
 
 2. Optional parameters:
    ```bash
-   ./run-server.sh --host 0.0.0.0 --port 8080
+   ./run-server.sh --host 0.0.0.0 --port 8178
    ```
 
 3. Access the web interface:
-   Open http://localhost:8080 in your browser
+   Open http://localhost:8178 in your browser
 
 ## Features
 - Real-time speech recognition

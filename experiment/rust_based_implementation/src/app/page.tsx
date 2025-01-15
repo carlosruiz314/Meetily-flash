@@ -25,60 +25,52 @@ export default function Home() {
   const [meetingTitle, setMeetingTitle] = useState('New Call');
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [aiSummary, setAiSummary] = useState<Summary>({
-    introduction: {
-        title: 'GitLab Release Kickoff Highlights',
+    podcastOverview: {
+        title: 'Podcast Discussion Highlights',
         blocks: [
-            { id: '1', type: 'bullet', content: 'GitLab 17.7 released, kicking off 17.8.', color: 'default' },
-            { id: '2', type: 'bullet', content: 'Focus on FY25 investment themes: AI/ML efficiencies, use case adoption, platform differentiation, and SaaS capabilities.', color: 'gray' },
-            { id: '3', type: 'bullet', content: 'Public Service Announcement: Roadmap details are subject to change.', color: 'default' }
+            { id: '1', type: 'bullet', content: 'Exploration of venture capital (VC) sourcing strategies and challenges.', color: 'default' },
+            { id: '2', type: 'bullet', content: 'Insights on investment risk and the role of accredited investors.', color: 'gray' },
+            { id: '3', type: 'bullet', content: 'Discussion on the evolution and specialization of VC practices.', color: 'default' }
         ]
     },
-    devMonitorHighlights: {
-        title: 'Dev and Monitor Updates',
+    sourcingInsights: {
+        title: 'How VC Firms Source Investments',
         blocks: [
-            { id: '4', type: 'bullet', content: 'Slash fix chat command added to VS Code for streamlined code fixes.', color: 'default' },
-            { id: '5', type: 'bullet', content: 'Terminal output integration in Duo for improved debugging.', color: 'gray' },
-            { id: '6', type: 'bullet', content: '20-40% latency improvement in code completion suggestions.', color: 'default' }
+            { id: '4', type: 'bullet', content: 'Companies often found through public announcements, events, and conferences.', color: 'default' },
+            { id: '5', type: 'bullet', content: 'Venture arms play a key role in identifying startups seeking funding.', color: 'gray' },
+            { id: '6', type: 'bullet', content: 'Networking at industry forums and academic gatherings is crucial.', color: 'default' }
         ]
     },
-    cicdUpdates: {
-        title: 'CI/CD Enhancements',
+    investmentChallenges: {
+        title: 'Challenges in Venture Investments',
         blocks: [
-            { id: '7', type: 'bullet', content: 'Native integration with GitLab CMM for improved extensibility.', color: 'default' },
-            { id: '8', type: 'bullet', content: 'Maven virtual registry enhancements for Java package interactions.', color: 'gray' },
-            { id: '9', type: 'bullet', content: 'Focus on SaaS deployment improvements and secure workflows.', color: 'default' }
+            { id: '7', type: 'bullet', content: 'High-risk business with only 1 out of 100 investments typically succeeding.', color: 'default' },
+            { id: '8', type: 'bullet', content: 'Success rates vary significantly between established and new VC firms.', color: 'gray' },
+            { id: '9', type: 'bullet', content: 'Equity investments can result in total loss if the company fails.', color: 'default' }
         ]
     },
-    platformImprovements: {
-        title: 'Platform Team Highlights',
+    perspectivesOnVC: {
+        title: 'Perspectives on VC Practices',
         blocks: [
-            { id: '10', type: 'bullet', content: 'Geo observability enhancements for system health monitoring.', color: 'default' },
-            { id: '11', type: 'bullet', content: 'Backup and restore tool decoupling for improved load times.', color: 'gray' },
-            { id: '12', type: 'bullet', content: 'User remappings via CSV for smoother project migrations.', color: 'default' }
+            { id: '10', type: 'bullet', content: 'Comparison of VCs to the evolution of surgeons highlights growth potential.', color: 'default' },
+            { id: '11', type: 'bullet', content: 'Role of trust in the people behind startups as a key investment factor.', color: 'gray' },
+            { id: '12', type: 'bullet', content: 'Challenges in maintaining value and protecting investments discussed.', color: 'default' }
         ]
     },
-    securityEnhancements: {
-        title: 'Security and Compliance Updates',
+    personalReflections: {
+        title: 'Personal Reflections and Insights',
         blocks: [
-            { id: '13', type: 'bullet', content: 'Custom permissions for managed security testing.', color: 'default' },
-            { id: '14', type: 'bullet', content: 'Ability to override detected vulnerability severity.', color: 'gray' },
-            { id: '15', type: 'bullet', content: 'Advanced SAST support for PHP.', color: 'default' }
-        ]
-    },
-    dataScienceAdvances: {
-        title: 'Data Science Enhancements',
-        blocks: [
-            { id: '16', type: 'bullet', content: 'AI-powered stage improvements for generative AI in Duo.', color: 'default' },
-            { id: '17', type: 'bullet', content: 'Self-hosted AI Gateway configurations streamlined.', color: 'gray' },
-            { id: '18', type: 'bullet', content: 'Enhanced Duo chat functionality and context injection.', color: 'default' }
+            { id: '13', type: 'bullet', content: 'Importance of the ability to “get things done” highlighted.', color: 'default' },
+            { id: '14', type: 'bullet', content: 'Inspirations from Steve Jobs and his approach to innovation.', color: 'gray' },
+            { id: '15', type: 'bullet', content: 'Reflections on the significance of academic and early professional experiences.', color: 'default' }
         ]
     },
     closingRemarks: {
-        title: 'Closing Notes',
+        title: 'Closing Remarks',
         blocks: [
-            { id: '19', type: 'bullet', content: 'Excitement for to-do list and PHP advancements.', color: 'default' },
-            { id: '20', type: 'bullet', content: 'Recognition of Duo improvements enhancing productivity.', color: 'gray' },
-            { id: '21', type: 'bullet', content: 'Encouragement for team efforts and milestone achievements.', color: 'default' }
+            { id: '16', type: 'bullet', content: 'Appreciation for the conversation and insights shared.', color: 'default' },
+            { id: '17', type: 'bullet', content: 'Emphasis on the lasting impact of early professional relationships.', color: 'gray' },
+            { id: '18', type: 'bullet', content: 'Host expresses gratitude for the guest’s participation.', color: 'default' }
         ]
     }
 });
@@ -146,10 +138,42 @@ export default function Home() {
     };
   }, []);
 
-  const handleRecordingStop = () => {
+  const handleRecordingStop = async () => {
     setIsRecording(false);
     setIsSummaryLoading(true);
-    // Show summary after 3 seconds
+
+    // Format transcripts into a document
+    const formattedTranscript = transcripts
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+      .map(t => `[${t.timestamp}] ${t.text}`)
+      .join('\n\n');
+
+    const documentContent = `Meeting Title: ${meetingTitle}\nDate: ${new Date().toLocaleString()}\n\nTranscript:\n${formattedTranscript}`;
+
+    try {
+      // Get app data directory
+      const { appDataDir } = await import('@tauri-apps/api/path');
+      const { invoke } = await import('@tauri-apps/api/core');
+      
+      const dataDir = await appDataDir();
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const transcriptPath = `${dataDir}transcript-${timestamp}.txt`;
+
+      // Save transcript using Tauri command
+      await invoke('save_transcript', { 
+        filePath: transcriptPath,
+        content: documentContent
+      });
+
+      console.log('Transcript saved to:', transcriptPath);
+      // Show path in UI using alert for now
+      alert(`Transcript saved to: ${transcriptPath}`);
+    } catch (error) {
+      console.error('Failed to save transcript:', error);
+      alert('Failed to save transcript. Check console for details.');
+    }
+
+    // Show summary after saving transcript
     setTimeout(() => {
       setShowSummary(true);
       setIsSummaryLoading(false);
@@ -201,11 +225,9 @@ export default function Home() {
             <EditableTitle
               title={meetingTitle}
               isEditing={isEditingTitle}
-              onEditStart={() => setIsEditingTitle(true)}
-              onEditEnd={(newTitle) => {
-                setMeetingTitle(newTitle);
-                setIsEditingTitle(false);
-              }}
+              onStartEditing={() => setIsEditingTitle(true)}
+              onFinishEditing={() => setIsEditingTitle(false)}
+              onChange={handleTitleChange}
             />
           </div>
 

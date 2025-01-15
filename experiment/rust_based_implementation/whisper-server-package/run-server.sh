@@ -2,8 +2,8 @@
 
 # Default configuration
 HOST="127.0.0.1"
-PORT="8080"
-MODEL="models/ggml-small.en.bin"
+PORT="8178"
+MODEL="models/ggml-small.bin"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do

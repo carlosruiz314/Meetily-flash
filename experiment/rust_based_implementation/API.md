@@ -18,7 +18,7 @@ The Whisper.cpp Live Transcription API provides real-time speech-to-text transcr
 |--------|-------------|---------|
 | `-m, --model` | Path to the Whisper model file | Required |
 | `-h, --host` | Host to bind the server | "127.0.0.1" |
-| `-p, --port` | Port to bind the server | 8080 |
+| `-p, --port` | Port to bind the server | 8178 |
 | `-t, --threads` | Number of threads to use | 4 |
 | `-c, --context` | Maximum context size | 16384 |
 | `-l, --language` | Language to use for transcription | "auto" |
@@ -185,7 +185,7 @@ impl AudioStreamer {
 
                 // Send request
                 let response = self.client
-                    .post("http://localhost:8080/stream")
+                    .post("http://localhost:8178/stream")
                     .multipart(form)
                     .send()
                     .await?;
