@@ -1,2 +1,10 @@
+pydantic
+pydantic-ai==0.0.19
+pandas
+devtools
+chromadb
+python-dotenv
 fastapi
 uvicorn
+python-multipart
+aiosqlite
