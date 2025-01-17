@@ -78,6 +78,9 @@ export default function Home() {
 
   const [isCollapsed, setIsCollapsed] = useState(false);
 
+  const [summaryStatus, setSummaryStatus] = useState<'idle' | 'processing' | 'summarizing' | 'completed' | 'error'>('idle');
+  const [summaryError, setSummaryError] = useState<string | null>(null);
+
   const { setCurrentMeeting } = useSidebar();
 
   useEffect(() => {
@@ -244,28 +247,134 @@ export default function Home() {
   };
 
   const generateAISummary = useCallback(async () => {
+    setSummaryStatus('processing');
+    setSummaryError(null);
+
     try {
-      const fullTranscript = transcripts.map(t => t.text).join(' ');
-      const response = await fetch('http://localhost:5167/process', {
+      const fullTranscript = transcripts.map(t => t.text).join('\n');
+      if (!fullTranscript.trim()) {
+        throw new Error('No transcript text available. Please add some text first.');
+      }
+      
+      console.log('Generating summary for transcript length:', fullTranscript.length);
+      
+      // Step 1: Process the transcript
+      console.log('Step 1: Processing transcript...');
+      const processResponse = await fetch('http://localhost:5167/process-transcript', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          transcript: fullTranscript,
-          metadata: {
-            date: new Date().toISOString(),
-          }
+          text: fullTranscript,
+          chunk_size: 5000,
+          overlap: 1000
         })
       });
 
-      if (response.ok) {
-        const summaryResponse = await response.json();
-        setAiSummary(summaryResponse);
-      } else {
-        const errorText = await response.text();
-        console.error('Summary server error:', errorText);
+      if (!processResponse.ok) {
+        const errorData = await processResponse.json().catch(() => ({ detail: 'Failed to process transcript' }));
+        console.error('Process transcript failed:', errorData);
+        throw new Error(errorData.detail || 'Failed to process transcript');
+      }
+
+      const processResult = await processResponse.json();
+      console.log('Process transcript response:', processResult);
+
+      setSummaryStatus('summarizing');
+
+      // Step 2: Start summarization
+      console.log('Step 2: Starting summarization...');
+      const startResponse = await fetch('http://localhost:5167/start-summarization', {
+        method: 'POST'
+      });
+
+      if (!startResponse.ok) {
+        const errorData = await startResponse.json().catch(() => ({ detail: 'Failed to start summarization' }));
+        console.error('Start summarization failed:', errorData);
+        throw new Error(errorData.detail || 'Failed to start summarization');
+      }
+
+      const { process_id } = await startResponse.json();
+      if (!process_id) {
+        throw new Error('No process ID received from server');
+      }
+      console.log('Received process_id:', process_id);
+
+      // Step 3: Poll for summary with retry logic
+      const maxRetries = 30;
+      const retryDelay = 2000;
+
+      for (let i = 0; i < maxRetries; i++) {
+        console.log(`Polling attempt ${i + 1}/${maxRetries}`);
+        await new Promise(resolve => setTimeout(resolve, retryDelay));
+
+        const summaryResponse = await fetch(`http://localhost:5167/get-summary/${process_id}`);
+        if (!summaryResponse.ok) {
+          const errorData = await summaryResponse.json().catch(() => ({ detail: 'Failed to get summary' }));
+          console.error('Summary response error:', errorData);
+          if (i === maxRetries - 1) {
+            throw new Error(errorData.detail || 'Failed to get summary after maximum retries');
+          }
+          continue;
+        }
+
+        const summaryData = await summaryResponse.json();
+        console.log('Received summary data:', summaryData);
+
+        // Check if still processing
+        if (summaryData.status && summaryData.status !== 'COMPLETED') {
+          console.log(`Summary status: ${summaryData.status}`);
+          if (i === maxRetries - 1) {
+            throw new Error('Summary generation timed out');
+          }
+          continue;
+        }
+
+        // Validate summary data structure
+        if (!summaryData.summary || typeof summaryData.summary !== 'object') {
+          console.warn('Received invalid summary data structure');
+          if (i === maxRetries - 1) {
+            throw new Error('Invalid summary data structure received from server');
+          }
+          continue;
+        }
+
+        // Validate each section has the required fields
+        const isValidSummary = Object.entries(summaryData.summary).every(([_, section]: [string, any]) => {
+          return (
+            section &&
+            typeof section === 'object' &&
+            Array.isArray(section.blocks) &&
+            section.blocks.every((block: any) =>
+              block.id &&
+              block.type &&
+              typeof block.content === 'string' &&
+              (!block.color || typeof block.color === 'string')
+            )
+          );
+        });
+
+        if (!isValidSummary) {
+          console.warn('Summary data failed validation');
+          if (i === maxRetries - 1) {
+            throw new Error('Invalid summary data format received from server');
+          }
+          continue;
+        }
+
+        // Store usage information if available
+        if (summaryData.usage) {
+          console.log('Summary generation usage:', summaryData.usage);
+        }
+
+        setAiSummary(summaryData.summary);
+        setSummaryStatus('completed');
+        break;
       }
     } catch (error) {
       console.error('Failed to generate summary:', error);
+      setSummaryError(error instanceof Error ? error.message : 'An unexpected error occurred');
+      setSummaryStatus('error');
+      setAiSummary(null);
     }
   }, [transcripts]);
 
@@ -281,6 +390,21 @@ export default function Home() {
   const handleTitleChange = (newTitle: string) => {
     setMeetingTitle(newTitle);
     setCurrentMeeting({ id: 'intro-call', title: newTitle });
+  };
+
+  const getSummaryStatusMessage = () => {
+    switch (summaryStatus) {
+      case 'processing':
+        return 'Processing transcript...';
+      case 'summarizing':
+        return 'Generating AI summary...';
+      case 'completed':
+        return 'Summary generated successfully!';
+      case 'error':
+        return summaryError || 'An error occurred while generating the summary';
+      default:
+        return '';
+    }
   };
 
   return (
@@ -375,10 +499,23 @@ export default function Home() {
                   )}
                 </div>
               )}
-              <AISummary 
-                summary={aiSummary} 
-                onSummaryChange={handleSummaryChange}
-              />
+              <div className="flex-1 overflow-y-auto p-4">
+                <AISummary 
+                  summary={aiSummary} 
+                  status={summaryStatus} 
+                  error={summaryError}
+                  onSummaryChange={(newSummary) => setAiSummary(newSummary)}
+                />
+              </div>
+              {summaryStatus !== 'idle' && (
+                <div className={`mt-4 p-4 rounded-lg ${
+                  summaryStatus === 'error' ? 'bg-red-100 text-red-700' :
+                  summaryStatus === 'completed' ? 'bg-green-100 text-green-700' :
+                  'bg-blue-100 text-blue-700'
+                }`}>
+                  <p className="text-sm font-medium">{getSummaryStatusMessage()}</p>
+                </div>
+              )}
             </div>
           )}
         </div>

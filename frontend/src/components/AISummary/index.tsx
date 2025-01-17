@@ -1,16 +1,31 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { Summary, Block } from '@/types';
 import { Section } from './Section';
 import { EditableTitle } from '../EditableTitle';
+import { ExclamationTriangleIcon, CheckCircleIcon, ClipboardDocumentCheckIcon } from '@heroicons/react/24/outline';
 
-interface AISummaryProps {
-  summary: Summary;
+interface Props {
+  summary: Summary | null;
+  status: 'processing' | 'summarizing' | 'completed' | 'error';
+  error: string | null;
   onSummaryChange: (summary: Summary) => void;
 }
 
-export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }) => {
+export const AISummary = ({ summary, status, error, onSummaryChange }: Props) => {
+  const currentSummary = useMemo(() => {
+    if (!summary) {
+      return {
+        Agenda: { title: "Agenda", blocks: [] },
+        Decisions: { title: "Decisions", blocks: [] },
+        ActionItems: { title: "Action Items", blocks: [] },
+        ClosingRemarks: { title: "Closing Remarks", blocks: [] }
+      };
+    }
+    return summary;
+  }, [summary]);
+
   const [selectedBlocks, setSelectedBlocks] = useState<string[]>([]);
   const [lastSelectedBlock, setLastSelectedBlock] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -18,13 +33,13 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
   const hiddenInputRef = useRef<HTMLTextAreaElement>(null);
 
   // History management
-  const [history, setHistory] = useState<Summary[]>([summary]);
+  const [history, setHistory] = useState<Summary[]>([currentSummary]);
   const [currentHistoryIndex, setCurrentHistoryIndex] = useState(0);
   const [isUndoRedoing, setIsUndoRedoing] = useState(false);
 
   // Add to history when summary changes
   useEffect(() => {
-    if (!isUndoRedoing) {
+    if (!isUndoRedoing && summary) {  // Only update history if summary is not null
       const newHistory = history.slice(0, currentHistoryIndex + 1);
       newHistory.push(summary);
       setHistory(newHistory);
@@ -53,7 +68,7 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
 
   const getAllBlocks = () => {
     const allBlocks: { id: string; sectionKey: string }[] = [];
-    Object.entries(summary).forEach(([sectionKey, section]) => {
+    Object.entries(currentSummary).forEach(([sectionKey, section]) => {
       section.blocks.forEach(block => {
         allBlocks.push({ id: block.id, sectionKey });
       });
@@ -62,7 +77,7 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
   };
 
   const findBlockAndSection = (blockId: string) => {
-    for (const [sectionKey, section] of Object.entries(summary)) {
+    for (const [sectionKey, section] of Object.entries(currentSummary)) {
       const block = section.blocks.find(b => b.id === blockId);
       if (block) {
         return { block, sectionKey };
@@ -130,10 +145,10 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
 
   const handleBlockChange = (sectionKey: keyof Summary, blockId: string, newContent: string) => {
     onSummaryChange({
-      ...summary,
+      ...currentSummary,
       [sectionKey]: {
-        ...summary[sectionKey],
-        blocks: summary[sectionKey].blocks.map(block => 
+        ...currentSummary[sectionKey],
+        blocks: currentSummary[sectionKey].blocks.map(block => 
           block.id === blockId ? { ...block, content: newContent } : block
         )
       }
@@ -143,7 +158,7 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
   const handleBlockTypeChange = (blockId: string, newType: Block['type']) => {
     // Find the section key for this block
     let blockSectionKey: string | null = null;
-    for (const [sectionKey, section] of Object.entries(summary)) {
+    for (const [sectionKey, section] of Object.entries(currentSummary)) {
       if (section.blocks.some(b => b.id === blockId)) {
         blockSectionKey = sectionKey;
         break;
@@ -153,10 +168,10 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
     if (!blockSectionKey) return;
 
     onSummaryChange({
-      ...summary,
+      ...currentSummary,
       [blockSectionKey]: {
-        ...summary[blockSectionKey],
-        blocks: summary[blockSectionKey].blocks.map(block => 
+        ...currentSummary[blockSectionKey],
+        blocks: currentSummary[blockSectionKey].blocks.map(block => 
           block.id === blockId ? { ...block, type: newType } : block
         )
       }
@@ -166,9 +181,9 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
   const handleTitleChange = (sectionKey: keyof Summary, newTitle: string) => {
     console.log('Title change:', { sectionKey, newTitle });
     const updatedSummary = {
-      ...summary,
+      ...currentSummary,
       [sectionKey]: {
-        ...summary[sectionKey],
+        ...currentSummary[sectionKey],
         title: newTitle
       }
     };
@@ -179,7 +194,7 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
   const handleKeyDown = (e: React.KeyboardEvent, blockId: string) => {
     // Find the section key for this block
     let blockSectionKey: string | null = null;
-    for (const [sectionKey, section] of Object.entries(summary)) {
+    for (const [sectionKey, section] of Object.entries(currentSummary)) {
       if (section.blocks.some(b => b.id === blockId)) {
         blockSectionKey = sectionKey;
         break;
@@ -190,8 +205,8 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
 
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      const currentBlock = summary[blockSectionKey].blocks.find(b => b.id === blockId);
-      const currentBlockIndex = summary[blockSectionKey].blocks.findIndex(b => b.id === blockId);
+      const currentBlock = currentSummary[blockSectionKey].blocks.find(b => b.id === blockId);
+      const currentBlockIndex = currentSummary[blockSectionKey].blocks.findIndex(b => b.id === blockId);
       
       if (!currentBlock) return;
       
@@ -201,7 +216,7 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
       const textAfterCursor = currentBlock.content.substring(cursorPosition || 0);
       
       // Update the current block's content to only include text before cursor
-      const updatedBlocks = [...summary[blockSectionKey].blocks];
+      const updatedBlocks = [...currentSummary[blockSectionKey].blocks];
       updatedBlocks[currentBlockIndex] = {
         ...currentBlock,
         content: textBeforeCursor
@@ -219,9 +234,9 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
       });
       
       onSummaryChange({
-        ...summary,
+        ...currentSummary,
         [blockSectionKey]: {
-          ...summary[blockSectionKey],
+          ...currentSummary[blockSectionKey],
           blocks: updatedBlocks
         }
       });
@@ -246,7 +261,7 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
   const handleBlockDelete = (blockId: string) => {
     // Find the section key for this block
     let blockSectionKey: string | null = null;
-    for (const [sectionKey, section] of Object.entries(summary)) {
+    for (const [sectionKey, section] of Object.entries(currentSummary)) {
       if (section.blocks.some(b => b.id === blockId)) {
         blockSectionKey = sectionKey;
         break;
@@ -255,13 +270,13 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
 
     if (!blockSectionKey) return;
 
-    const currentBlockIndex = summary[blockSectionKey].blocks.findIndex(b => b.id === blockId);
-    const updatedBlocks = summary[blockSectionKey].blocks.filter(block => block.id !== blockId);
+    const currentBlockIndex = currentSummary[blockSectionKey].blocks.findIndex(b => b.id === blockId);
+    const updatedBlocks = currentSummary[blockSectionKey].blocks.filter(block => block.id !== blockId);
     
     onSummaryChange({
-      ...summary,
+      ...currentSummary,
       [blockSectionKey]: {
-        ...summary[blockSectionKey],
+        ...currentSummary[blockSectionKey],
         blocks: updatedBlocks
       }
     });
@@ -280,8 +295,8 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
   const getSelectedBlocksContent = useCallback(() => {
     return selectedBlocks
       .map(blockId => {
-        for (const sectionKey of Object.keys(summary) as Array<keyof Summary>) {
-          const block = summary[sectionKey].blocks.find(b => b.id === blockId);
+        for (const sectionKey of Object.keys(currentSummary) as Array<keyof Summary>) {
+          const block = currentSummary[sectionKey].blocks.find(b => b.id === blockId);
           if (block) {
             return block.content;
           }
@@ -290,7 +305,7 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
       })
       .filter(Boolean)
       .join('\n');
-  }, [selectedBlocks, summary]);
+  }, [selectedBlocks, currentSummary]);
 
   useEffect(() => {
     if (hiddenInputRef.current && selectedBlocks.length > 1) {
@@ -316,8 +331,8 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
           }
         } else if (e.key === 'c') {
           const blockContents = selectedBlocks.map(blockId => {
-            for (const sectionKey of Object.keys(summary) as Array<keyof Summary>) {
-              const block = summary[sectionKey].blocks.find(b => b.id === blockId);
+            for (const sectionKey of Object.keys(currentSummary) as Array<keyof Summary>) {
+              const block = currentSummary[sectionKey].blocks.find(b => b.id === blockId);
               if (block) {
                 return block.content;
               }
@@ -339,13 +354,13 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
       document.removeEventListener('mouseup', handleMouseUp);
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [selectedBlocks, summary, handleUndo, handleRedo]);
+  }, [selectedBlocks, currentSummary, handleUndo, handleRedo]);
 
   const handleDeleteSelectedBlocks = () => {
     // Group selected blocks by section
     const blocksBySection = new Map<string, string[]>();
     selectedBlocks.forEach(blockId => {
-      Object.entries(summary).forEach(([sectionKey, section]) => {
+      Object.entries(currentSummary).forEach(([sectionKey, section]) => {
         if (section.blocks.some(b => b.id === blockId)) {
           const blocks = blocksBySection.get(sectionKey) || [];
           blocks.push(blockId);
@@ -355,7 +370,7 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
     });
 
     // Create new summary with blocks removed
-    const newSummary = { ...summary };
+    const newSummary = { ...currentSummary };
     blocksBySection.forEach((blockIds, sectionKey) => {
       newSummary[sectionKey] = {
         ...newSummary[sectionKey],
@@ -405,16 +420,16 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
   };
 
   const handleSectionDelete = (sectionKey: keyof Summary) => {
-    const newSummary = { ...summary };
+    const newSummary = { ...currentSummary };
     delete newSummary[sectionKey];
     onSummaryChange(newSummary);
   };
 
   const handleAddSection = () => {
-    const newSectionKey = `section${Object.keys(summary).length + 1}`;
+    const newSectionKey = `section${Object.keys(currentSummary).length + 1}`;
     const newBlockId = Date.now().toString();
     const newSummary: Summary = {
-      ...summary,
+      ...currentSummary,
       [newSectionKey]: {
         title: 'New Section',
         blocks: [{
@@ -435,7 +450,7 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
   const convertToMarkdown = () => {
     let markdown = '';
     
-    Object.entries(summary).forEach(([key, section]) => {
+    Object.entries(currentSummary).forEach(([key, section]) => {
       if (key === 'title') {
         markdown = `# ${section.title || 'AI Enhanced Summary'}\n\n`;
       } else {
@@ -472,12 +487,60 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${summary.title || 'ai-summary'}.md`;
+    a.download = `${currentSummary.title || 'ai-summary'}.md`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
+
+  const renderErrorState = () => (
+    <div className="w-full p-4 bg-red-50 border border-red-200 rounded-lg">
+      <div className="flex items-center mb-2">
+        <ExclamationTriangleIcon className="h-5 w-5 text-red-500 mr-2" />
+        <h3 className="text-red-700 font-medium">Error Generating Summary</h3>
+      </div>
+      <p className="text-red-600 text-sm">{error}</p>
+      <p className="text-red-500 text-xs mt-2">Please try again or contact support if the issue persists.</p>
+    </div>
+  );
+
+  const renderLoadingState = () => (
+    <div className="w-full p-4 bg-blue-50 border border-blue-200 rounded-lg">
+      <div className="flex items-center space-x-3">
+        <div className="animate-spin rounded-full h-5 w-5 border-2 border-blue-500 border-t-transparent"></div>
+        <div>
+          <h3 className="text-blue-700 font-medium">
+            {status === 'processing' ? 'Processing Transcript' : 'Generating Summary'}
+          </h3>
+          <p className="text-blue-600 text-sm">
+            {status === 'processing' 
+              ? 'Analyzing your transcript...' 
+              : 'Creating a detailed summary of your meeting...'}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+
+  if (error) {
+    return renderErrorState();
+  }
+
+  if (status === 'processing' || status === 'summarizing') {
+    return renderLoadingState();
+  }
+
+  const hasContent = Object.values(currentSummary).some(section => section?.blocks?.length > 0);
+
+  if (!hasContent && status === 'completed') {
+    return (
+      <div className="w-full p-4 bg-gray-50 border border-gray-200 rounded-lg text-center">
+        <p className="text-gray-600">No summary content available.</p>
+        <p className="text-gray-500 text-sm mt-1">Try generating a new summary.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="relative">
@@ -610,7 +673,7 @@ export const AISummary: React.FC<AISummaryProps> = ({ summary, onSummaryChange }
         </div>
       </div>
 
-      {Object.entries(summary).map(([key, section]) => (
+      {Object.entries(currentSummary).map(([key, section]) => (
         <Section
           key={key}
           section={section}
