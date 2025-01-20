@@ -6,6 +6,9 @@ instance/*
 !instance/.gitignore
 .webassets-cache
 .env
+transcripts/
+chroma
+*.db
 
 ### Flask.Python Stack ###
 # Byte-compiled / optimized / DLL files
