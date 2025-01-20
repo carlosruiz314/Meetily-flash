@@ -13,7 +13,7 @@ import asyncio
 from functools import partial
 import json
 from threading import Lock
-from Anthropic_transcript import (
+from Groq_Transcript import (
     TranscriptProcessor, MeetingSummarizer, SummaryResponse,
     SYSTEM_PROMPT, Agent, RunContext
 )
@@ -58,10 +58,10 @@ class SummaryProcessor:
             self._lock = Lock()
             
             # Load API key and validate
-            api_key = os.getenv('ANTHROPIC_API_KEY')
+            api_key = os.getenv('GROQ_API_KEY')
             if not api_key:
-                logger.error("ANTHROPIC_API_KEY environment variable not set")
-                raise ValueError("ANTHROPIC_API_KEY environment variable not set")
+                logger.error("GROQ_API_KEY environment variable not set")
+                raise ValueError("GROQ_API_KEY environment variable not set")
             
             logger.info("Initializing SummaryProcessor components")
             self.transcript_processor = TranscriptProcessor()

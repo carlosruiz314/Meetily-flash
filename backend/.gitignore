@@ -7,7 +7,7 @@ instance/*
 .webassets-cache
 .env
 transcripts/
-chroma
+chroma/
 *.db
 
 ### Flask.Python Stack ###
