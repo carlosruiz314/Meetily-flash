@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "meeting-minutes-frontend",
   "version": "0.1.0",
-  "identifier": "com.tauri.dev",
+  "identifier": "com.meetly.ai",
   "build": {
     "frontendDist": "../out",
     "devUrl": "http://localhost:3000",
@@ -22,7 +22,29 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": null,
+      "capabilities": [
+        {
+          "identifier": "main",
+          "description": "Main window capability with file system access",
+          "windows": ["main"],
+          "permissions": [
+            "fs:default",
+            "fs:allow-read-file",
+            "fs:read-all",
+            "fs:allow-app-read",
+            "fs:allow-app-write",
+            "core:path:default",
+            "core:event:default",
+            "core:window:default",
+            "core:app:default",
+            "core:resources:default",
+            "core:menu:default",
+            "core:tray:default",
+            "core:window:allow-set-title"
+          ]
+        }
+      ]
     }
   },
   "bundle": {

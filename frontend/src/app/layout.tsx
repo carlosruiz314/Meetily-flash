@@ -22,7 +22,7 @@ export default function RootLayout({
       <body className={`${sourceSans3.variable} font-sans`}>
         <SidebarProvider>
           <div className="titlebar h-8 w-full fixed top-0 left-0 bg-transparent" />
-          <div className="flex pt-8">
+          <div className="flex">
             <Sidebar />
             <MainContent>{children}</MainContent>
           </div>

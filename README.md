@@ -86,17 +86,18 @@ Key Components:
 ### 1. Frontend Setup
 
 ```bash
+
+# Clone the screenpipe repository
+git clone https://github.com/mediar-ai/screenpipe.git
+
 # Navigate to frontend directory
 cd frontend
 
-# Install dependencies
-npm install
+# Give execute permissions to clean_build.sh
+chmod +x clean_build.sh
 
-# Start development server (Terminal 1)
-npm run dev
-
-# Start Electron app (Terminal 2)
-npm start
+# run clean_build.sh
+./clean_build.sh
 ```
 
 ### 2. Backend Setup

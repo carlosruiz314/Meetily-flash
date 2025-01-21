@@ -26,8 +26,6 @@ export default function Home() {
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [aiSummary, setAiSummary] = useState<Summary>({
     podcastOverview: {
-
-      
         title: 'Podcast Discussion Highlights',
         blocks: [
             { id: '1', type: 'bullet', content: 'Exploration of venture capital (VC) sourcing strategies and challenges.', color: 'default' },
@@ -77,6 +75,7 @@ export default function Home() {
     }
 });
 
+
   const [isCollapsed, setIsCollapsed] = useState(false);
 
   const { setCurrentMeeting } = useSidebar();
@@ -103,13 +102,14 @@ export default function Home() {
 
   useEffect(() => {
     let unlistenFn: (() => void) | undefined;
+    let transcriptCounter = 0;  // Counter for unique IDs
 
     const setupListener = async () => {
       try {
         unlistenFn = await listen<TranscriptUpdate>('transcript-update', (event) => {
           console.log('Received transcript update:', event.payload);
           const newTranscript = {
-            id: Date.now().toString(),
+            id: `${Date.now()}-${transcriptCounter++}`,  // Combine timestamp with counter for uniqueness
             text: event.payload.text,
             timestamp: event.payload.timestamp,
           };
@@ -138,10 +138,42 @@ export default function Home() {
     };
   }, []);
 
-  const handleRecordingStop = () => {
+  const handleRecordingStop = async () => {
     setIsRecording(false);
     setIsSummaryLoading(true);
-    // Show summary after 3 seconds
+
+    // Format transcripts into a document
+    const formattedTranscript = transcripts
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime())
+      .map(t => `[${t.timestamp}] ${t.text}`)
+      .join('\n\n');
+
+    const documentContent = `Meeting Title: ${meetingTitle}\nDate: ${new Date().toLocaleString()}\n\nTranscript:\n${formattedTranscript}`;
+
+    try {
+      // Get app data directory
+      const { appDataDir } = await import('@tauri-apps/api/path');
+      const { invoke } = await import('@tauri-apps/api/core');
+      
+      const dataDir = await appDataDir();
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const transcriptPath = `${dataDir}transcript-${timestamp}.txt`;
+
+      // Save transcript using Tauri command
+      await invoke('save_transcript', { 
+        filePath: transcriptPath,
+        content: documentContent
+      });
+
+      console.log('Transcript saved to:', transcriptPath);
+      // Show path in UI using alert for now
+      alert(`Transcript saved to: ${transcriptPath}`);
+    } catch (error) {
+      console.error('Failed to save transcript:', error);
+      alert('Failed to save transcript. Check console for details.');
+    }
+
+    // Show summary after saving transcript
     setTimeout(() => {
       setShowSummary(true);
       setIsSummaryLoading(false);
@@ -188,17 +220,22 @@ export default function Home() {
       <div className="flex flex-1 overflow-hidden">
         {/* Left side - Transcript */}
         <div className="w-1/3 min-w-[300px] border-r border-gray-200 bg-white flex flex-col relative">
+          {/* Title area */}
           <div className="p-4 border-b border-gray-200">
             <EditableTitle
               title={meetingTitle}
               isEditing={isEditingTitle}
-              onEdit={setMeetingTitle}
-              onEditingChange={setIsEditingTitle}
+              onStartEditing={() => setIsEditingTitle(true)}
+              onFinishEditing={() => setIsEditingTitle(false)}
+              onChange={handleTitleChange}
             />
           </div>
+
+          {/* Transcript content */}
           <div className="flex-1 overflow-y-auto pb-32">
             <TranscriptView transcripts={transcripts} />
           </div>
+
           {/* Recording controls with improved positioning */}
           <div className="absolute bottom-16 left-1/2 transform -translate-x-1/2 z-10">
             <div className="bg-white rounded-full shadow-lg">
@@ -223,7 +260,7 @@ export default function Home() {
             </div>
           ) : showSummary && (
             <div className="max-w-4xl mx-auto p-6">
-              <AISummary summary={aiSummary} onSummaryChange={setAiSummary} />
+              <AISummary summary={aiSummary} />
             </div>
           )}
         </div>
