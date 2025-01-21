@@ -128,15 +128,28 @@ export const BlockComponent: React.FC<BlockProps> = ({
     } else if (e.key === 'Enter') {
       if (!e.shiftKey) {
         e.preventDefault();
-        const cursorPosition = textareaRef.current?.selectionStart || 0;
+        const textarea = textareaRef.current;
+        if (!textarea) return;
+
+        const cursorPosition = textarea.selectionStart || 0;
+        const selectionEnd = textarea.selectionEnd || cursorPosition;
+        
+        // Get the text before and after the cursor/selection
         const textBeforeCursor = block.content.substring(0, cursorPosition);
-        const textAfterCursor = block.content.substring(cursorPosition);
+        const textAfterCursor = block.content.substring(selectionEnd);
         
         // Update current block with text before cursor
         onChange(textBeforeCursor);
         
-        // Create new block with text after cursor (handled by parent)
-        onKeyDown(e);
+        // Pass the text after cursor to parent for new block
+        if (textAfterCursor) {
+          e.currentTarget.dataset.newBlockContent = textAfterCursor;
+          onKeyDown(e);
+        } else {
+          // If no text after cursor, still create new empty block
+          e.currentTarget.dataset.newBlockContent = '';
+          onKeyDown(e);
+        }
       }
     } else if (e.key === 'Backspace' && onDelete) {
       const textarea = textareaRef.current;
@@ -145,11 +158,16 @@ export const BlockComponent: React.FC<BlockProps> = ({
       const cursorPosition = textarea.selectionStart || 0;
       const selectionLength = (textarea.selectionEnd || 0) - cursorPosition;
       
-      // Only delete block if:
-      // 1. Content is empty and backspace is pressed at the start
-      // 2. Multiple blocks are selected (handled by parent)
+      // Only delete block if cursor is at start and content is empty
       if (block.content === '' && cursorPosition === 0 && selectionLength === 0) {
         e.preventDefault();
+        // Store cursor position in dataset for parent component
+        e.currentTarget.dataset.cursorPosition = '0';
+        onDelete();
+      } else if (cursorPosition === 0 && selectionLength === 0) {
+        // If at start of block but has content, merge with previous block
+        e.preventDefault();
+        e.currentTarget.dataset.mergeContent = block.content;
         onDelete();
       }
     } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && onNavigate) {
@@ -224,8 +242,13 @@ export const BlockComponent: React.FC<BlockProps> = ({
         <textarea
           ref={textareaRef}
           value={block.content}
+          data-block-id={block.id}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
+          onMouseDown={onMouseDown}
+          onMouseEnter={onMouseEnter}
+          onMouseUp={onMouseUp}
+          onContextMenu={onContextMenu}
           rows={1}
           className={`
             w-full resize-none overflow-hidden bg-transparent border-none p-0 focus:outline-none focus:ring-0

@@ -15,10 +15,10 @@ interface SectionProps {
   onBlockMouseDown: (blockId: string, e: React.MouseEvent<HTMLDivElement>) => void;
   onBlockMouseEnter: (blockId: string) => void;
   onBlockMouseUp: (blockId: string, e: React.MouseEvent<HTMLDivElement>) => void;
-  onKeyDown: (e: React.KeyboardEvent, blockId: string) => void;
+  onKeyDown: (e: React.KeyboardEvent, blockId: string, newBlockContent?: string) => void;
   onTitleChange?: (sectionKey: string, title: string) => void;
   onSectionDelete?: (sectionKey: string) => void;
-  onBlockDelete: (blockId: string) => void;
+  onBlockDelete: (blockId: string, mergeContent?: string) => void;
   onContextMenu: (e: React.MouseEvent) => void;
   onBlockNavigate?: (blockId: string, direction: 'up' | 'down', cursorPosition: number) => void;
 }
@@ -99,8 +99,15 @@ export const Section: React.FC<SectionProps> = ({
               onMouseDown={(e) => onBlockMouseDown(block.id, e)}
               onMouseEnter={() => onBlockMouseEnter(block.id)}
               onMouseUp={(e) => onBlockMouseUp(block.id, e)}
-              onKeyDown={(e) => onKeyDown(e, block.id)}
-              onDelete={() => onBlockDelete(block.id)}
+              onKeyDown={(e) => {
+                const newBlockContent = (e.currentTarget as HTMLTextAreaElement).dataset.newBlockContent;
+                onKeyDown(e, block.id, newBlockContent);
+              }}
+              onDelete={() => {
+                const textarea = document.querySelector(`[data-block-id="${block.id}"]`) as HTMLTextAreaElement;
+                const mergeContent = textarea?.dataset.mergeContent;
+                onBlockDelete(block.id, mergeContent);
+              }}
               onContextMenu={onContextMenu}
               onNavigate={onBlockNavigate ? 
                 (direction, cursorPosition) => onBlockNavigate(block.id, direction, cursorPosition)

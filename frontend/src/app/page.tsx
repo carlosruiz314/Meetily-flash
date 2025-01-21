@@ -9,6 +9,8 @@ import { AISummary } from '@/components/AISummary';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import MainNav from '@/components/MainNav';
 import { listen } from '@tauri-apps/api/event';
+import { writeTextFile } from '@tauri-apps/plugin-fs';
+import { downloadDir } from '@tauri-apps/api/path';
 
 interface TranscriptUpdate {
   text: string;
@@ -258,9 +260,9 @@ export default function Home() {
       
       console.log('Generating summary for transcript length:', fullTranscript.length);
       
-      // Step 1: Process the transcript
-      console.log('Step 1: Processing transcript...');
-      const processResponse = await fetch('http://localhost:5167/process-transcript', {
+      // Process transcript and get summary in one call
+      console.log('Processing transcript and generating summary...');
+      const response = await fetch('http://localhost:5167/process-transcript', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -270,106 +272,37 @@ export default function Home() {
         })
       });
 
-      if (!processResponse.ok) {
-        const errorData = await processResponse.json().catch(() => ({ detail: 'Failed to process transcript' }));
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: 'Failed to process transcript' }));
         console.error('Process transcript failed:', errorData);
         throw new Error(errorData.detail || 'Failed to process transcript');
       }
 
-      const processResult = await processResponse.json();
-      console.log('Process transcript response:', processResult);
+      const result = await response.json();
+      console.log('Process transcript response:', result);
 
-      setSummaryStatus('summarizing');
-
-      // Step 2: Start summarization
-      console.log('Step 2: Starting summarization...');
-      const startResponse = await fetch('http://localhost:5167/start-summarization', {
-        method: 'POST'
-      });
-
-      if (!startResponse.ok) {
-        const errorData = await startResponse.json().catch(() => ({ detail: 'Failed to start summarization' }));
-        console.error('Start summarization failed:', errorData);
-        throw new Error(errorData.detail || 'Failed to start summarization');
+      // Validate the response structure
+      if (!result.data) {
+        throw new Error('Invalid response format from server');
       }
 
-      const { process_id } = await startResponse.json();
-      if (!process_id) {
-        throw new Error('No process ID received from server');
-      }
-      console.log('Received process_id:', process_id);
+      // Format the summary data with consistent styling
+      const formattedSummary = Object.entries(result.data).reduce((acc: Summary, [key, section]: [string, any]) => {
+        acc[key] = {
+          title: section.title,
+          blocks: section.blocks.map((block: any) => ({
+            ...block,
+            type: 'bullet',
+            color: 'default',
+            content: block.content.trim() // Remove trailing newlines
+          }))
+        };
+        return acc;
+      }, {} as Summary);
 
-      // Step 3: Poll for summary with retry logic
-      const maxRetries = 30;
-      const retryDelay = 2000;
-
-      for (let i = 0; i < maxRetries; i++) {
-        console.log(`Polling attempt ${i + 1}/${maxRetries}`);
-        await new Promise(resolve => setTimeout(resolve, retryDelay));
-
-        const summaryResponse = await fetch(`http://localhost:5167/get-summary/${process_id}`);
-        if (!summaryResponse.ok) {
-          const errorData = await summaryResponse.json().catch(() => ({ detail: 'Failed to get summary' }));
-          console.error('Summary response error:', errorData);
-          if (i === maxRetries - 1) {
-            throw new Error(errorData.detail || 'Failed to get summary after maximum retries');
-          }
-          continue;
-        }
-
-        const summaryData = await summaryResponse.json();
-        console.log('Received summary data:', summaryData);
-
-        // Check if still processing
-        if (summaryData.status && summaryData.status !== 'COMPLETED') {
-          console.log(`Summary status: ${summaryData.status}`);
-          if (i === maxRetries - 1) {
-            throw new Error('Summary generation timed out');
-          }
-          continue;
-        }
-
-        // Validate summary data structure
-        if (!summaryData.summary || typeof summaryData.summary !== 'object') {
-          console.warn('Received invalid summary data structure');
-          if (i === maxRetries - 1) {
-            throw new Error('Invalid summary data structure received from server');
-          }
-          continue;
-        }
-
-        // Validate each section has the required fields
-        const isValidSummary = Object.entries(summaryData.summary).every(([_, section]: [string, any]) => {
-          return (
-            section &&
-            typeof section === 'object' &&
-            Array.isArray(section.blocks) &&
-            section.blocks.every((block: any) =>
-              block.id &&
-              block.type &&
-              typeof block.content === 'string' &&
-              (!block.color || typeof block.color === 'string')
-            )
-          );
-        });
-
-        if (!isValidSummary) {
-          console.warn('Summary data failed validation');
-          if (i === maxRetries - 1) {
-            throw new Error('Invalid summary data format received from server');
-          }
-          continue;
-        }
-
-        // Store usage information if available
-        if (summaryData.usage) {
-          console.log('Summary generation usage:', summaryData.usage);
-        }
-
-        setAiSummary(summaryData.summary);
-        setSummaryStatus('completed');
-        break;
-      }
+      setAiSummary(formattedSummary);
+      setSummaryStatus('completed');
+      
     } catch (error) {
       console.error('Failed to generate summary:', error);
       setSummaryError(error instanceof Error ? error.message : 'An unexpected error occurred');
@@ -407,6 +340,58 @@ export default function Home() {
     }
   };
 
+  const handleDownloadTranscript = async () => {
+    try {
+      // Create transcript object with metadata
+      const transcriptData = {
+        title: meetingTitle,
+        timestamp: new Date().toISOString(),
+        transcripts: transcripts
+      };
+
+      // Generate filename
+      const sanitizedTitle = meetingTitle.replace(/[^a-zA-Z0-9]/g, '_');
+      const filename = `${sanitizedTitle}_transcript.json`;
+      
+      // Get download directory path
+      const downloadPath = await downloadDir();
+      
+      // Write file to downloads directory
+      await writeTextFile(`${downloadPath}/${filename}`, JSON.stringify(transcriptData, null, 2));
+
+      console.log('Transcript saved successfully to:', `${downloadPath}/${filename}`);
+      alert('Transcript downloaded successfully!');
+    } catch (error) {
+      console.error('Failed to save transcript:', error);
+      alert('Failed to save transcript. Please try again.');
+    }
+  };
+
+  const handleUploadTranscript = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text);
+      
+      // Validate the uploaded file structure
+      if (!data.transcripts || !Array.isArray(data.transcripts)) {
+        throw new Error('Invalid transcript file format');
+      }
+
+      // Update state with uploaded data
+      setMeetingTitle(data.title || 'Uploaded Transcript');
+      setTranscripts(data.transcripts);
+      
+      // Generate summary for the uploaded transcript
+      handleSummary(data.transcripts);
+    } catch (error) {
+      console.error('Error uploading transcript:', error);
+      alert('Failed to upload transcript. Please make sure the file format is correct.');
+    }
+  };
+
   return (
     <div className="flex flex-col h-screen bg-gray-50">
       <MainNav title={meetingTitle} />
@@ -415,13 +400,37 @@ export default function Home() {
         <div className="w-1/3 min-w-[300px] border-r border-gray-200 bg-white flex flex-col relative">
           {/* Title area */}
           <div className="p-4 border-b border-gray-200">
-            <EditableTitle
-              title={meetingTitle}
-              isEditing={isEditingTitle}
-              onStartEditing={() => setIsEditingTitle(true)}
-              onFinishEditing={() => setIsEditingTitle(false)}
-              onChange={handleTitleChange}
-            />
+            <div className="flex items-center justify-between">
+              <EditableTitle
+                title={meetingTitle}
+                isEditing={isEditingTitle}
+                onStartEditing={() => setIsEditingTitle(true)}
+                onFinishEditing={() => setIsEditingTitle(false)}
+                onChange={handleTitleChange}
+              />
+              <div className="flex items-center">
+                <button
+                  onClick={handleDownloadTranscript}
+                  className="ml-2 p-2 text-gray-600 hover:text-gray-800 rounded-full hover:bg-gray-100"
+                  title="Download Transcript"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 16.5m0 0L7.5 12m4.5 4.5V3" />
+                  </svg>
+                </button>
+                <label className="ml-2 p-2 text-gray-600 hover:text-gray-800 rounded-full hover:bg-gray-100 cursor-pointer" title="Upload Transcript">
+                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 7.5m0 0L7.5 12m4.5-4.5v12" />
+                  </svg>
+                  <input
+                    type="file"
+                    accept=".json"
+                    onChange={handleUploadTranscript}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+            </div>
           </div>
 
           {/* Transcript content */}
