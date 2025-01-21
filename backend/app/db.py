@@ -26,7 +26,10 @@ class DatabaseManager:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     result TEXT,
-                    error TEXT
+                    error TEXT,
+                    chunk_count INTEGER DEFAULT 0,
+                    processing_time REAL DEFAULT 0.0,
+                    metadata TEXT
                 )
             """)
             conn.commit()
@@ -54,34 +57,42 @@ class DatabaseManager:
         
         return process_id
 
-    async def update_process(self, process_id: str, status: str, result: Optional[Dict] = None, error: Optional[str] = None):
+    async def update_process(self, process_id: str, status: str, result: Optional[Dict] = None, error: Optional[str] = None, 
+                           chunk_count: Optional[int] = None, processing_time: Optional[float] = None, 
+                           metadata: Optional[Dict] = None):
         """Update a process status and result"""
         now = datetime.utcnow().isoformat()
         
         async with self._get_connection() as conn:
+            update_fields = ["status = ?", "updated_at = ?"]
+            params = [status, now]
+            
             if result:
-                result_json = json.dumps(result)
-                await conn.execute(
-                    "UPDATE summary_processes SET status = ?, updated_at = ?, result = ? WHERE id = ?",
-                    (status, now, result_json, process_id)
-                )
-            elif error:
-                await conn.execute(
-                    "UPDATE summary_processes SET status = ?, updated_at = ?, error = ? WHERE id = ?",
-                    (status, now, error, process_id)
-                )
-            else:
-                await conn.execute(
-                    "UPDATE summary_processes SET status = ?, updated_at = ? WHERE id = ?",
-                    (status, now, process_id)
-                )
+                update_fields.append("result = ?")
+                params.append(json.dumps(result))
+            if error:
+                update_fields.append("error = ?")
+                params.append(error)
+            if chunk_count is not None:
+                update_fields.append("chunk_count = ?")
+                params.append(chunk_count)
+            if processing_time is not None:
+                update_fields.append("processing_time = ?")
+                params.append(processing_time)
+            if metadata:
+                update_fields.append("metadata = ?")
+                params.append(json.dumps(metadata))
+                
+            params.append(process_id)
+            query = f"UPDATE summary_processes SET {', '.join(update_fields)} WHERE id = ?"
+            await conn.execute(query, params)
             await conn.commit()
 
     async def get_process(self, process_id: str) -> Optional[Dict[str, Any]]:
         """Get a process by its ID"""
         async with self._get_connection() as conn:
             async with conn.execute(
-                "SELECT id, status, created_at, updated_at, result, error FROM summary_processes WHERE id = ?",
+                "SELECT id, status, created_at, updated_at, result, error, chunk_count, processing_time, metadata FROM summary_processes WHERE id = ?",
                 (process_id,)
             ) as cursor:
                 row = await cursor.fetchone()
@@ -93,13 +104,17 @@ class DatabaseManager:
                     "id": row[0],
                     "status": row[1],
                     "created_at": row[2],
-                    "updated_at": row[3]
+                    "updated_at": row[3],
+                    "chunk_count": row[6],
+                    "processing_time": row[7]
                 }
                 
                 if row[4]:  # result
                     result["result"] = json.loads(row[4])
                 if row[5]:  # error
                     result["error"] = row[5]
+                if row[8]:  # metadata
+                    result["metadata"] = json.loads(row[8])
                     
                 return result
 

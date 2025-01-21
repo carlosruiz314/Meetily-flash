@@ -1,4 +1,5 @@
 from chromadb import Client as ChromaClient, Settings
+from groq import file_from_path
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 from pydantic_ai import Agent, RunContext
@@ -99,7 +100,7 @@ class TranscriptProcessor:
             except Exception as e:
                 logger.error(f"Error during cleanup: {e}")
     
-    def process_transcript(self, transcript_path: str, chunk_size: int = 5000, overlap: int = 1000):
+    async def process_transcript(self, text: str = None, transcript_path: str = None, chunk_size: int = 5000, overlap: int = 1000):
         """Process and store transcript in chunks"""
         try:
             # Clear any existing collection
@@ -114,30 +115,90 @@ class TranscriptProcessor:
                 if os.path.exists(transcript_path):
                     with open(transcript_path, 'r') as f:
                         transcript = f.read()
+                    logger.info(f"Loaded transcript from file: {transcript_path}")
                 else:
                     transcript = transcript_path
             else:
-                transcript = transcript_path
+                transcript = text
             
+            logger.info(f"Processing transcript of length {len(transcript)} with chunk_size={chunk_size}, overlap={overlap}")
+
             # Split transcript into chunks
             chunks = [transcript[i:i+chunk_size] for i in range(0, len(transcript), chunk_size-overlap)]
             
             # Add chunks to collection
             if not self.collection:
                 self.initialize_collection()
-                
+
+            all_json_data = []
+
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            model = AnthropicModel('claude-3-5-sonnet-latest', api_key=api_key)
+            agent = Agent(
+                model, 
+                result_type=SummaryResponse, 
+                result_retries=15, 
+            )
+            
             for i, chunk in enumerate(chunks):
+                logger.info(f"Adding chunk {i} to collection {chunk[:20]}......")
+                # Run the summary with proper tool response handling
+                
+
+                summary = await agent.run(
+                    f"""Given is a meeting transcript {chunk}. If no data made, just return [] for the field. example - if no action item in chunk, simply respond with ActionItems: block []
+                    Each block content shall be very descriptive. It should give context
+                    Please give json out and don't add anything else like </function> or final_result> or anything within tags. Just plain json data""",
+                )
+                
+                # Handle the summary result
+                if hasattr(summary, 'data'):
+                    logger.info(f",.,AAA,.,.Successfully generated summary for process {summary.data}, {type(summary.data)}")
+                    pretty_print_json(summary.data)
+                    final_summary = summary.data
+                else:
+                    logger.info(f",.,.,.,.,.,.Successfully generated summary for process {summary}")
+                    pretty_print_json(summary)
+                    final_summary = summary
+                
+                # Convert the final_summary which is in <class '__main__.SummaryResponse'> to json
+                total_summary_in_pydantic = final_summary
+
+                # Validate summary has content
+                if not any([
+                    total_summary_in_pydantic.Agenda.blocks,
+                    total_summary_in_pydantic.Decisions.blocks,
+                    total_summary_in_pydantic.ActionItems.blocks,
+                    total_summary_in_pydantic.ClosingRemarks.blocks
+                ]):
+                    raise ValueError("No content found in summary")
+                
+                total_summary_in_json = json.dumps(total_summary_in_pydantic.dict(), indent=2)
+                logger.info(f"JSON Successfully generated summary for process {total_summary_in_json}")
+
+
+                all_json_data.append(total_summary_in_json)
+                
+                
                 self.collection.add(
                     documents=[chunk],
-                    metadatas=[{"source": f"chunk_{i}", "processed": False}],
+                    metadatas=[
+                        {
+                            "source": f"chunk_{i}", 
+                            "processed": False,
+                            "type": "transcript",
+                            "summary": total_summary_in_json
+                            }
+                        ],
                     ids=[f"id_{i}"]
                 )
+                
             
             logger.info(f"Added {len(chunks)} chunks to collection")
-            return len(chunks)
+            return len(chunks), all_json_data
             
         except Exception as e:
-            logger.error(f"Error processing transcript: {e}")
+            logger.error(f"Error processing transcript: {str(e)}", exc_info=True)
             raise
 
 class MeetingSummarizer:
@@ -386,20 +447,77 @@ def pretty_print_json(obj):
 # Example usage
 if __name__ == "__main__":
     try:
-        # Process a transcript
-        num_chunks = processor.process_transcript('transcripts/susi_transcript.txt')
-        logger.info(f"Processed transcript into {num_chunks} chunks")
-        
-        # Run the summary with proper tool response handling
-        summary = agent.run_sync(
-            'What is the summary of the following meeting? Please process one query at a time and wait for responses.'
-        )
-        
-        # Handle the summary result
-        if hasattr(summary, 'data'):
-            pretty_print_json(summary.data)
+        import asyncio
+        loop = asyncio.get_event_loop()
+        transcript_path = './transcripts/leadm.txt'
+        logger.info(f"Processing transcript from {transcript_path}")
+        if not os.path.exists(transcript_path):
+            raise ValueError(f"File not found: {transcript_path}")
+        elif not os.path.isfile(transcript_path):
+            raise ValueError(f"Path is not a file: {transcript_path}")
         else:
-            pretty_print_json(summary)
+            logger.info(f"File exists and is a file: {transcript_path}")
+        
+        num_chunks, all_json = loop.run_until_complete(
+            processor.process_transcript(transcript_path=transcript_path)
+        )
+        logger.info(f"Processed transcript into {num_chunks} chunks")
+        logger.info(f"Successfully processed transcript into {all_json} chunks, type {type(all_json)}")
+        
+        # I have a list of all the JSON objects which has {Agenda : {title, blocks}, Decisions: {title, blocks}, ActionItems: {title, blocks}}
+        # The blocks are a list of {id, type, content, color}
+
+        # I want to combine all the JSON objects into one JSON object which has {Agenda : {title, blocks}, Decisions: {title, blocks}, ActionItems: {title, blocks}}
+
+        # Create a new JSON object
+        final_summary = {
+            "Agenda": {
+                "title": "Agenda",
+                "blocks": []
+            },
+            "Decisions": {
+                "title": "Decisions",
+                "blocks": []
+            },
+            "ActionItems": {
+                "title": "Action Items",
+                "blocks": []
+            },
+            "ClosingRemarks": {
+                "title": "Closing Remarks",
+                "blocks": []
+            }
+        }
+        
+        # save all_json to a file
+        with open('all_json.json', 'w') as f:
+            json.dump(all_json, f, indent=2)
+
+
+        # Add all the blocks from all the JSON objects to the new JSON object
+        for json_obj in all_json:
+            logger.info(f"Processing JSON object {json_obj}, type {type(json_obj)}")
+            # Convert the JSON object to a dictionary
+            json_dict = json.loads(json_obj)
+            # Add the blocks from the dictionary to the new JSON object
+            final_summary["Agenda"]["blocks"].extend(json_dict["Agenda"]["blocks"])
+            final_summary["Decisions"]["blocks"].extend(json_dict["Decisions"]["blocks"])
+            final_summary["ActionItems"]["blocks"].extend(json_dict["ActionItems"]["blocks"])
+            final_summary["ClosingRemarks"]["blocks"].extend(json_dict["ClosingRemarks"]["blocks"])
+
+            
+        logger.info(f"Final summary: {final_summary}")
+        
+        # Convert the new JSON object to a string
+        final_summary_str = json.dumps(final_summary, indent=2)
+        logger.info(f"Final summary string: {final_summary_str}")
+        # Save the string to a file
+        with open("final_summary.json", "w") as f:
+            f.write(final_summary_str)
+
+        # Print the final summary
+        logger.info(f"Final summary: {final_summary}")
+
             
     except Exception as e:
         logger.error(f"Error during summarization: {str(e)}")

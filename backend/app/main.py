@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uvicorn
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import logging
 from datetime import datetime
 import os
@@ -13,7 +13,7 @@ import asyncio
 from functools import partial
 import json
 from threading import Lock
-from Groq_Transcript import (
+from Anthropic_transcript import (
     TranscriptProcessor, MeetingSummarizer, SummaryResponse,
     SYSTEM_PROMPT, Agent, RunContext
 )
@@ -22,9 +22,24 @@ import uuid
 # Load environment variables
 load_dotenv()
 
-# Set up logging
-logging.basicConfig(level=logging.INFO)
+# Configure logger with line numbers and function names
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+
+# Create console handler with formatting
+console_handler = logging.StreamHandler()
+console_handler.setLevel(logging.DEBUG)
+
+# Create formatter with line numbers and function names
+formatter = logging.Formatter(
+    '%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d - %(funcName)s()] - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+console_handler.setFormatter(formatter)
+
+# Add handler to logger if not already added
+if not logger.handlers:
+    logger.addHandler(console_handler)
 
 app = FastAPI(
     title="Meeting Summarizer API",
@@ -50,6 +65,13 @@ class TranscriptRequest(BaseModel):
     overlap: Optional[int] = 1000
 
 
+class TranscriptResponse(BaseModel):
+    """Response model for transcript processing"""
+    message: str
+    num_chunks: int
+    data: Dict[str, Any]
+
+
 class SummaryProcessor:
     """Handles the processing of summaries in a thread-safe way"""
     def __init__(self):
@@ -58,10 +80,10 @@ class SummaryProcessor:
             self._lock = Lock()
             
             # Load API key and validate
-            api_key = os.getenv('GROQ_API_KEY')
+            api_key = os.getenv('ANTHROPIC_API_KEY')
             if not api_key:
-                logger.error("GROQ_API_KEY environment variable not set")
-                raise ValueError("GROQ_API_KEY environment variable not set")
+                logger.error("ANTHROPIC_API_KEY environment variable not set")
+                raise ValueError("ANTHROPIC_API_KEY environment variable not set")
             
             logger.info("Initializing SummaryProcessor components")
             self.transcript_processor = TranscriptProcessor()
@@ -77,11 +99,24 @@ class SummaryProcessor:
             logger.error(f"Failed to initialize SummaryProcessor: {str(e)}", exc_info=True)
             raise
 
-    async def process_transcript(self, text: str, chunk_size: int = 5000, overlap: int = 1000) -> int:
+    async def process_transcript(self, text: str, chunk_size: int = 5000, overlap: int = 1000) -> tuple:
         """Process a transcript text"""
         try:
             if not text:
                 raise ValueError("Empty transcript text provided")
+            
+            # Validate chunk_size and overlap
+            if chunk_size <= 0:
+                raise ValueError("chunk_size must be positive")
+            if overlap < 0:
+                raise ValueError("overlap must be non-negative")
+            if overlap >= chunk_size:
+                overlap = chunk_size - 1  # Ensure overlap is less than chunk_size
+            
+            # Ensure step size is positive
+            step_size = chunk_size - overlap
+            if step_size <= 0:
+                chunk_size = overlap + 1  # Adjust chunk_size to ensure positive step
                 
             logger.info("Initializing ChromaDB collection")
             self.transcript_processor.initialize_collection()
@@ -91,10 +126,15 @@ class SummaryProcessor:
                 raise ValueError("Failed to initialize ChromaDB collection")
             
             logger.info(f"Processing transcript of length {len(text)} with chunk_size={chunk_size}, overlap={overlap}")
-            num_chunks = self.transcript_processor.process_transcript(text, chunk_size, overlap)
+            # Pass text as positional arg, chunk_size and overlap as keyword args
+            num_chunks, all_json_data = await self.transcript_processor.process_transcript(
+                text=text,  # Pass as keyword arg to be explicit
+                chunk_size=chunk_size,
+                overlap=overlap
+            )
             logger.info(f"Successfully processed transcript into {num_chunks} chunks")
             
-            return num_chunks
+            return num_chunks, all_json_data
         except Exception as e:
             logger.error(f"Error processing transcript: {str(e)}", exc_info=True)
             raise
@@ -356,21 +396,64 @@ async def get_final_summary(ctx: RunContext) -> SummaryResponse:
         logger.error(f"Error generating final summary: {str(e)}", exc_info=True)
         raise
 
-@app.post("/process-transcript")
-async def process_transcript(transcript: TranscriptRequest) -> Dict[str, str]:
+@app.post("/process-transcript", response_model=TranscriptResponse)
+async def process_transcript(transcript: TranscriptRequest) -> TranscriptResponse:
     """Process a transcript text"""
     logger.info("Received request to process transcript")
     try:
+        # Process the transcript
         logger.info(f"Processing transcript with chunk_size={transcript.chunk_size}, overlap={transcript.overlap}")
-        num_chunks = await processor.process_transcript(
+        logger.info(f"Transcript text: {len(transcript.text)} characters")
+        num_chunks, all_json_data = await processor.process_transcript(
             transcript.text,
             chunk_size=transcript.chunk_size,
             overlap=transcript.overlap
         )
         logger.info(f"Successfully processed transcript into {num_chunks} chunks")
-        return {"message": f"Successfully processed transcript into {num_chunks} chunks"}
+        
+        # Convert all_json_data to list of dictionaries if it's not already
+        if isinstance(all_json_data, str):
+            json_data = json.loads(all_json_data)
+        elif isinstance(all_json_data, list):
+            json_data = all_json_data
+        else:
+            json_data = [all_json_data] if all_json_data else []
+        final_summary = {
+            "Agenda": {
+                "title": "Agenda",
+                "blocks": []
+            },
+            "Decisions": {
+                "title": "Decisions",
+                "blocks": []
+            },
+            "ActionItems": {
+                "title": "Action Items",
+                "blocks": []
+            },
+            "ClosingRemarks": {
+                "title": "Closing Remarks",
+                "blocks": []
+            }
+        }
+        # Add all the blocks from all the JSON objects to the new JSON object
+        for json_obj in all_json_data:
+            logger.info(f"Processing JSON object {json_obj}, type {type(json_obj)}")
+            # Convert the JSON object to a dictionary
+            json_dict = json.loads(json_obj)
+            # Add the blocks from the dictionary to the new JSON object
+            final_summary["Agenda"]["blocks"].extend(json_dict["Agenda"]["blocks"])
+            final_summary["Decisions"]["blocks"].extend(json_dict["Decisions"]["blocks"])
+            final_summary["ActionItems"]["blocks"].extend(json_dict["ActionItems"]["blocks"])
+            final_summary["ClosingRemarks"]["blocks"].extend(json_dict["ClosingRemarks"]["blocks"])
+        
+        return TranscriptResponse(
+            message="Successfully processed transcript",
+            num_chunks=num_chunks,
+            data=final_summary
+        )
     except Exception as e:
-        logger.error(f"Error processing transcript: {e}", exc_info=True)
+        logger.error(f"Error processing transcript: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/upload-transcript")

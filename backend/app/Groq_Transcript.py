@@ -99,7 +99,7 @@ class TranscriptProcessor:
             except Exception as e:
                 logger.error(f"Error during cleanup: {e}")
     
-    def process_transcript(self, transcript_path: str, chunk_size: int = 5000, overlap: int = 1000):
+    def process_transcript(self, transcript_path: str, chunk_size: int = 5000, overlap: int = 400):
         """Process and store transcript in chunks"""
         try:
             # Clear any existing collection
@@ -115,9 +115,9 @@ class TranscriptProcessor:
                     with open(transcript_path, 'r') as f:
                         transcript = f.read()
                 else:
-                    transcript = transcript_path
-            else:
-                transcript = transcript_path
+                    raise ValueError(f"File not found: {transcript_path}")
+          
+            transcript = transcript.replace('\n', ' ')
             
             # Split transcript into chunks
             chunks = [transcript[i:i+chunk_size] for i in range(0, len(transcript), chunk_size-overlap)]
@@ -127,9 +127,54 @@ class TranscriptProcessor:
                 self.initialize_collection()
                 
             for i, chunk in enumerate(chunks):
+                logger.info(f"Adding chunk {i} to collection {chunk[:20]}......")
+                # Run the summary with proper tool response handling
+                api_key = os.getenv("OPENAI_API_KEY")
+                model = GroqModel('llama-3.1-70b-versatile', api_key=api_key)
+                agent = Agent(
+                    model, 
+                    result_type=SummaryResponse, 
+                    result_retries=15, 
+                    # system_prompt=SYSTEM_PROMPT
+                )
+
+                summary = agent.run_sync(
+                    f"""Given is a meeting transcript {chunk}. If no data made, just eturn [] for the field. example - if no action item in chunk, simply respond with ActionItems: block []
+                    Each block content shall be very descriptve. It should give context
+                    Please give json out and don't add anything else like </function> or final_result> or anything within tags. Just plain json data""",
+                )
+                
+                # Handle the summary result
+                if hasattr(summary, 'data'):
+                    pretty_print_json(summary.data)
+                else:
+                    pretty_print_json(summary)
+
+                total_summary_in_pydantic = summarizer.generate_summary(summary.data)
+                logger.info(f"Successfully generated summary for process {total_summary_in_pydantic}")
+                # # Validate summary has content
+                # if not any([
+                #     total_summary_in_pydantic.Agenda.blocks,
+                #     total_summary_in_pydantic.Decisions.blocks,
+                #     total_summary_in_pydantic.ActionItems.blocks,
+                #     total_summary_in_pydantic.ClosingRemarks.blocks
+                # ]):
+                #     raise ValueError("No content found in summary")
+
+                # Convert to JSON using Pydantic's json() method
+                json_data = total_summary_in_pydantic.model_dump_json(indent=2)
+                raw_summary = json.loads(json_data)
+                
                 self.collection.add(
                     documents=[chunk],
-                    metadatas=[{"source": f"chunk_{i}", "processed": False}],
+                    metadatas=[
+                        {
+                            "source": f"chunk_{i}", 
+                            "processed": False,
+                            "type": "transcript",
+                            "summary": json_data
+                            }
+                        ],
                     ids=[f"id_{i}"]
                 )
             
@@ -423,9 +468,7 @@ def pretty_print_json(obj):
 if __name__ == "__main__":
     try:
         # Process a transcript
-        num_chunks = processor.process_transcript('../transcripts/susi_transcript.txt')
-        logger.info(f"Processed transcript into {num_chunks} chunks")
-        
+        num_chunks = processor.process_transcript('transcripts/susi_transcript.txt')
         # Run the summary with proper tool response handling
         summary = agent.run_sync(
             'What is the summary of the following meeting? Please process one query at a time and wait for responses.'
@@ -436,6 +479,9 @@ if __name__ == "__main__":
             pretty_print_json(summary.data)
         else:
             pretty_print_json(summary)
+        logger.info(f"Processed transcript into {num_chunks} chunks")
+        
+        
             
     except Exception as e:
         logger.error(f"Error during summarization: {str(e)}")
