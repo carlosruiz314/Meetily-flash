@@ -4,10 +4,13 @@ from pydantic import BaseModel
 from typing import List, Dict, Optional
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models.ollama import OllamaModel
+from pydantic_ai.models.groq import GroqModel
 import json
 import logging
 import uuid
 import os
+import argparse
 from dotenv import load_dotenv
 
 # Set up logging
@@ -100,7 +103,7 @@ class TranscriptProcessor:
             except Exception as e:
                 logger.error(f"Error during cleanup: {e}")
     
-    async def process_transcript(self, text: str = None, transcript_path: str = None, chunk_size: int = 5000, overlap: int = 1000):
+    async def process_transcript(self, text: str = None, model="claude", model_name="claude-3-5-sonnet-latest", transcript_path: str = None, chunk_size: int = 5000, overlap: int = 1000):
         """Process and store transcript in chunks"""
         try:
             # Clear any existing collection
@@ -132,13 +135,32 @@ class TranscriptProcessor:
 
             all_json_data = []
 
-            api_key = os.getenv("ANTHROPIC_API_KEY")
-            model = AnthropicModel('claude-3-5-sonnet-latest', api_key=api_key)
-            agent = Agent(
-                model, 
-                result_type=SummaryResponse, 
-                result_retries=15, 
-            )
+            if model == "claude":
+                api_key = os.getenv("ANTHROPIC_API_KEY")
+                model = AnthropicModel(model_name, api_key=api_key)
+                agent = Agent(
+                    model, 
+                    result_type=SummaryResponse, 
+                    result_retries=15, 
+                )
+            elif model == "ollama":
+                api_key = os.getenv("ANTHROPIC_API_KEY")
+                model = OllamaModel(model_name)
+                agent = Agent(
+                    model,
+                    result_type=SummaryResponse,
+                    result_retries=15,
+                )
+            elif model == "groq":
+                api_key = os.getenv("GROQ_API_KEY")
+                model = GroqModel(model_name, api_key=api_key)
+                agent = Agent(
+                    model, 
+                    result_type=SummaryResponse, 
+                    result_retries=15, 
+                )
+            else:
+                raise ValueError(f"Invalid model: {model}")
             
             for i, chunk in enumerate(chunks):
                 logger.info(f"Adding chunk {i} to collection {chunk[:20]}......")
@@ -447,29 +469,35 @@ def pretty_print_json(obj):
 # Example usage
 if __name__ == "__main__":
     try:
+        # Set up argument parser
+        parser = argparse.ArgumentParser(description='Process a meeting transcript using AI.')
+        parser.add_argument('--transcript_path', type=str, help='Path to the transcript file')
+        parser.add_argument('--model', type=str, default='claude', choices=['groq', 'claude'], 
+                          help='Model to use for processing (default: claude)')
+        parser.add_argument('--model_name', type=str, default='claude-3-5-sonnet-latest', 
+                          help='Name of the model to use for processing (default: claude-3-5-sonnet-latest)')
+        args = parser.parse_args()
+
+        # Validate transcript path
+        if not os.path.exists(args.transcript_path):
+            raise ValueError(f"File not found: {args.transcript_path}")
+        elif not os.path.isfile(args.transcript_path):
+            raise ValueError(f"Path is not a file: {args.transcript_path}")
+        else:
+            logger.info(f"File exists and is a file: {args.transcript_path}")
+
+        # Set up async loop
         import asyncio
         loop = asyncio.get_event_loop()
-        transcript_path = './transcripts/leadm.txt'
-        logger.info(f"Processing transcript from {transcript_path}")
-        if not os.path.exists(transcript_path):
-            raise ValueError(f"File not found: {transcript_path}")
-        elif not os.path.isfile(transcript_path):
-            raise ValueError(f"Path is not a file: {transcript_path}")
-        else:
-            logger.info(f"File exists and is a file: {transcript_path}")
         
+        # Process transcript
         num_chunks, all_json = loop.run_until_complete(
-            processor.process_transcript(transcript_path=transcript_path)
+            processor.process_transcript(model=args.model, model_name=args.model_name, transcript_path=args.transcript_path)
         )
         logger.info(f"Processed transcript into {num_chunks} chunks")
         logger.info(f"Successfully processed transcript into {all_json} chunks, type {type(all_json)}")
         
-        # I have a list of all the JSON objects which has {Agenda : {title, blocks}, Decisions: {title, blocks}, ActionItems: {title, blocks}}
-        # The blocks are a list of {id, type, content, color}
-
-        # I want to combine all the JSON objects into one JSON object which has {Agenda : {title, blocks}, Decisions: {title, blocks}, ActionItems: {title, blocks}}
-
-        # Create a new JSON object
+        # Create a new JSON object for final summary
         final_summary = {
             "Agenda": {
                 "title": "Agenda",
@@ -489,36 +517,29 @@ if __name__ == "__main__":
             }
         }
         
-        # save all_json to a file
+        # Save raw JSON
         with open('all_json.json', 'w') as f:
             json.dump(all_json, f, indent=2)
 
-
-        # Add all the blocks from all the JSON objects to the new JSON object
+        # Combine all JSON objects
         for json_obj in all_json:
             logger.info(f"Processing JSON object {json_obj}, type {type(json_obj)}")
-            # Convert the JSON object to a dictionary
             json_dict = json.loads(json_obj)
-            # Add the blocks from the dictionary to the new JSON object
             final_summary["Agenda"]["blocks"].extend(json_dict["Agenda"]["blocks"])
             final_summary["Decisions"]["blocks"].extend(json_dict["Decisions"]["blocks"])
             final_summary["ActionItems"]["blocks"].extend(json_dict["ActionItems"]["blocks"])
             final_summary["ClosingRemarks"]["blocks"].extend(json_dict["ClosingRemarks"]["blocks"])
-
             
         logger.info(f"Final summary: {final_summary}")
         
-        # Convert the new JSON object to a string
+        # Save final summary
         final_summary_str = json.dumps(final_summary, indent=2)
-        logger.info(f"Final summary string: {final_summary_str}")
-        # Save the string to a file
         with open("final_summary.json", "w") as f:
             f.write(final_summary_str)
 
-        # Print the final summary
-        logger.info(f"Final summary: {final_summary}")
-
+        logger.info(f"Final summary saved to final_summary.json")
             
     except Exception as e:
         logger.error(f"Error during summarization: {str(e)}")
         processor.cleanup()
+        exit(1)

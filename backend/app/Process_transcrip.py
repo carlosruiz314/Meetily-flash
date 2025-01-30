@@ -1,12 +1,16 @@
-from chromadb import Client as ChromaClient, Settings, api
+from chromadb import Client as ChromaClient, Settings
+from groq import file_from_path
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.models.anthropic import AnthropicModel
+from pydantic_ai.models.ollama import OllamaModel
 from pydantic_ai.models.groq import GroqModel
 import json
 import logging
 import uuid
 import os
+import argparse
 from dotenv import load_dotenv
 
 # Set up logging
@@ -19,14 +23,17 @@ logger = logging.getLogger(__name__)
 load_dotenv()  # Load environment variables from .env file
 
 class Block(BaseModel):
-    """Represents a block of content in a section"""
+    """Represents a block of content in a section
+    Blcks are the basic blocks in this structure. one block contains only one item"""
     id: str
     type: str
     content: str
     color: str
 
 class Section(BaseModel):
-    """Represents a section in the meeting summary"""
+    """Represents a section in the meeting summary
+    One section can have multiple blogs related to the title
+    """
     title: str
     blocks: List[Block]
 
@@ -36,10 +43,32 @@ class ActionItem(BaseModel):
     content: str
 
 class SummaryResponse(BaseModel):
+    """Represents the meeting summary response based on a section of the transcript"""
+    MeetingName : str
+    SectionSummary : Section
+    CriticalDeadlines: Section
+    KeyItemsDecisions: Section
+    ImmediateActionItems: Section
+    NextSteps: Section
+    OtherImportantPoints: Section
+    ClosingRemarks: Section
+
+class MeetingMinutes(BaseModel):
+    """Represents the meeting minutes response based on a section of the transcript. 
+    The information shall have stuff like what is discussed, important dates, etc
+    The section shall not have sub sections but only a title and blocks. Remember to split sub sections and all to blocks"""
+    Section1 : Section
+    Section2 : Section
+    Section3 : Section
+    Section4 : Section
+
+class OverallSummary(BaseModel):
     """Represents the complete meeting summary"""
-    Agenda: Section
-    Decisions: Section
-    ActionItems: Section
+    Agenda : str
+    CriticalDeadlines: Section
+    KeyItemsDecisions: Section
+    ImmediateActionItems: Section
+    NextSteps: Section
     ClosingRemarks: Section
 
 class TranscriptProcessor:
@@ -99,7 +128,7 @@ class TranscriptProcessor:
             except Exception as e:
                 logger.error(f"Error during cleanup: {e}")
     
-    def process_transcript(self, transcript_path: str, chunk_size: int = 5000, overlap: int = 400):
+    async def process_transcript(self, text: str = None, model="claude", model_name="claude-3-5-sonnet-latest", transcript_path: str = None, chunk_size: int = 5000, overlap: int = 1000):
         """Process and store transcript in chunks"""
         try:
             # Clear any existing collection
@@ -114,56 +143,88 @@ class TranscriptProcessor:
                 if os.path.exists(transcript_path):
                     with open(transcript_path, 'r') as f:
                         transcript = f.read()
+                    logger.info(f"Loaded transcript from file: {transcript_path}")
                 else:
-                    raise ValueError(f"File not found: {transcript_path}")
-          
-            transcript = transcript.replace('\n', ' ')
+                    transcript = transcript_path
+            else:
+                transcript = text
             
+            logger.info(f"Processing transcript of length {len(transcript)} with chunk_size={chunk_size}, overlap={overlap}")
+
             # Split transcript into chunks
             chunks = [transcript[i:i+chunk_size] for i in range(0, len(transcript), chunk_size-overlap)]
             
             # Add chunks to collection
             if not self.collection:
                 self.initialize_collection()
-                
-            for i, chunk in enumerate(chunks):
-                logger.info(f"Adding chunk {i} to collection {chunk[:20]}......")
-                # Run the summary with proper tool response handling
-                api_key = os.getenv("OPENAI_API_KEY")
-                model = GroqModel('llama-3.1-70b-versatile', api_key=api_key)
+
+            all_json_data = []
+
+            if model == "claude":
+                api_key = os.getenv("ANTHROPIC_API_KEY")
+                model = AnthropicModel(model_name, api_key=api_key)
                 agent = Agent(
                     model, 
                     result_type=SummaryResponse, 
                     result_retries=15, 
-                    # system_prompt=SYSTEM_PROMPT
                 )
+            elif model == "ollama":
+                api_key = os.getenv("ANTHROPIC_API_KEY")
+                model = OllamaModel(model_name)
+                agent = Agent(
+                    model,
+                    result_type=SummaryResponse,
+                    result_retries=15,
+                )
+            elif model == "groq":
+                api_key = os.getenv("GROQ_API_KEY")
+                model = GroqModel(model_name, api_key=api_key)
+                agent = Agent(
+                    model, 
+                    result_type=SummaryResponse, 
+                    result_retries=15, 
+                )
+            else:
+                raise ValueError(f"Invalid model: {model}")
+            
+            for i, chunk in enumerate(chunks):
+                logger.info(f"Adding chunk {i} to collection {chunk[:20]}......")
+                # Run the summary with proper tool response handling
+                
 
-                summary = agent.run_sync(
-                    f"""Given is a meeting transcript {chunk}. If no data made, just eturn [] for the field. example - if no action item in chunk, simply respond with ActionItems: block []
-                    Each block content shall be very descriptve. It should give context
+                summary = await agent.run(
+                    f"""Given is a meeting transcript {chunk}. If no data made, just return [] for the field. example - if no action item in chunk, simply respond with ActionItems: block []
+                    Each block content shall be very descriptive. It should give context
                     Please give json out and don't add anything else like </function> or final_result> or anything within tags. Just plain json data""",
                 )
                 
                 # Handle the summary result
                 if hasattr(summary, 'data'):
+                    logger.info(f",.,AAA,.,.Successfully generated summary for process {summary.data}, {type(summary.data)}")
                     pretty_print_json(summary.data)
+                    final_summary = summary.data
                 else:
+                    logger.info(f",.,.,.,.,.,.Successfully generated summary for process {summary}")
                     pretty_print_json(summary)
+                    final_summary = summary
+                
+                # Convert the final_summary which is in <class '__main__.SummaryResponse'> to json
+                total_summary_in_pydantic = final_summary
 
-                total_summary_in_pydantic = summarizer.generate_summary(summary.data)
-                logger.info(f"Successfully generated summary for process {total_summary_in_pydantic}")
-                # # Validate summary has content
+
+
+                # Validate summary has content
                 # if not any([
-                #     total_summary_in_pydantic.Agenda.blocks,
-                #     total_summary_in_pydantic.Decisions.blocks,
-                #     total_summary_in_pydantic.ActionItems.blocks,
-                #     total_summary_in_pydantic.ClosingRemarks.blocks
+                #     total_summary_in_pydantic.SummaryResponse.blocks
                 # ]):
                 #     raise ValueError("No content found in summary")
+                
+                total_summary_in_json = json.dumps(total_summary_in_pydantic.dict(), indent=2)
+                logger.info(f"JSON Successfully generated summary for process {total_summary_in_json}")
 
-                # Convert to JSON using Pydantic's json() method
-                json_data = total_summary_in_pydantic.model_dump_json(indent=2)
-                raw_summary = json.loads(json_data)
+
+                all_json_data.append(total_summary_in_json)
+                
                 
                 self.collection.add(
                     documents=[chunk],
@@ -172,25 +233,24 @@ class TranscriptProcessor:
                             "source": f"chunk_{i}", 
                             "processed": False,
                             "type": "transcript",
-                            "summary": json_data
+                            "summary": total_summary_in_json
                             }
                         ],
                     ids=[f"id_{i}"]
                 )
+                
             
             logger.info(f"Added {len(chunks)} chunks to collection")
-            return len(chunks)
+            return len(chunks), all_json_data
             
         except Exception as e:
-            logger.error(f"Error processing transcript: {e}")
+            logger.error(f"Error processing transcript: {str(e)}", exc_info=True)
             raise
 
 class MeetingSummarizer:
     """Handles the meeting summarization using AI models"""
     def __init__(self, api_key: str):
-        logger.info(f"Initializing MeetingSummarizer {api_key}")
-        self.model = GroqModel('llama-3.1-70b-versatile', api_key=api_key)
-
+        self.model = AnthropicModel('claude-3-5-sonnet-latest', api_key=api_key)
         self.Agenda = Section(title="Agenda", blocks=[])
         self.Decisions = Section(title="Decisions", blocks=[])
         self.ActionItems = Section(title="Action Items", blocks=[])
@@ -225,46 +285,12 @@ class MeetingSummarizer:
         
     def generate_summary(self, ctx: RunContext) -> SummaryResponse:
         """Generate the final summary response"""
-        try:
-            # Process the context data if provided
-            if ctx and hasattr(ctx, 'data'):
-                # Extract information from the context data
-                data = ctx.data
-                
-                # Add items to appropriate sections based on the data
-                if isinstance(data, dict):
-                    # Process agenda items
-                    if 'agenda' in data:
-                        for item in data['agenda']:
-                            self.add_agenda_item(ctx, item.get('title', ''), item.get('content', ''))
-                    
-                    # Process decisions
-                    if 'decisions' in data:
-                        for item in data['decisions']:
-                            self.add_decision(ctx, item.get('title', ''), item.get('content', ''))
-                    
-                    # Process action items
-                    if 'action_items' in data:
-                        for item in data['action_items']:
-                            self.add_action_item(ctx, item.get('title', ''), item.get('content', ''))
-                            
-                    # Process closing remarks
-                    if 'closing_remarks' in data:
-                        for item in data['closing_remarks']:
-                            block = self.create_block('', item.get('content', ''), 'closing')
-                            self.ClosingRemarks.blocks.append(block)
-            
-            # Return the summary with all sections
-            return SummaryResponse(
-                Agenda=self.Agenda,
-                Decisions=self.Decisions,
-                ActionItems=self.ActionItems,
-                ClosingRemarks=self.ClosingRemarks
-            )
-            
-        except Exception as e:
-            logger.error(f"Error generating summary: {e}")
-            raise
+        return SummaryResponse(
+            Agenda=self.Agenda,
+            Decisions=self.Decisions,
+            ActionItems=self.ActionItems,
+            ClosingRemarks=self.ClosingRemarks
+        )
 
 SYSTEM_PROMPT = """You are a meeting summarizer agent. Your task is to:
 
@@ -305,7 +331,7 @@ Do not run after CHROMADB_EMPTY is received.
 """
 
 # Initialize components
-summarizer = MeetingSummarizer(api_key=os.getenv("GROQ_API_KEY"))
+summarizer = MeetingSummarizer(api_key=os.getenv("ANTHROPIC_API_KEY"))
 processor = TranscriptProcessor()
 
 # Create an agent first
@@ -467,22 +493,99 @@ def pretty_print_json(obj):
 # Example usage
 if __name__ == "__main__":
     try:
-        # Process a transcript
-        num_chunks = processor.process_transcript('transcripts/susi_transcript.txt')
-        # Run the summary with proper tool response handling
-        summary = agent.run_sync(
-            'What is the summary of the following meeting? Please process one query at a time and wait for responses.'
-        )
-        
-        # Handle the summary result
-        if hasattr(summary, 'data'):
-            pretty_print_json(summary.data)
+        # Set up argument parser
+        parser = argparse.ArgumentParser(description='Process a meeting transcript using AI.')
+        parser.add_argument('--transcript_path', type=str, help='Path to the transcript file')
+        parser.add_argument('--model', type=str, default='claude', choices=['groq', 'claude', 'ollama'], 
+                          help='Model to use for processing (default: claude)')
+        parser.add_argument('--model-name', type=str, default='claude-3-5-sonnet-latest', 
+                          help='Name of the model to use for processing (default: claude-3-5-sonnet-latest)')
+        parser.add_argument('--chunk-size', type=int, default=5000, 
+                          help='Size of the chunks to be used for processing (default: 5000)')
+        parser.add_argument('--overlap', type=int, default=1000, 
+                          help='Overlap between the chunks to be used for processing (default: 1000)')
+        args = parser.parse_args()
+
+        # Validate transcript path
+        if not os.path.exists(args.transcript_path):
+            raise ValueError(f"File not found: {args.transcript_path}")
+        elif not os.path.isfile(args.transcript_path):
+            raise ValueError(f"Path is not a file: {args.transcript_path}")
         else:
-            pretty_print_json(summary)
+            logger.info(f"File exists and is a file: {args.transcript_path}")
+
+        # Set up async loop
+        import asyncio
+        loop = asyncio.get_event_loop()
+        
+        # Process transcript
+        num_chunks, all_json = loop.run_until_complete(
+            processor.process_transcript(model=args.model, model_name=args.model_name, transcript_path=args.transcript_path, chunk_size=args.chunk_size, overlap=args.overlap)
+        )
         logger.info(f"Processed transcript into {num_chunks} chunks")
+        logger.info(f"Successfully processed transcript into {all_json} chunks, type {type(all_json)}")
         
+        # Create a new JSON object for final summary
+        final_summary = {
+            "MeetingName": "",
+            "SectionSummary": {
+                "title": "Section Summary",
+                "blocks": []
+            },
+            "CriticalDeadlines" : {
+                "title": "Critical Deadlines",
+                "blocks": []
+            },
+            "KeyItemsDecisions" : {
+                "title": "Key Items & Decisions",
+                "blocks": []
+            },
+            "ImmediateActionItems" : {
+                "title": "Immediate Action Items",
+                "blocks": []
+            },
+            "NextSteps" : {
+                "title": "Next Steps",
+                "blocks": []
+            },
+            "OtherImportantPoints" : {
+                "title": "Other Important Points",
+                "blocks": []
+            },
+            "ClosingRemarks" : {
+                "title": "Closing Remarks",
+                "blocks": []
+            }
+        }
         
+        # Save raw JSON
+        with open('all_json.json', 'w') as f:
+            json.dump(all_json, f, indent=2)
+            
+
+        # Combine all JSON objects
+        for json_obj in all_json:
+            logger.info(f"Processing JSON object {json_obj}, type {type(json_obj)}")
+            json_dict = json.loads(json_obj)
+            final_summary["MeetingName"] =  json_dict["MeetingName"]
+            final_summary["SectionSummary"]["blocks"].extend(json_dict["SectionSummary"]["blocks"])
+            final_summary["CriticalDeadlines"]["blocks"].extend(json_dict["CriticalDeadlines"]["blocks"])
+            final_summary["KeyItemsDecisions"]["blocks"].extend(json_dict["KeyItemsDecisions"]["blocks"])
+            final_summary["ImmediateActionItems"]["blocks"].extend(json_dict["ImmediateActionItems"]["blocks"])
+            final_summary["NextSteps"]["blocks"].extend(json_dict["NextSteps"]["blocks"])
+            final_summary["OtherImportantPoints"]["blocks"].extend(json_dict["OtherImportantPoints"]["blocks"])
+            final_summary["ClosingRemarks"]["blocks"].extend(json_dict["ClosingRemarks"]["blocks"])
+            
+        logger.info(f"Final summary: {final_summary}")
+        
+        # Save final summary
+        final_summary_str = json.dumps(final_summary, indent=2)
+        with open("final_summary.json", "w") as f:
+            f.write(final_summary_str)
+
+        logger.info(f"Final summary saved to final_summary.json")
             
     except Exception as e:
         logger.error(f"Error during summarization: {str(e)}")
         processor.cleanup()
+        exit(1)

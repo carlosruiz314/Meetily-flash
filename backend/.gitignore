@@ -8,7 +8,10 @@ instance/*
 .env
 transcripts/
 chroma/
+models/
 *.db
+*.json
+
 
 ### Flask.Python Stack ###
 # Byte-compiled / optimized / DLL files
