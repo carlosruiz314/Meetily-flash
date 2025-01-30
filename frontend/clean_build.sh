@@ -6,7 +6,7 @@ set -e
 # Kill any existing whisper-server processes
 echo "Checking for existing whisper servers..."
 pkill -f "whisper-server" || true
-pkill -f "language_server_macos_arm" || true
+# pkill -f "language_server_macos_arm" || true
 sleep 1  # Give processes time to terminate
 
 # Clean up previous builds

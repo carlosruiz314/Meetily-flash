@@ -35,6 +35,7 @@ export interface ApiResponse {
 export interface SummaryResponse {
   status: string;
   summary: Summary;
+  raw_summary?: string;
   usage?: {
     prompt_tokens: number;
     completion_tokens: number;
