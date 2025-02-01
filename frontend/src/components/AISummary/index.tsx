@@ -8,12 +8,13 @@ import { ExclamationTriangleIcon, CheckCircleIcon, ClipboardDocumentCheckIcon } 
 
 interface Props {
   summary: Summary | null;
-  status: 'processing' | 'summarizing' | 'completed' | 'error';
+  status: 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
   error: string | null;
   onSummaryChange: (summary: Summary) => void;
+  onRegenerateSummary: () => void;
 }
 
-export const AISummary = ({ summary, status, error, onSummaryChange }: Props) => {
+export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerateSummary }: Props) => {
   const generateUniqueId = (sectionKey: string) => {
     return `${sectionKey}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   };
@@ -593,7 +594,7 @@ export const AISummary = ({ summary, status, error, onSummaryChange }: Props) =>
     return renderErrorState();
   }
 
-  if (status === 'processing' || status === 'summarizing') {
+  if (status === 'processing' || status === 'summarizing' || status === 'regenerating') {
     return renderLoadingState();
   }
 
@@ -735,6 +736,16 @@ export const AISummary = ({ summary, status, error, onSummaryChange }: Props) =>
           >
             <span>📝</span>
             <span>Export as Markdown</span>
+          </button>
+          <button
+            onClick={onRegenerateSummary}
+            className="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-md flex items-center space-x-1"
+            title="Regenerate Summary"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+            <span className="ml-1">Regenerate</span>
           </button>
         </div>
       </div>

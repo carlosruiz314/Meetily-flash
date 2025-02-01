@@ -27,9 +27,24 @@ class DatabaseManager:
                     updated_at TEXT NOT NULL,
                     result TEXT,
                     error TEXT,
+                    start_time TEXT,
+                    end_time TEXT,
                     chunk_count INTEGER DEFAULT 0,
                     processing_time REAL DEFAULT 0.0,
                     metadata TEXT
+                )
+            """)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS transcripts (
+                    process_id TEXT PRIMARY KEY,
+                    meeting_name TEXT,
+                    transcript_text TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    model_name TEXT NOT NULL,
+                    chunk_size INTEGER,
+                    overlap INTEGER,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (process_id) REFERENCES summary_processes(id)
                 )
             """)
             conn.commit()
@@ -50,8 +65,8 @@ class DatabaseManager:
         
         async with self._get_connection() as conn:
             await conn.execute(
-                "INSERT INTO summary_processes (id, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
-                (process_id, "PENDING", now, now)
+                "INSERT INTO summary_processes (id, status, created_at, updated_at, start_time) VALUES (?, ?, ?, ?, ?)",
+                (process_id, "PENDING", now, now, now)
             )
             await conn.commit()
         
@@ -82,6 +97,9 @@ class DatabaseManager:
             if metadata:
                 update_fields.append("metadata = ?")
                 params.append(json.dumps(metadata))
+            if status == 'COMPLETED' or status == 'FAILED':
+                update_fields.append("end_time = ?")
+                params.append(now)
                 
             params.append(process_id)
             query = f"UPDATE summary_processes SET {', '.join(update_fields)} WHERE id = ?"
@@ -92,7 +110,7 @@ class DatabaseManager:
         """Get a process by its ID"""
         async with self._get_connection() as conn:
             async with conn.execute(
-                "SELECT id, status, created_at, updated_at, result, error, chunk_count, processing_time, metadata FROM summary_processes WHERE id = ?",
+                "SELECT id, status, created_at, updated_at, result, error, start_time, end_time, chunk_count, processing_time, metadata FROM summary_processes WHERE id = ?",
                 (process_id,)
             ) as cursor:
                 row = await cursor.fetchone()
@@ -105,18 +123,53 @@ class DatabaseManager:
                     "status": row[1],
                     "created_at": row[2],
                     "updated_at": row[3],
-                    "chunk_count": row[6],
-                    "processing_time": row[7]
+                    "start_time": row[6],
+                    "end_time": row[7],
+                    "chunk_count": row[8],
+                    "processing_time": row[9]
                 }
                 
                 if row[4]:  # result
                     result["result"] = json.loads(row[4])
                 if row[5]:  # error
                     result["error"] = row[5]
-                if row[8]:  # metadata
-                    result["metadata"] = json.loads(row[8])
+                if row[10]:  # metadata
+                    result["metadata"] = json.loads(row[10])
                     
                 return result
+
+    async def save_transcript(self, process_id: str, transcript_text: str, model: str, model_name: str, 
+                            chunk_size: int, overlap: int):
+        """Save transcript data"""
+        now = datetime.utcnow().isoformat()
+        async with self._get_connection() as conn:
+            await conn.execute("""
+                INSERT INTO transcripts (process_id, transcript_text, model, model_name, chunk_size, overlap, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (process_id, transcript_text, model, model_name, chunk_size, overlap, now))
+            await conn.commit()
+
+    async def update_meeting_name(self, process_id: str, meeting_name: str):
+        """Update meeting name for a transcript"""
+        async with self._get_connection() as conn:
+            await conn.execute("""
+                UPDATE transcripts SET meeting_name = ? WHERE process_id = ?
+            """, (meeting_name, process_id))
+            await conn.commit()
+
+    async def get_transcript_data(self, process_id: str):
+        """Get transcript data for a process"""
+        async with self._get_connection() as conn:
+            async with conn.execute("""
+                SELECT t.*, p.status, p.result 
+                FROM transcripts t 
+                JOIN summary_processes p ON t.process_id = p.id 
+                WHERE t.process_id = ?
+            """, (process_id,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    return dict(zip([col[0] for col in cursor.description], row))
+                return None
 
     async def cleanup_old_processes(self, hours: int = 24):
         """Clean up processes older than specified hours"""

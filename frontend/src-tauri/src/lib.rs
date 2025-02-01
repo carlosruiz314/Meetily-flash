@@ -2,14 +2,17 @@ use std::fs;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}};
 use std::time::Duration;
 use serde::{Deserialize, Serialize};
-use screenpipe_audio::{
+
+// Declare audio module
+pub mod audio;
+
+use audio::{
     default_input_device, default_output_device, AudioStream,
     encode_single_audio,
 };
 use tauri::{Runtime, AppHandle, Emitter};
 use log::{info as log_info, error as log_error, debug as log_debug};
 use reqwest::multipart::{Form, Part};
-use tauri_plugin_log::Builder;
 
 static RECORDING_FLAG: AtomicBool = AtomicBool::new(false);
 static mut MIC_BUFFER: Option<Arc<Mutex<Vec<f32>>>> = None;
@@ -273,6 +276,7 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     
     // Create audio receivers
     let mut mic_receiver = mic_stream.subscribe().await;
+    let mut mic_receiver_clone = mic_receiver.resubscribe();
     let mut system_receiver = system_stream.subscribe().await;
     
     // Create debug directory for chunks in temp
@@ -299,18 +303,18 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     // Create transcript accumulator
     let mut accumulator = TranscriptAccumulator::new();
     
+    let device_config = mic_stream.device_config.clone();
+    let device_name = mic_stream.device.to_string();
+    let sample_rate = device_config.sample_rate().0;
+    let channels = device_config.channels();
+    
     tokio::spawn(async move {
         let chunk_samples = (WHISPER_SAMPLE_RATE as f32 * (CHUNK_DURATION_MS as f32 / 1000.0)) as usize;
         let min_samples = (WHISPER_SAMPLE_RATE as f32 * (MIN_CHUNK_DURATION_MS as f32 / 1000.0)) as usize;
         let mut current_chunk: Vec<f32> = Vec::with_capacity(chunk_samples);
         let mut last_chunk_time = std::time::Instant::now();
         
-        // Get device configs
-        let mic_config = mic_stream.device_config.clone();
-        let system_config = system_stream.device_config.clone();
-        
-        log_info!("Mic config: {} Hz, {} channels", mic_config.sample_rate().0, mic_config.channels());
-        log_info!("System config: {} Hz, {} channels", system_config.sample_rate().0, system_config.channels());
+        log_info!("Mic config: {} Hz, {} channels", sample_rate, channels);
         
         while is_running.load(Ordering::SeqCst) {
             // Check for timeout on current sentence
@@ -327,7 +331,7 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
             
             // Get microphone samples
             let mut got_mic_samples = false;
-            while let Ok(chunk) = mic_receiver.try_recv() {
+            while let Ok(chunk) = mic_receiver_clone.try_recv() {
                 got_mic_samples = true;
                 log_debug!("Received {} mic samples", chunk.len());
                 let chunk_clone = chunk.clone();
@@ -345,7 +349,7 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
             // If we didn't get any samples, try to resubscribe to clear any backlog
             if !got_mic_samples {
                 log_debug!("No mic samples received, resubscribing to clear channel");
-                mic_receiver = mic_stream.subscribe().await;
+                mic_receiver_clone = mic_stream.subscribe().await;
             }
             
             // Get system audio samples
@@ -498,11 +502,11 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                 }
                 
                 // Process chunk for Whisper API
-                let whisper_samples = if mic_config.sample_rate().0 != WHISPER_SAMPLE_RATE {
-                    log_debug!("Resampling audio from {} to {}", mic_config.sample_rate().0, WHISPER_SAMPLE_RATE);
+                let whisper_samples = if sample_rate != WHISPER_SAMPLE_RATE {
+                    log_debug!("Resampling audio from {} to {}", sample_rate, WHISPER_SAMPLE_RATE);
                     resample_audio(
                         &chunk_to_send,
-                        mic_config.sample_rate().0,
+                        sample_rate,
                         WHISPER_SAMPLE_RATE,
                     )
                 } else {
@@ -750,9 +754,6 @@ pub fn run() {
     log::set_max_level(log::LevelFilter::Info);
     
     tauri::Builder::default()
-        .plugin(tauri_plugin_log::Builder::default()
-            .level(log::LevelFilter::Info)
-            .build())
         .setup(|_app| {
             log::info!("Application setup complete");
             Ok(())

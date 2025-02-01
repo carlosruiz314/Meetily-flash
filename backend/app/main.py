@@ -13,9 +13,9 @@ import asyncio
 from functools import partial
 import json
 from threading import Lock
-from Anthropic_transcript import (
+from Process_transcrip import (
     TranscriptProcessor, MeetingSummarizer, SummaryResponse,
-    SYSTEM_PROMPT, Agent, RunContext
+    SYSTEM_PROMPT, Agent, RunContext, Section, Block
 )
 import uuid
 
@@ -50,9 +50,14 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3118"],  # Frontend URL
+    allow_origins=[
+        "http://localhost:3118",     # Dev server
+        "http://localhost:*",        # Any local port
+        "tauri://localhost",         # Tauri app
+        "tauri://*",                # Any Tauri origin
+    ],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["*"],            # Allow all methods
     allow_headers=["*"],
     max_age=3600,  # Cache preflight requests for 1 hour
 )
@@ -61,6 +66,8 @@ app.add_middleware(
 class TranscriptRequest(BaseModel):
     """Request model for transcript text"""
     text: str
+    model: str
+    model_name: str
     chunk_size: Optional[int] = 5000
     overlap: Optional[int] = 1000
 
@@ -99,7 +106,7 @@ class SummaryProcessor:
             logger.error(f"Failed to initialize SummaryProcessor: {str(e)}", exc_info=True)
             raise
 
-    async def process_transcript(self, text: str, chunk_size: int = 5000, overlap: int = 1000) -> tuple:
+    async def process_transcript(self, text: str, model: str, model_name: str, chunk_size: int = 5000, overlap: int = 1000) -> tuple:
         """Process a transcript text"""
         try:
             if not text:
@@ -129,6 +136,8 @@ class SummaryProcessor:
             # Pass text as positional arg, chunk_size and overlap as keyword args
             num_chunks, all_json_data = await self.transcript_processor.process_transcript(
                 text=text,  # Pass as keyword arg to be explicit
+                model=model,
+                model_name=model_name,
                 chunk_size=chunk_size,
                 overlap=overlap
             )
@@ -227,7 +236,6 @@ class SummaryProcessor:
             logger.info("Cleanup completed successfully")
         except Exception as e:
             logger.error(f"Error during cleanup: {str(e)}", exc_info=True)
-
 
 # Initialize processor
 processor = SummaryProcessor()
@@ -396,39 +404,60 @@ async def get_final_summary(ctx: RunContext) -> SummaryResponse:
         logger.error(f"Error generating final summary: {str(e)}", exc_info=True)
         raise
 
-@app.post("/process-transcript", response_model=TranscriptResponse)
-async def process_transcript(transcript: TranscriptRequest) -> TranscriptResponse:
-    """Process a transcript text"""
-    logger.info("Received request to process transcript")
+async def process_transcript_background(process_id: str, transcript: TranscriptRequest):
+    """Background task to process transcript"""
     try:
-        # Process the transcript
-        logger.info(f"Processing transcript with chunk_size={transcript.chunk_size}, overlap={transcript.overlap}")
-        logger.info(f"Transcript text: {len(transcript.text)} characters")
-        num_chunks, all_json_data = await processor.process_transcript(
-            transcript.text,
+        logger.info(f"Starting background processing for process_id: {process_id}")
+        
+        # Initialize components with proper dependencies
+        deps = {
+            "db": processor.db,
+            "transcript_processor": processor.transcript_processor,
+            "summarizer": processor.summarizer
+        }
+        
+        ctx = RunContext(
+            deps=deps,
+            model=processor.summarizer.model,
+            usage={},
+            prompt=SYSTEM_PROMPT
+        )
+        ctx.process_id = process_id
+        
+        # Process transcript
+        num_chunks, all_json_data = await processor.transcript_processor.process_transcript(
+            text=transcript.text,
+            model=transcript.model,
+            model_name=transcript.model_name,
             chunk_size=transcript.chunk_size,
             overlap=transcript.overlap
         )
-        logger.info(f"Successfully processed transcript into {num_chunks} chunks")
         
-        # Convert all_json_data to list of dictionaries if it's not already
-        if isinstance(all_json_data, str):
-            json_data = json.loads(all_json_data)
-        elif isinstance(all_json_data, list):
-            json_data = all_json_data
-        else:
-            json_data = [all_json_data] if all_json_data else []
+        # Create final summary structure
         final_summary = {
-            "Agenda": {
-                "title": "Agenda",
+            "MeetingName": "",
+            "SectionSummary": {
+                "title": "Section Summary",
                 "blocks": []
             },
-            "Decisions": {
-                "title": "Decisions",
+            "CriticalDeadlines": {
+                "title": "Critical Deadlines",
                 "blocks": []
             },
-            "ActionItems": {
-                "title": "Action Items",
+            "KeyItemsDecisions": {
+                "title": "Key Items & Decisions",
+                "blocks": []
+            },
+            "ImmediateActionItems": {
+                "title": "Immediate Action Items",
+                "blocks": []
+            },
+            "NextSteps": {
+                "title": "Next Steps",
+                "blocks": []
+            },
+            "OtherImportantPoints": {
+                "title": "Other Important Points",
                 "blocks": []
             },
             "ClosingRemarks": {
@@ -436,28 +465,155 @@ async def process_transcript(transcript: TranscriptRequest) -> TranscriptRespons
                 "blocks": []
             }
         }
-        # Add all the blocks from all the JSON objects to the new JSON object
-        for json_obj in all_json_data:
-            logger.info(f"Processing JSON object {json_obj}, type {type(json_obj)}")
-            # Convert the JSON object to a dictionary
-            json_dict = json.loads(json_obj)
-            # Add the blocks from the dictionary to the new JSON object
-            final_summary["Agenda"]["blocks"].extend(json_dict["Agenda"]["blocks"])
-            final_summary["Decisions"]["blocks"].extend(json_dict["Decisions"]["blocks"])
-            final_summary["ActionItems"]["blocks"].extend(json_dict["ActionItems"]["blocks"])
+        
+        # Process each chunk's data
+        for json_str in all_json_data:
+            json_dict = json.loads(json_str)
+            final_summary["MeetingName"] = json_dict["MeetingName"]
+            final_summary["SectionSummary"]["blocks"].extend(json_dict["SectionSummary"]["blocks"])
+            final_summary["CriticalDeadlines"]["blocks"].extend(json_dict["CriticalDeadlines"]["blocks"])
+            final_summary["KeyItemsDecisions"]["blocks"].extend(json_dict["KeyItemsDecisions"]["blocks"])
+            final_summary["ImmediateActionItems"]["blocks"].extend(json_dict["ImmediateActionItems"]["blocks"])
+            final_summary["NextSteps"]["blocks"].extend(json_dict["NextSteps"]["blocks"])
+            final_summary["OtherImportantPoints"]["blocks"].extend(json_dict["OtherImportantPoints"]["blocks"])
             final_summary["ClosingRemarks"]["blocks"].extend(json_dict["ClosingRemarks"]["blocks"])
         
-        return TranscriptResponse(
-            message="Successfully processed transcript",
-            num_chunks=num_chunks,
-            data=final_summary
-        )
+        # Update database with meeting name
+        if final_summary["MeetingName"]:
+            await processor.db.update_meeting_name(process_id, final_summary["MeetingName"])
+        
+        # Save final result
+        await processor.db.update_process(process_id, status="completed", result=json.dumps(final_summary))
+        logger.info(f"Background processing completed for process_id: {process_id}")
+        
     except Exception as e:
-        logger.error(f"Error processing transcript: {str(e)}", exc_info=True)
+        error_msg = str(e)
+        logger.error(f"Error in background processing for {process_id}: {error_msg}")
+        await processor.db.update_process(process_id, status="failed", error=error_msg)
+
+@app.post("/process-transcript")
+async def process_transcript_api(
+    transcript: TranscriptRequest,
+    background_tasks: BackgroundTasks
+):
+    """Process a transcript text with background processing"""
+    try:
+        # Create new process
+        process_id = await processor.db.create_process()
+        
+        # Save transcript data
+        await processor.db.save_transcript(
+            process_id,
+            transcript.text,
+            transcript.model,
+            transcript.model_name,
+            transcript.chunk_size,
+            transcript.overlap
+        )
+        
+        # Start background processing
+        background_tasks.add_task(
+            process_transcript_background,
+            process_id,
+            transcript
+        )
+        
+        return JSONResponse({
+            "message": "Processing started",
+            "process_id": process_id
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in process_transcript_api: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/get-summary/{process_id}")
+async def get_summary(process_id: str):
+    """Get the summary for a given process ID"""
+    try:
+        result = await processor.db.get_transcript_data(process_id)
+        if not result:
+            return JSONResponse(
+                status_code=404,
+                content={
+                    "status": "error",
+                    "meetingName": None,
+                    "process_id": process_id,
+                    "data": None,
+                    "start": None,
+                    "end": None,
+                    "error": "Process ID not found"
+                }
+            )
+
+        status = result["status"].lower()  # Convert to lowercase for case-insensitive comparison
+        
+        # Parse result data if available
+        summary_data = None
+        if result.get("result"):
+            try:
+                # The result is already a JSON string, so we need to parse it
+                summary_data = json.loads(result["result"])
+                if isinstance(summary_data, str):
+                    # If it's still a string, it means it was double-encoded
+                    summary_data = json.loads(summary_data)
+            except json.JSONDecodeError as e:
+                logger.error(f"Failed to parse JSON data for process {process_id}: {str(e)}")
+                
+        # Build response
+        response = {
+            "status": "processing" if status in ["processing", "pending"] else status,
+            "meetingName": summary_data.get("MeetingName") if summary_data else None,
+            "process_id": process_id,
+            "start": result.get("start_time"),
+            "end": result.get("end_time"),
+            "data": summary_data
+        }
+        
+        if status == "failed":
+            response["status"] = "error"
+            response["error"] = result.get("error", "Unknown error")
+            return JSONResponse(status_code=400, content=response)
+            
+        elif status in ["processing", "pending"]:
+            return JSONResponse(status_code=202, content=response)
+            
+        elif status == "completed":
+            if not summary_data:
+                response["status"] = "error"
+                response["error"] = "Invalid or missing summary data"
+                return JSONResponse(status_code=500, content=response)
+            return JSONResponse(status_code=200, content=response)
+            
+        else:
+            response["status"] = "error"
+            response["error"] = f"Unknown status: {status}"
+            return JSONResponse(status_code=400, content=response)
+            
+    except Exception as e:
+        logger.error(f"Error getting summary for {process_id}: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "meetingName": None,
+                "process_id": process_id,
+                "data": None,
+                "start": None,
+                "end": None,
+                "error": str(e)
+            }
+        )
+
 @app.post("/upload-transcript")
-async def upload_transcript(file: UploadFile = File(...)) -> Dict[str, str]:
+async def upload_transcript(
+    background_tasks: BackgroundTasks,
+    model: str = "claude",
+    model_name: str = "claude-3-5-sonnet-latest",
+    chunk_size: Optional[int] = 5000,
+    overlap: Optional[int] = 1000,
+    file: UploadFile = File(...),
+) -> Dict[str, str]:
     """Upload and process a transcript file"""
     logger.info(f"Received transcript file upload: {file.filename}")
     try:
@@ -465,13 +621,40 @@ async def upload_transcript(file: UploadFile = File(...)) -> Dict[str, str]:
         transcript_text = content.decode()
         logger.info("Successfully decoded transcript file content")
         
-        num_chunks = await processor.process_transcript(
-            transcript_text,
-            chunk_size=5000,
-            overlap=1000
+        # Create transcript request
+        transcript = TranscriptRequest(
+            text=transcript_text,
+            model=model,
+            model_name=model_name,
+            chunk_size=chunk_size,
+            overlap=overlap
         )
-        logger.info(f"Successfully processed transcript file into {num_chunks} chunks")
-        return {"message": f"Successfully processed transcript file into {num_chunks} chunks"}
+        
+        # Create new process
+        process_id = await processor.db.create_process()
+        
+        # Save transcript data
+        await processor.db.save_transcript(
+            process_id,
+            transcript_text,
+            model,
+            model_name,
+            chunk_size,
+            overlap
+        )
+        
+        # Start background processing
+        background_tasks.add_task(
+            process_transcript_background,
+            process_id,
+            transcript
+        )
+        
+        return JSONResponse({
+            "message": "Processing started",
+            "process_id": process_id
+        })
+        
     except Exception as e:
         logger.error(f"Error processing transcript file: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -508,34 +691,6 @@ async def process_and_update(process_id: str):
     except Exception as e:
         logger.error(f"Error in process_and_update for {process_id}: {str(e)}", exc_info=True)
         await processor.db.update_process(process_id, "FAILED", error=str(e))
-
-@app.get("/get-summary/{process_id}")
-async def get_summary(process_id: str) -> Dict[str, Any]:
-    """Get the summary for a specific process"""
-    logger.info(f"Received request to get summary for process {process_id}")
-    try:
-        process = await processor.db.get_process(process_id)
-        if not process:
-            logger.warning(f"Process not found for ID {process_id}")
-            raise HTTPException(status_code=404, detail="Process not found")
-        
-        if process.get("error"):
-            logger.error(f"Process {process_id} failed with error: {process['error']}")
-            raise HTTPException(status_code=500, detail=process["error"])
-            
-        if process.get("status") != "COMPLETED":
-            logger.info(f"Process {process_id} is still {process.get('status')}")
-            return {"status": process.get("status")}
-            
-        if not process.get("result"):
-            logger.warning(f"No result found for completed process {process_id}")
-            raise HTTPException(status_code=404, detail="Summary not found")
-            
-        logger.info(f"Successfully retrieved summary for process {process_id}")
-        return process["result"]
-    except Exception as e:
-        logger.error(f"Error retrieving summary: {str(e)}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.on_event("shutdown")
 async def shutdown_event():

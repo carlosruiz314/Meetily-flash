@@ -21,12 +21,19 @@
         "decorations": true
       }
     ],
+    "macOSPrivateApi": true,
     "security": {
       "csp": null,
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$APPDATA/**"
+        ]
+      },
       "capabilities": [
         {
           "identifier": "main",
-          "description": "Main window capability with file system access",
+          "description": "Main window capability with file system and media access",
           "windows": ["main"],
           "permissions": [
             "fs:default",

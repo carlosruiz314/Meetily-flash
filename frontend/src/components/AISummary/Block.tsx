@@ -245,9 +245,9 @@ export const BlockComponent: React.FC<BlockProps> = ({
           data-block-id={block.id}
           onChange={handleChange}
           onKeyDown={handleKeyDown}
-          onMouseDown={onMouseDown}
+          onMouseDown={(e) => onMouseDown(e as unknown as React.MouseEvent<HTMLDivElement>)}
           onMouseEnter={onMouseEnter}
-          onMouseUp={onMouseUp}
+          onMouseUp={(e) => onMouseUp(e as unknown as React.MouseEvent<HTMLDivElement>)}
           onContextMenu={onContextMenu}
           rows={1}
           className={`

@@ -23,14 +23,17 @@ logger = logging.getLogger(__name__)
 load_dotenv()  # Load environment variables from .env file
 
 class Block(BaseModel):
-    """Represents a block of content in a section"""
+    """Represents a block of content in a section
+    Blcks are the basic blocks in this structure. one block contains only one item"""
     id: str
     type: str
     content: str
     color: str
 
 class Section(BaseModel):
-    """Represents a section in the meeting summary"""
+    """Represents a section in the meeting summary
+    One section can have multiple blogs related to the title
+    """
     title: str
     blocks: List[Block]
 
@@ -40,10 +43,32 @@ class ActionItem(BaseModel):
     content: str
 
 class SummaryResponse(BaseModel):
+    """Represents the meeting summary response based on a section of the transcript"""
+    MeetingName : str
+    SectionSummary : Section
+    CriticalDeadlines: Section
+    KeyItemsDecisions: Section
+    ImmediateActionItems: Section
+    NextSteps: Section
+    OtherImportantPoints: Section
+    ClosingRemarks: Section
+
+class MeetingMinutes(BaseModel):
+    """Represents the meeting minutes response based on a section of the transcript. 
+    The information shall have stuff like what is discussed, important dates, etc
+    The section shall not have sub sections but only a title and blocks. Remember to split sub sections and all to blocks"""
+    Section1 : Section
+    Section2 : Section
+    Section3 : Section
+    Section4 : Section
+
+class OverallSummary(BaseModel):
     """Represents the complete meeting summary"""
-    Agenda: Section
-    Decisions: Section
-    ActionItems: Section
+    Agenda : str
+    CriticalDeadlines: Section
+    KeyItemsDecisions: Section
+    ImmediateActionItems: Section
+    NextSteps: Section
     ClosingRemarks: Section
 
 class TranscriptProcessor:
@@ -186,14 +211,13 @@ class TranscriptProcessor:
                 # Convert the final_summary which is in <class '__main__.SummaryResponse'> to json
                 total_summary_in_pydantic = final_summary
 
+
+
                 # Validate summary has content
-                if not any([
-                    total_summary_in_pydantic.Agenda.blocks,
-                    total_summary_in_pydantic.Decisions.blocks,
-                    total_summary_in_pydantic.ActionItems.blocks,
-                    total_summary_in_pydantic.ClosingRemarks.blocks
-                ]):
-                    raise ValueError("No content found in summary")
+                # if not any([
+                #     total_summary_in_pydantic.SummaryResponse.blocks
+                # ]):
+                #     raise ValueError("No content found in summary")
                 
                 total_summary_in_json = json.dumps(total_summary_in_pydantic.dict(), indent=2)
                 logger.info(f"JSON Successfully generated summary for process {total_summary_in_json}")
@@ -265,7 +289,7 @@ class MeetingSummarizer:
             Agenda=self.Agenda,
             Decisions=self.Decisions,
             ActionItems=self.ActionItems,
-            ClosingRemarks=Section(title="Closing Remarks", blocks=[])
+            ClosingRemarks=self.ClosingRemarks
         )
 
 SYSTEM_PROMPT = """You are a meeting summarizer agent. Your task is to:
@@ -472,10 +496,14 @@ if __name__ == "__main__":
         # Set up argument parser
         parser = argparse.ArgumentParser(description='Process a meeting transcript using AI.')
         parser.add_argument('--transcript_path', type=str, help='Path to the transcript file')
-        parser.add_argument('--model', type=str, default='claude', choices=['groq', 'claude'], 
+        parser.add_argument('--model', type=str, default='claude', choices=['groq', 'claude', 'ollama'], 
                           help='Model to use for processing (default: claude)')
-        parser.add_argument('--model_name', type=str, default='claude-3-5-sonnet-latest', 
+        parser.add_argument('--model-name', type=str, default='claude-3-5-sonnet-latest', 
                           help='Name of the model to use for processing (default: claude-3-5-sonnet-latest)')
+        parser.add_argument('--chunk-size', type=int, default=5000, 
+                          help='Size of the chunks to be used for processing (default: 5000)')
+        parser.add_argument('--overlap', type=int, default=1000, 
+                          help='Overlap between the chunks to be used for processing (default: 1000)')
         args = parser.parse_args()
 
         # Validate transcript path
@@ -492,26 +520,39 @@ if __name__ == "__main__":
         
         # Process transcript
         num_chunks, all_json = loop.run_until_complete(
-            processor.process_transcript(model=args.model, model_name=args.model_name, transcript_path=args.transcript_path)
+            processor.process_transcript(model=args.model, model_name=args.model_name, transcript_path=args.transcript_path, chunk_size=args.chunk_size, overlap=args.overlap)
         )
         logger.info(f"Processed transcript into {num_chunks} chunks")
         logger.info(f"Successfully processed transcript into {all_json} chunks, type {type(all_json)}")
         
         # Create a new JSON object for final summary
         final_summary = {
-            "Agenda": {
-                "title": "Agenda",
+            "MeetingName": "",
+            "SectionSummary": {
+                "title": "Section Summary",
                 "blocks": []
             },
-            "Decisions": {
-                "title": "Decisions",
+            "CriticalDeadlines" : {
+                "title": "Critical Deadlines",
                 "blocks": []
             },
-            "ActionItems": {
-                "title": "Action Items",
+            "KeyItemsDecisions" : {
+                "title": "Key Items & Decisions",
                 "blocks": []
             },
-            "ClosingRemarks": {
+            "ImmediateActionItems" : {
+                "title": "Immediate Action Items",
+                "blocks": []
+            },
+            "NextSteps" : {
+                "title": "Next Steps",
+                "blocks": []
+            },
+            "OtherImportantPoints" : {
+                "title": "Other Important Points",
+                "blocks": []
+            },
+            "ClosingRemarks" : {
                 "title": "Closing Remarks",
                 "blocks": []
             }
@@ -520,14 +561,19 @@ if __name__ == "__main__":
         # Save raw JSON
         with open('all_json.json', 'w') as f:
             json.dump(all_json, f, indent=2)
+            
 
         # Combine all JSON objects
         for json_obj in all_json:
             logger.info(f"Processing JSON object {json_obj}, type {type(json_obj)}")
             json_dict = json.loads(json_obj)
-            final_summary["Agenda"]["blocks"].extend(json_dict["Agenda"]["blocks"])
-            final_summary["Decisions"]["blocks"].extend(json_dict["Decisions"]["blocks"])
-            final_summary["ActionItems"]["blocks"].extend(json_dict["ActionItems"]["blocks"])
+            final_summary["MeetingName"] =  json_dict["MeetingName"]
+            final_summary["SectionSummary"]["blocks"].extend(json_dict["SectionSummary"]["blocks"])
+            final_summary["CriticalDeadlines"]["blocks"].extend(json_dict["CriticalDeadlines"]["blocks"])
+            final_summary["KeyItemsDecisions"]["blocks"].extend(json_dict["KeyItemsDecisions"]["blocks"])
+            final_summary["ImmediateActionItems"]["blocks"].extend(json_dict["ImmediateActionItems"]["blocks"])
+            final_summary["NextSteps"]["blocks"].extend(json_dict["NextSteps"]["blocks"])
+            final_summary["OtherImportantPoints"]["blocks"].extend(json_dict["OtherImportantPoints"]["blocks"])
             final_summary["ClosingRemarks"]["blocks"].extend(json_dict["ClosingRemarks"]["blocks"])
             
         logger.info(f"Final summary: {final_summary}")
