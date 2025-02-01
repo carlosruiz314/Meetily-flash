@@ -103,7 +103,9 @@ if [ -f "$MODEL_DIR/$MODEL_NAME" ]; then
 else
     echo "Model file does not exist: $MODEL_DIR/$MODEL_NAME"
     echo "Trying to download model..."
-    ./whisper-server-package/models/download-ggml-model.sh $MODEL_SHORT_NAME
+    ./whisper-server-package/download-ggml-model.sh $MODEL_SHORT_NAME
+    # Move model to models directory
+    mv "$PACKAGE_NAME/$MODEL_NAME" "$MODEL_DIR/"
 fi
 
 # Start the whisper server in background
