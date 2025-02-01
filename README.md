@@ -1,8 +1,16 @@
 # Meeting Minutes - AI-Powered Meeting Assistant
 
+## Release 0.0.1
+
+A new release is available!
+
+Please check out the release [here](https://github.com/Zackriya-Solutions/meeting-minutes/releases/tag/v0.0.1).
+
+## Overview
+
 An AI-powered meeting assistant that captures live meeting audio, transcribes it in real-time, and generates summaries while ensuring user privacy. Perfect for teams who want to focus on discussions while automatically capturing and organizing meeting content.
 
-## Why?
+### Why?
 
 While there are many meeting transcription tools available, this solution stands out by offering:
 - **Privacy First**: All processing happens locally on your device
@@ -11,82 +19,116 @@ While there are many meeting transcription tools available, this solution stands
 - **Customizable**: Self-host and modify for your specific needs
 - **Intelligent**: Built-in knowledge graph for semantic search across meetings
 
+> **Note**: We have an experimental Rust-based implementation that explores better performance and native integration. It currently implements:
+> - ✅ Real-time audio capture from both microphone and system audio
+> - ✅ Live transcription using locally-running Whisper
+> - ✅ Speaker diarization
+> - ✅ Rich text editor for notes
+> 
+> See [Rust Implementation](experiment/rust_based_implementation) for details.
+
+
 ## Features
 
 ✅ Modern, responsive UI with real-time updates
+✅ Real-time audio capture (microphone + system audio)
+✅ Live transcription using Whisper.cpp
+✅ Speaker diarization
+✅ Local processing for privacy
+✅ Packaged the app for Mac Os
+🚧 Export to Markdown/PDF
 
-✅ Export to Markdown/PDF
+## LLM Integration
 
-🚧 Real-time audio capture using SoundDevice
+The backend supports multiple LLM providers through a unified interface. Current implementations include:
 
-🚧 Real-time audio visualization
+### Supported Providers
+- **Anthropic** (Claude models)
+- **Groq** (Llama3.2 90 B, Deepseek)
+- **Ollama** (Local models)
 
-🚧 Automatic meeting detection (Zoom, Google Meet, Teams)
+### Configuration
+Create `.env` file with your API keys:
+```env
+# Required for Anthropic
+ANTHROPIC_API_KEY=your_key_here  
 
-🚧 Live audio transcription using OpenAI's Whisper
+# Required for Groq 
+GROQ_API_KEY=your_key_here
 
-🚧 Real-time display of transcription
-
-🚧 Post-meeting summarization
-
-🚧 Local processing for privacy
+```
 
 ## System Architecture
 
-The application is built with a modern stack focusing on performance and user privacy. For detailed architecture documentation and diagrams, see [Architecture Documentation](docs/architecture.md).
+![High Level Architecture](docs/HighLevel.jpg)
 
-![High Level Architecture](docs/Diagram-High%20level%20architecture%20diagram.jpg)
+### Core Components
 
-Key Components:
+1. **Audio Capture Service**
+   - Real-time microphone/system audio capture
+   - Audio preprocessing pipeline
+   - Built with Rust (experimental) and Python
 
-- **Frontend** (Electron JS + Next JS)
-  - User interface and real-time updates
-  - Cross-platform desktop application
-  - WebSocket communication
+2. **Transcription Engine**
+   - Whisper.cpp for local transcription
+   - Supports multiple model sizes (tiny->large)
+   - GPU-accelerated processing
 
-- **Backend** (FastAPI)
-  - Audio processing pipeline
-  - AI integration and coordination
-  - Database operations
-  
-- **AI Engine** (Whisper + Qwen/Llama 3.2)
-  - Real-time transcription
-  - Meeting summarization
-  - Natural language processing
+3. **LLM Orchestrator**
+   - Unified interface for multiple providers
+   - Automatic fallback handling
+   - Chunk processing with overlap
+   - Model configuration:
 
-- **Storage**
-  - Local SQLite database for secure data storage
-  - Knowledge Graph/VectorDB for semantic search
+4. **Data Services**
+   - **ChromaDB**: Vector store for transcript embeddings
+   - **SQLite**: Process tracking and metadata storage
 
-- **Integration**
-  - Virtual Audio Driver for system-level audio capture
-  - Ollama with Agentic Tools for extended AI capabilities
+5. **API Layer**
+   - FastAPI endpoints:
+     - POST /upload
+     - POST /process
+     - GET /summary/{id}
+     - DELETE /summary/{id}
+
+### Deployment Architecture
+
+- **Frontend**: Tauri app + Next.js (packaged executables)
+- **Backend**: Python FastAPI:
+  - Transcript workers
+  - LLM inference
 
 ## Prerequisites
 
-- Node.js >= 18
-- Python >= 3.9
-- Virtual audio driver:
-  - macOS: BlackHole (recommended)
-  - Windows: Virtual Audio Cable
-  - Linux: PulseAudio
+- Node.js 18+
+- Python 3.10+
+- FFmpeg
+- Rust 1.65+ (for experimental features)
 
 ## Setup Instructions
 
 ### 1. Frontend Setup
 
+#### Run packaged version
+
+Go to the [releases page](https://github.com/Zackriya-Solutions/meeting-minutes/releases) and download the latest version.
+
+Unzip the file and run the executable.
+
+Provide necessary permissions for audio capture and microphone access (Only screen capture permission is required).
+
+#### Dev run
+
 ```bash
+
 # Navigate to frontend directory
 cd frontend
 
-# Install dependencies
-npm install
+# Give execute permissions to clean_build.sh
+chmod +x clean_build.sh
 
-# Start development server (Terminal 1)
-npm run dev
-
-# Start Electron app (Terminal 2)
-npm start
+# run clean_build.sh
+./clean_build.sh
 ```
 
 ### 2. Backend Setup
@@ -102,16 +144,9 @@ cd backend
 # Install dependencies
 pip install -r requirements.txt
 
-# Start backend server
-cd app
-uvicorn main:app --reload
+# Start backend servers
+./clean_start_backend.sh
 ```
-
-### 3. Audio Setup
-
-1. Install the virtual audio driver for your OS
-2. Configure system audio to route through the virtual device
-3. Verify audio routing in the application settings
 
 ## Development Guidelines
 
@@ -132,3 +167,7 @@ uvicorn main:app --reload
 MIT License - Feel free to use this project for your own purposes.
 
 Last updated: December 26, 2024
+
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Zackriya-Solutions/meeting-minutes&type=Date)](https://star-history.com/#Zackriya-Solutions/meeting-minutes&Date)

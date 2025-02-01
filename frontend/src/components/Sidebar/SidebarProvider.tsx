@@ -42,32 +42,33 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     {
       id: 'meetings',
       title: 'Meetings',
-      type: 'folder',
+      type: 'folder' as const,
       children: [
-        { id: 'team-sync-dec-26', title: 'Team Sync - Dec 26', type: 'file' },
-        { id: 'product-review', title: 'Product Review', type: 'file' },
+        { id: 'team-sync-dec-26', title: 'Team Sync - Dec 26', type: 'file' as const },
+        { id: 'product-review', title: 'Product Review', type: 'file' as const },
       ]
     },
     {
       id: 'notes',
       title: 'Notes',
-      type: 'folder',
+      type: 'folder' as const,
       children: [
-        { id: 'project-ideas', title: 'Project Ideas', type: 'file' },
-        { id: 'action-items', title: 'Action Items', type: 'file' },
+        { id: 'project-ideas', title: 'Project Ideas', type: 'file' as const },
+        { id: 'action-items', title: 'Action Items', type: 'file' as const },
       ]
     }
   ];
 
-  const sidebarItems = baseItems.map(item => {
+  const sidebarItems: SidebarItem[] = baseItems.map(item => {
     if (item.id === 'meetings' && currentMeeting) {
-      return {
+      const newItem: SidebarItem = {
         ...item,
         children: [
-          { id: currentMeeting.id, title: currentMeeting.title, type: 'file' },
+          { id: currentMeeting.id, title: currentMeeting.title, type: 'file' as const },
           ...(item.children || []).filter(child => child.id !== currentMeeting.id)
         ]
       };
+      return newItem;
     }
     return item;
   });

@@ -1,36 +1,107 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Meeting Minutes - Rust Implementation (Experimental)
 
-## Getting Started
+This is an experimental Rust-based implementation of the Meeting Minutes AI assistant, located in the `/experiment` directory of the main project. It aims to provide better performance and native integration compared to the main implementation.
 
-First, run the development server:
+## Features
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+- Real-time audio recording from both microphone and system audio
+- Live transcription using Whisper ASR (locally running)
+- Native desktop integration using Tauri instead of Electron
+- Speaker diarization support
+- Rich text editor for note-taking
+- Privacy-focused: All processing happens locally
+
+## Prerequisites
+
+- Node.js (v18 or later)
+- Rust (latest stable)
+- pnpm (v8 or later)
+- macOS (for system audio capture)
+- Xcode Command Line Tools
+
+## Project Structure
+
+The main project structure is:
+```
+/meeting-minutes
+├── backend/          # Main Python backend
+├── docs/            # Project documentation
+├── frontend/        # Main Electron frontend
+└── experiment/      # Experimental implementations
+    ├── rust_based_implementation/  # This implementation
+    │   ├── src/                   # Next.js frontend
+    │   ├── src-tauri/             # Rust backend
+    │   └── whisper-server-package/ # Local transcription server
+    ├── screenpipe/                # Audio processing library
+    └── simple_recorder.rs         # Basic audio implementation
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Installation
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+1. Clone the main repository:
+   ```bash
+   git clone <repository-url>
+   cd meeting-minutes
+   ```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+2. Clone screenpipe (required for audio capture):
+   ```bash
+   cd experiment
+   git clone https://github.com/mediar-ai/screenpipe.git
+   cd rust_based_implementation
+   ```
 
-## Learn More
+3. Install dependencies:
+   ```bash
+   pnpm install
+   ```
 
-To learn more about Next.js, take a look at the following resources:
+## Running the App
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Use the provided script to run the app:
+```bash
+./clean_build.sh
+```
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+This script will:
+1. Install dependencies
+2. Check for and download the Whisper model if needed
+3. Start the Whisper server
+4. Launch the Tauri app in development mode
 
-## Deploy on Vercel
+## Implementation Details
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+This implementation differs from the main project by:
+- Using Rust instead of Python for the backend
+- Using Tauri instead of Electron for desktop integration
+- Running Whisper locally instead of using external APIs
+- Implementing real-time audio processing in Rust
+- Using the screenpipe library for audio capture
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Development Status
+
+This is an experimental implementation that explores:
+- Using Rust for better performance in audio processing
+- Native desktop integration with Tauri
+- Local transcription with Whisper
+- Real-time audio processing capabilities
+
+For the production implementation, please see the main project in the root directory.
+
+## Contributing
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/amazing-feature`)
+3. Commit your changes (`git commit -m 'Add some amazing feature'`)
+4. Push to the branch (`git push origin feature/amazing-feature`)
+5. Open a Pull Request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+- [Whisper ASR](https://github.com/openai/whisper) for transcription
+- [Tauri](https://tauri.app/) for the desktop framework
+- [screenpipe-audio](https://github.com/screenpipe/screenpipe-audio) for audio capture

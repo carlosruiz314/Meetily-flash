@@ -12,9 +12,9 @@ export interface Transcript {
 
 export interface Block {
   id: string;
-  type: 'text' | 'heading1' | 'heading2' | 'bullet';
+  type: string;
   content: string;
-  color?: 'default' | 'gray';
+  color: string;
 }
 
 export interface Section {
@@ -24,4 +24,21 @@ export interface Section {
 
 export interface Summary {
   [key: string]: Section;
+}
+
+export interface ApiResponse {
+  message: string;
+  num_chunks: number;
+  data: any[];
+}
+
+export interface SummaryResponse {
+  status: string;
+  summary: Summary;
+  raw_summary?: string;
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
 }
