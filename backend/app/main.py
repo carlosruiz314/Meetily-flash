@@ -50,9 +50,14 @@ app = FastAPI(
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3118"],  # Frontend URL
+    allow_origins=[
+        "http://localhost:3118",     # Dev server
+        "http://localhost:*",        # Any local port
+        "tauri://localhost",         # Tauri app
+        "tauri://*",                # Any Tauri origin
+    ],
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["*"],            # Allow all methods
     allow_headers=["*"],
     max_age=3600,  # Cache preflight requests for 1 hour
 )

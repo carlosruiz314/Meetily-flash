@@ -3,10 +3,32 @@
 # Exit on error
 set -e
 
+
+
+
+
+
 # Kill any existing whisper-server processes
 echo "Checking for existing whisper servers..."
 pkill -f "whisper-server" || true
 sleep 1  # Give processes time to terminate
+
+# Check and kill if backend app in port 5167 is running
+echo "Checking for existing backend app..."
+PORT=5167
+if lsof -i :$PORT | grep -q LISTEN; then
+    # Ask user to confirm
+    read -p "Backend app is running on port $PORT. Kill it? (y/N) " -n 1 -r
+    echo
+    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+        echo "Aborting..."
+        exit 1
+    fi
+
+    echo "Backend app is running on port $PORT. Killing..."
+    kill -9 $(lsof -t -i :$PORT)
+    sleep 1  # Give processes time to terminate
+fi
 
 # Configuration
 PACKAGE_NAME="whisper-server-package"
@@ -84,23 +106,41 @@ else
     ./whisper-server-package/models/download-ggml-model.sh $MODEL_SHORT_NAME
 fi
 
+# Start the whisper server in background
+cd "$PACKAGE_NAME"
+./run-server.sh --model "models/$MODEL_NAME" &
+WHISPER_PID=$!
+cd ..
+
+sleep 2
+
+# Start the Python backend in background
+if [ -z "$VIRTUAL_ENV" ]; then
+    echo "Activating venv..."
+    source venv/bin/activate
+fi
+
+echo "Starting Python backend..."
+python app/main.py &
+PYTHON_PID=$!
+
 # Cleanup function
 cleanup() {
     echo "Cleaning up..."
-    echo "Stopping Whisper server and related processes..."
-    # Kill any remaining whisper-server processes
-    pkill -f "whisper-server" 2>/dev/null || true
+    if [ -n "$WHISPER_PID" ]; then
+        echo "Stopping Whisper server..."
+        kill -9 $WHISPER_PID 2>/dev/null || true
+        pkill -9 -f "whisper-server" 2>/dev/null || true
+    fi
+    if [ -n "$PYTHON_PID" ]; then
+        echo "Stopping Python backend..."
+        kill -9 $PYTHON_PID 2>/dev/null || true
+    fi
+    exit 0
 }
 
 # Set up trap for cleanup
 trap cleanup EXIT INT TERM
 
-# Start the whisper server
-echo "Starting Whisper server..."
-cd "$PACKAGE_NAME"
-./run-server.sh --model "models/$MODEL_NAME"
-
-# Keep the script running
-wait
-
-
+# Keep the script running and wait for both processes
+wait $WHISPER_PID $PYTHON_PID
