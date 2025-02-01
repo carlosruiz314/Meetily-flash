@@ -1,8 +1,16 @@
 # Meeting Minutes - AI-Powered Meeting Assistant
 
+## Release 0.0.1
+
+A new release is available!
+
+Please check out the release [here](https://github.com/Zackriya-Solutions/meeting-minutes/releases/tag/v0.0.1).
+
+## Overview
+
 An AI-powered meeting assistant that captures live meeting audio, transcribes it in real-time, and generates summaries while ensuring user privacy. Perfect for teams who want to focus on discussions while automatically capturing and organizing meeting content.
 
-## Why?
+### Why?
 
 While there are many meeting transcription tools available, this solution stands out by offering:
 - **Privacy First**: All processing happens locally on your device
@@ -136,9 +144,8 @@ cd backend
 # Install dependencies
 pip install -r requirements.txt
 
-# Start backend server
-cd app
-uvicorn main:app --reload
+# Start backend servers
+./clean_start_backend.sh
 ```
 
 ## Development Guidelines
