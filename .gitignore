@@ -2,41 +2,6 @@
 
 /experiment
 
-# screenpipe/*.exe
-screenpipe/*.exe~
-screenpipe/*.dll
-screenpipe/*.dylib
-screenpipe/*.so
-screenpipe/# Test binary, built with `cargo test`
-screenpipe/*.test
-screenpipe/# Rust/Cargo specific files
-screenpipe/*target
-screenpipe/*Cargo.lock
-screenpipe/# IDE specific files
-screenpipe/.idea/
-screenpipe/.vscode/
-screenpipe/*.rs.bk
-screenpipe/# act cli
-screenpipe/.secrets
-screenpipe/# db 
-screenpipe/data/ 
-screenpipe/text_json/
-screenpipe/src-tauri/deno-*
-screenpipe/# Tauri signing key
-screenpipe/tauri_key_louis.key
-screenpipe/pnpm-lock.yaml
-screenpipe/.DS_Store
-screenpipe/# Ignore onnxruntime-win-x64-gpu libraries
-screenpipe/onnxruntime-win-x64-gpu*/
-screenpipe/# ignore environment variables
-screenpipe/.env
-screenpipe/# JavaScript stuff
-screenpipe/node_modules/
-screenpipe/cn 
-
-
-
-
 # dependencies
 /node_modules
 **/models
