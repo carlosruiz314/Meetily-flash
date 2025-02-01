@@ -1,10 +1,19 @@
-use screenpipe_core::find_ffmpeg_path;
+use super::ffmpeg::find_ffmpeg_path; // Correct path to encode module
+use super::AudioDevice;
 use std::io::Write;
+use std::sync::Arc;
 use std::{
     path::PathBuf,
     process::{Command, Stdio},
 };
 use tracing::{debug, error};
+
+pub struct AudioInput {
+    pub data: Arc<Vec<f32>>,
+    pub sample_rate: u32,
+    pub channels: u16,
+    pub device: Arc<AudioDevice>,
+}
 
 pub fn encode_single_audio(
     data: &[u8],
@@ -16,7 +25,7 @@ pub fn encode_single_audio(
 
     let mut command = Command::new(find_ffmpeg_path().unwrap());
     command
-        .args(&[
+        .args([
             "-f",
             "f32le",
             "-ar",
@@ -43,6 +52,7 @@ pub fn encode_single_audio(
 
     debug!("FFmpeg command: {:?}", command);
 
+    #[allow(clippy::zombie_processes)]
     let mut ffmpeg = command.spawn().expect("Failed to spawn FFmpeg process");
     debug!("FFmpeg process spawned");
     let mut stdin = ffmpeg.stdin.take().expect("Failed to open stdin");
