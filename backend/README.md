@@ -26,6 +26,11 @@ ANTHROPIC_API_KEY=your_key_here
 GROQ_API_KEY=your_key_here
 ```
 
+# Building the Whisper Server
+```bash
+./build_backend.sh
+```
+
 ## Running the Server
 ```bash
 ./clean_start_backend.sh

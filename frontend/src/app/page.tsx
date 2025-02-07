@@ -232,13 +232,13 @@ export default function Home() {
       console.log('Transcript saved to:', transcriptPath);
 
       setIsRecording(false);
-      setSummaryStatus('processing');
-
-      // Show summary after saving transcript
-      setTimeout(() => {
+      
+      // Show summary button if we have transcript content
+      if (formattedTranscript.trim()) {
         setShowSummary(true);
-        generateAISummary();
-      }, 3000);
+      } else {
+        console.log('No transcript content available');
+      }
     } catch (error) {
       console.error('Failed to stop recording:', error);
       if (error instanceof Error) {
@@ -541,7 +541,7 @@ export default function Home() {
           setSummaryStatus('error');
           setAiSummary(null);
         }
-      }, 30000);
+      }, 10000);
 
       return () => clearInterval(pollInterval);
     } catch (error) {
@@ -552,11 +552,32 @@ export default function Home() {
     }
   }, [originalTranscript, modelConfig]);
 
+  const handleCopyTranscript = useCallback(() => {
+    const fullTranscript = transcripts
+      .map(t => `${t.timestamp}: ${t.text}`)
+      .join('\n');
+    navigator.clipboard.writeText(fullTranscript);
+  }, [transcripts]);
+
+  const handleGenerateSummary = useCallback(async () => {
+    if (!transcripts.length) {
+      console.log('No transcripts available for summary');
+      return;
+    }
+    
+    try {
+      await generateAISummary();
+    } catch (error) {
+      console.error('Failed to generate summary:', error);
+      setSummaryError(error instanceof Error ? error.message : 'Failed to generate summary');
+    }
+  }, [transcripts, generateAISummary]);
+
   const isSummaryLoading = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
 
   return (
     <div className="flex flex-col h-screen bg-gray-50">
-      <MainNav title={meetingTitle} />
+      <MainNav />
       <div className="flex flex-1 overflow-hidden">
         {/* Left side - Transcript */}
         <div className="w-1/3 min-w-[300px] border-r border-gray-200 bg-white flex flex-col relative">
@@ -571,27 +592,39 @@ export default function Home() {
                   onFinishEditing={() => setIsEditingTitle(false)}
                   onChange={handleTitleChange}
                 />
-                <div className="flex items-center">
+                <div className="flex items-center space-x-4">
+                  
+                  
+             
                   <button
-                    onClick={handleDownloadTranscript}
-                    className="ml-2 p-2 text-gray-600 hover:text-gray-800 rounded-full hover:bg-gray-100"
-                    title="Download Transcript"
+                    onClick={handleCopyTranscript}
+                    disabled={transcripts.length === 0}
+                    className="ml-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-gray-400 disabled:cursor-not-allowed transition-colors inline-flex items-center gap-2"
                   >
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M6 18L18 6M6 6l12 12" />
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" fill="none">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V7.5l-3.75-3.612z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 3v3.75a.75.75 0 0 0 .75.75H18" />
                     </svg>
                   </button>
-                  <label className="ml-2 p-2 text-gray-600 hover:text-gray-800 rounded-full hover:bg-gray-100 cursor-pointer" title="Upload Transcript">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 7.5m0 0L7.5 12m4.5-4.5v12" />
-                    </svg>
-                    <input
-                      type="file"
-                      accept=".json"
-                      onChange={handleUploadTranscript}
-                      className="hidden"
-                    />
-                  </label>
+                  {showSummary && !isRecording && (
+                    <button
+                      onClick={handleGenerateSummary}
+                      disabled={summaryStatus === 'processing'}
+                      className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 flex items-center space-x-2"
+                    >
+                      {summaryStatus === 'processing' ? (
+                        <>
+                          <span className="animate-spin"> -- .</span>
+                          
+                        </>
+                      ) : (
+                        <>
+                          <span>✨</span>
+                          
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -609,7 +642,7 @@ export default function Home() {
                 isRecording={isRecording}
                 onRecordingStop={handleRecordingStop}
                 onRecordingStart={handleRecordingStart}
-                onTranscriptReceived={handleSummary}
+                onTranscriptReceived={handleTranscriptUpdate}
                 barHeights={barHeights}
               />
               <button

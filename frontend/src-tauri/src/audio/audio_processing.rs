@@ -21,17 +21,31 @@ pub fn normalize_v2(audio: &[f32]) -> Vec<f32> {
         return audio.to_vec();
     }
 
-    let target_rms = 0.4;
-    let target_peak = 0.98;
+    // Increase target RMS for better voice volume while keeping peak in check
+    let target_rms = 0.5;  // Increased from 0.6
+    let target_peak = 0.95; // Slightly reduced to prevent clipping
 
     let rms_scaling = target_rms / rms;
     let peak_scaling = target_peak / peak;
 
-    let scaling_factor = rms_scaling.min(peak_scaling);
+    // Apply a minimum scaling factor to boost very quiet audio
+    let min_scaling = 1.5; // Minimum boost for quiet audio
+    let scaling_factor = (rms_scaling.min(peak_scaling)).max(min_scaling);
 
+    // Apply scaling with soft clipping to prevent harsh distortion
     audio
         .iter()
-        .map(|&sample| sample * scaling_factor)
+        .map(|&sample| {
+            let scaled = sample * scaling_factor;
+            // Soft clip at ±0.95 to prevent harsh distortion
+            if scaled > 0.95 {
+                0.95 + (scaled - 0.95) * 0.05
+            } else if scaled < -0.95 {
+                -0.95 + (scaled + 0.95) * 0.05
+            } else {
+                scaled
+            }
+        })
         .collect()
 }
 

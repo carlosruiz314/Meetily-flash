@@ -34,12 +34,6 @@ fi
 PACKAGE_NAME="whisper-server-package"
 MODEL_DIR="$PACKAGE_NAME/models"
 
-# If model directory does not exist, create it
-if [ ! -d "$MODEL_DIR" ]; then
-    echo "Creating model directory: $MODEL_DIR"
-    mkdir -p "$MODEL_DIR"
-fi
-
 # Check for existing model
 echo "Checking for Whisper models..."
 
@@ -103,9 +97,9 @@ if [ -f "$MODEL_DIR/$MODEL_NAME" ]; then
 else
     echo "Model file does not exist: $MODEL_DIR/$MODEL_NAME"
     echo "Trying to download model..."
-    ./whisper-server-package/download-ggml-model.sh $MODEL_SHORT_NAME
+    ./download-ggml-model.sh $MODEL_SHORT_NAME
     # Move model to models directory
-    mv "$PACKAGE_NAME/$MODEL_NAME" "$MODEL_DIR/"
+    # mv "$PACKAGE_NAME/$MODEL_NAME" "$MODEL_DIR/"
 fi
 
 # Start the whisper server in background

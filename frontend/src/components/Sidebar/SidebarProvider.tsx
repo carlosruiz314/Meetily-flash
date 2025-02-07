@@ -80,7 +80,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   // Update current meeting when on home page
   useEffect(() => {
     if (pathname === '/') {
-      setCurrentMeeting({ id: 'intro-call', title: 'Intro call: AllFound' });
+      setCurrentMeeting({ id: 'intro-call', title: 'New Call' });
     }
   }, [pathname]);
 
