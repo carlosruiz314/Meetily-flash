@@ -7,10 +7,11 @@ import { TranscriptView } from '@/components/TranscriptView';
 import { RecordingControls } from '@/components/RecordingControls';
 import { AISummary } from '@/components/AISummary';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
-import MainNav from '@/components/MainNav';
 import { listen } from '@tauri-apps/api/event';
 import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { downloadDir } from '@tauri-apps/api/path';
+import { listenerCount } from 'process';
+import { invoke } from '@tauri-apps/api/core';
 
 interface TranscriptUpdate {
   text: string;
@@ -20,11 +21,18 @@ interface TranscriptUpdate {
 
 interface ModelConfig {
   provider: 'ollama' | 'groq' | 'claude';
-  modelName: string;
+  model: string;
   whisperModel: string;
 }
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
+
+interface OllamaModel {
+  name: string;
+  id: string;
+  size: string;
+  modified: string;
+}
 
 export default function Home() {
   const [isRecording, setIsRecording] = useState(false);
@@ -47,23 +55,17 @@ export default function Home() {
   const [summaryError, setSummaryError] = useState<string | null>(null);
 
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
-    provider: 'claude',
-    modelName: 'claude-3-5-sonnet-latest',
+    provider: 'ollama',
+    model: 'llama3.2:latest',
     whisperModel: 'large-v3'
   });
 
   const [originalTranscript, setOriginalTranscript] = useState<string>('');
 
   const modelOptions = {
+    ollama: ['llama3.2:latest', 'qwen2.5:latest', 'phi3:medium', 'llama3.2:3b', 'phi4:latest'],
     claude: ['claude-3-5-sonnet-latest'],
     groq: ['llama-3.3-70b-versatile'],
-    ollama: [
-      'llama3.2:latest',
-      'qwen2.5:latest',
-      'phi3:medium',
-      'llama3.2:3b',
-      'phi4:latest'
-    ]
   };
 
   const whisperModels = [
@@ -100,6 +102,9 @@ export default function Home() {
   ];
 
   const [showModelSettings, setShowModelSettings] = useState(false);
+
+  const [models, setModels] = useState<OllamaModel[]>([]);
+  const [error, setError] = useState<string>('');
 
   const { setCurrentMeeting } = useSidebar();
 
@@ -169,6 +174,19 @@ export default function Home() {
     };
   }, []);
 
+  useEffect(() => {
+    const loadModels = async () => {
+      try {
+        const modelList = await invoke<OllamaModel[]>('get_ollama_models');
+        setModels(modelList);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Failed to load Ollama models');
+      }
+    };
+
+    loadModels();
+  }, []);
+
   const handleRecordingStart = async () => {
     try {
       console.log('Starting recording...');
@@ -232,13 +250,13 @@ export default function Home() {
       console.log('Transcript saved to:', transcriptPath);
 
       setIsRecording(false);
-      setSummaryStatus('processing');
-
-      // Show summary after saving transcript
-      setTimeout(() => {
+      
+      // Show summary button if we have transcript content
+      if (formattedTranscript.trim()) {
         setShowSummary(true);
-        generateAISummary();
-      }, 3000);
+      } else {
+        console.log('No transcript content available');
+      }
     } catch (error) {
       console.error('Failed to stop recording:', error);
       if (error instanceof Error) {
@@ -295,7 +313,7 @@ export default function Home() {
         body: JSON.stringify({
           text: fullTranscript,
           model: modelConfig.provider,
-          model_name: modelConfig.modelName,
+          model_name: modelConfig.model,
           chunk_size: 40000,
           overlap: 1000
         })
@@ -477,7 +495,7 @@ export default function Home() {
         body: JSON.stringify({
           text: originalTranscript,
           model: modelConfig.provider,
-          model_name: modelConfig.modelName,
+          model_name: modelConfig.model,
           chunk_size: 40000,
           overlap: 1000
         })
@@ -541,7 +559,7 @@ export default function Home() {
           setSummaryStatus('error');
           setAiSummary(null);
         }
-      }, 30000);
+      }, 10000);
 
       return () => clearInterval(pollInterval);
     } catch (error) {
@@ -552,18 +570,38 @@ export default function Home() {
     }
   }, [originalTranscript, modelConfig]);
 
+  const handleCopyTranscript = useCallback(() => {
+    const fullTranscript = transcripts
+      .map(t => `${t.timestamp}: ${t.text}`)
+      .join('\n');
+    navigator.clipboard.writeText(fullTranscript);
+  }, [transcripts]);
+
+  const handleGenerateSummary = useCallback(async () => {
+    if (!transcripts.length) {
+      console.log('No transcripts available for summary');
+      return;
+    }
+    
+    try {
+      await generateAISummary();
+    } catch (error) {
+      console.error('Failed to generate summary:', error);
+      setSummaryError(error instanceof Error ? error.message : 'Failed to generate summary');
+    }
+  }, [transcripts, generateAISummary]);
+
   const isSummaryLoading = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
 
   return (
     <div className="flex flex-col h-screen bg-gray-50">
-      <MainNav title={meetingTitle} />
       <div className="flex flex-1 overflow-hidden">
         {/* Left side - Transcript */}
         <div className="w-1/3 min-w-[300px] border-r border-gray-200 bg-white flex flex-col relative">
           {/* Title area */}
           <div className="p-4 border-b border-gray-200">
-            <div className="flex flex-col space-y-4">
-              <div className="flex items-center justify-between">
+            <div className="flex flex-col space-y-3">
+              <div className="flex items-center">
                 <EditableTitle
                   title={meetingTitle}
                   isEditing={isEditingTitle}
@@ -571,28 +609,73 @@ export default function Home() {
                   onFinishEditing={() => setIsEditingTitle(false)}
                   onChange={handleTitleChange}
                 />
-                <div className="flex items-center">
-                  <button
-                    onClick={handleDownloadTranscript}
-                    className="ml-2 p-2 text-gray-600 hover:text-gray-800 rounded-full hover:bg-gray-100"
-                    title="Download Transcript"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                  <label className="ml-2 p-2 text-gray-600 hover:text-gray-800 rounded-full hover:bg-gray-100 cursor-pointer" title="Upload Transcript">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 005.25 21h13.5A2.25 2.25 0 0021 18.75V16.5M16.5 12L12 7.5m0 0L7.5 12m4.5-4.5v12" />
-                    </svg>
-                    <input
-                      type="file"
-                      accept=".json"
-                      onChange={handleUploadTranscript}
-                      className="hidden"
-                    />
-                  </label>
-                </div>
+              </div>
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={handleCopyTranscript}
+                  disabled={transcripts.length === 0}
+                  className={`px-3 py-2 border rounded-md transition-all duration-200 inline-flex items-center gap-2 shadow-sm ${
+                    transcripts.length === 0
+                      ? 'bg-gray-50 border-gray-200 text-gray-400 cursor-not-allowed'
+                      : 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 hover:border-blue-300 active:bg-blue-200'
+                  }`}
+                  title={transcripts.length === 0 ? 'No transcript available' : 'Copy Transcript'}
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" fill="none">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V7.5l-3.75-3.612z" />
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 3v3.75a.75.75 0 0 0 .75.75H18" />
+                  </svg>
+                  <span className="text-sm">Copy Transcript</span>
+                </button>
+                {showSummary && !isRecording && (
+                  <>
+                    <button
+                      onClick={handleGenerateSummary}
+                      disabled={summaryStatus === 'processing'}
+                      className={`px-3 py-2 border rounded-md transition-all duration-200 inline-flex items-center gap-2 shadow-sm ${
+                        summaryStatus === 'processing'
+                          ? 'bg-yellow-50 border-yellow-200 text-yellow-700'
+                          : transcripts.length === 0
+                          ? 'bg-gray-50 border-gray-200 text-gray-400 cursor-not-allowed'
+                          : 'bg-green-50 border-green-200 text-green-700 hover:bg-green-100 hover:border-green-300 active:bg-green-200'
+                      }`}
+                      title={
+                        summaryStatus === 'processing'
+                          ? 'Generating summary...'
+                          : transcripts.length === 0
+                          ? 'No transcript available'
+                          : 'Generate AI Summary'
+                      }
+                    >
+                      {summaryStatus === 'processing' ? (
+                        <>
+                          <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                          </svg>
+                          <span className="text-sm">Processing...</span>
+                        </>
+                      ) : (
+                        <>
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                          </svg>
+                          <span className="text-sm">Generate Note</span>
+                        </>
+                      )}
+                    </button>
+                    <button
+                      onClick={() => setShowModelSettings(true)}
+                      className="px-3 py-2 border rounded-md transition-all duration-200 inline-flex items-center gap-2 shadow-sm bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100 hover:border-gray-300 active:bg-gray-200"
+                      title="Model Settings"
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      </svg>
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -609,19 +692,9 @@ export default function Home() {
                 isRecording={isRecording}
                 onRecordingStop={handleRecordingStop}
                 onRecordingStart={handleRecordingStart}
-                onTranscriptReceived={handleSummary}
+                onTranscriptReceived={handleTranscriptUpdate}
                 barHeights={barHeights}
               />
-              <button
-                onClick={() => setShowModelSettings(true)}
-                className="p-3 text-gray-600 hover:text-gray-800 focus:outline-none"
-                title="Model Settings"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6">
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 011.37.49l1.296 2.247a1.125 1.125 0 01-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 010 .255c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 01-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 01-.22.128c-.331.183-.581.495-.644.869l-.213 1.28c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 01-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 01-1.369-.49l-1.297-2.247a1.125 1.125 0 01.26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 010-.255c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 01-.26-1.43l1.297-2.247a1.125 1.125 0 011.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                </svg>
-              </button>
             </div>
           </div>
 
@@ -644,26 +717,6 @@ export default function Home() {
                 <div className="space-y-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">
-                      Transcription Model
-                    </label>
-                    <select
-                      className="w-full px-3 py-2 text-sm bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-                      value={modelConfig.whisperModel}
-                      onChange={(e) => setModelConfig(prev => ({
-                        ...prev,
-                        whisperModel: e.target.value
-                      }))}
-                    >
-                      {whisperModels.map(model => (
-                        <option key={model} value={model}>
-                          {model}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
                       Summarization Model
                     </label>
                     <div className="flex space-x-2">
@@ -675,7 +728,7 @@ export default function Home() {
                           setModelConfig({
                             ...modelConfig,
                             provider,
-                            modelName: modelOptions[provider][0]
+                            model: modelOptions[provider][0]
                           });
                         }}
                       >
@@ -686,11 +739,8 @@ export default function Home() {
 
                       <select
                         className="flex-1 px-3 py-2 text-sm bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-                        value={modelConfig.modelName}
-                        onChange={(e) => setModelConfig(prev => ({
-                          ...prev,
-                          modelName: e.target.value
-                        }))}
+                        value={modelConfig.model}
+                        onChange={(e) => setModelConfig(prev => ({ ...prev, model: e.target.value }))}
                       >
                         {modelOptions[modelConfig.provider].map(model => (
                           <option key={model} value={model}>
@@ -700,6 +750,31 @@ export default function Home() {
                       </select>
                     </div>
                   </div>
+                  {modelConfig.provider === 'ollama' && (
+                    <div>
+                      <h4 className="text-lg font-bold mb-4">Available Ollama Models</h4>
+                      {error && (
+                        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
+                          {error}
+                        </div>
+                      )}
+                      <div className="grid gap-4 max-h-[400px] overflow-y-auto pr-2">
+                        {models.map((model) => (
+                          <div 
+                            key={model.id}
+                            className={`bg-white p-4 rounded-lg shadow cursor-pointer transition-colors ${
+                              modelConfig.model === model.name ? 'ring-2 ring-blue-500 bg-blue-50' : 'hover:bg-gray-50'
+                            }`}
+                            onClick={() => setModelConfig(prev => ({ ...prev, model: model.name }))}
+                          >
+                            <h3 className="font-bold">{model.name}</h3>
+                            <p className="text-gray-600">Size: {model.size}</p>
+                            <p className="text-gray-600">Modified: {model.modified}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div className="mt-6 flex justify-end">

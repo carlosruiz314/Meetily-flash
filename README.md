@@ -1,10 +1,22 @@
-# Meeting Minutes - AI-Powered Meeting Assistant
-
-## Release 0.0.1
-
-A new release is available!
-
-Please check out the release [here](https://github.com/Zackriya-Solutions/meeting-minutes/releases/tag/v0.0.1).
+<div align="center" style="border-bottom: none">
+    <h1>
+        <br>
+        Meetily - AI-Powered Meeting Assistant
+    </h1>
+    <h3>
+    Open source Ai Assistant for taking meeting notes
+    </h3>
+    <p align="center">
+    <a href="https://meetily.zackriy.com"><b>Website</b></a> •
+    <a href="https://meetily.zackriya.com"><b>Contact Us</b></a> •
+    <a href="https://x.com/sujithx007"><b>Author</b></a> •
+    <a href="https://zackriya.com"><b>This project is supported by Zackriya</b>
+    </a>
+</p>
+    <p align="center">
+ An AI-Powered Meeting Assistant that captures live meeting audio, transcribes it in real-time, and generates summaries while ensuring user privacy. Perfect for teams who want to focus on discussions while automatically capturing and organizing meeting content without the need for external servers or complex infrastructure. 
+</p>
+</div>
 
 ## Overview
 
@@ -19,24 +31,71 @@ While there are many meeting transcription tools available, this solution stands
 - **Customizable**: Self-host and modify for your specific needs
 - **Intelligent**: Built-in knowledge graph for semantic search across meetings
 
-> **Note**: We have an experimental Rust-based implementation that explores better performance and native integration. It currently implements:
+## Features
+
+✅ Modern, responsive UI with real-time updates
+
+✅ Real-time audio capture (microphone + system audio)
+
+✅ Live transcription using Whisper.cpp
+✅ Speaker diarization
+
+✅ Local processing for privacy
+
+✅ Packaged the app for Mac Os
+
+🚧 Export to Markdown/PDF
+
+
+> **Note**: We have a Rust-based implementation that explores better performance and native integration. It currently implements:
 > - ✅ Real-time audio capture from both microphone and system audio
 > - ✅ Live transcription using locally-running Whisper
 > - ✅ Speaker diarization
 > - ✅ Rich text editor for notes
 > 
-> See [Rust Implementation](experiment/rust_based_implementation) for details.
+We are currently working on:
+> - ✅ Export to Markdown/PDF
+> - ✅ Export to HTML
 
 
-## Features
+## Release 0.0.2
 
-✅ Modern, responsive UI with real-time updates
-✅ Real-time audio capture (microphone + system audio)
-✅ Live transcription using Whisper.cpp
-✅ Speaker diarization
-✅ Local processing for privacy
-✅ Packaged the app for Mac Os
-🚧 Export to Markdown/PDF
+A new release is available!
+
+Please check out the release [here](https://github.com/Zackriya-Solutions/meeting-minutes/releases/tag/v0.0.2).
+
+### What's New
+- Transcription quality is improved.
+- Bug fixes and improvements for frontend
+- Better backend app build process
+- Improved documentation
+- New `.dmg` package
+
+### What would be next?
+- Database connection to save meeting minutes
+- Improve summarization quality for smaller llm models
+- Add download options for meeting transcriptions 
+- Add download option for summary
+
+### Known issues
+- Smaller LLMs can hallucinate, making summarization quality poor
+- Backend build process require CMake, C++ compiler, etc. Making it harder to build
+- Backend build process require Python 3.10 or newer
+- Frontend build process require Node.js
+
+### How to Get Started
+
+#### Frontend
+1. Download the app `dmg.zip` from [here](https://github.com/Zackriya-Solutions/meeting-minutes/releases/tag/v0.0.2)
+2. Double click the `Meeting Minutes.app` to run the app
+
+#### Backend
+0. Download the source code `Source Code.zip` from [here](https://github.com/Zackriya-Solutions/meeting-minutes/releases/tag/v0.0.2)
+1. Go to the `backend` directory: `cd backend`
+2. Make sure you have install all the pre requsites before proceeding - ffmpeg, cmake, c++ compiler and Python versions between 3.10 and 3.12 are required
+3. Build dependencies by eunning `build_whisper.sh`
+4. Run the server with `clean_start_backend.sh`
+
 
 ## LLM Integration
 
