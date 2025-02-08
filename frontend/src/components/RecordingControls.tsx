@@ -8,6 +8,7 @@ import { useAudioPlayer } from '@/hooks/useAudioPlayer';
 import { ProcessRequest, SummaryResponse } from '@/types/summary';
 
 interface RecordingControlsProps {
+  isRecording: boolean;
   barHeights: string[];
   onRecordingStop: () => void;
   onRecordingStart: () => void;
@@ -15,12 +16,12 @@ interface RecordingControlsProps {
 }
 
 export const RecordingControls: React.FC<RecordingControlsProps> = ({
+  isRecording,
   barHeights,
   onRecordingStop,
   onRecordingStart,
   onTranscriptReceived,
 }) => {
-  const [isRecording, setIsRecording] = useState(false);
   const [showPlayback, setShowPlayback] = useState(false);
   const [recordingPath, setRecordingPath] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<string>('');
@@ -62,7 +63,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     try {
       await invoke('start_recording');
       console.log('Recording started successfully');
-      setIsRecording(true);
+      setIsProcessing(false);
       onRecordingStart();
     } catch (error) {
       console.error('Failed to start recording:', error);
@@ -87,7 +88,9 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         }
       });
       
-      setIsRecording(false);
+      setRecordingPath(savePath);
+      setShowPlayback(true);
+      setIsProcessing(false);
       onRecordingStop();
     } catch (error) {
       console.error('Failed to stop recording:', error);
@@ -107,10 +110,9 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           return;
         }
       }
-      setIsRecording(false);
+      setIsProcessing(false);
       onRecordingStop();
     } finally {
-      setIsProcessing(false);
       setIsStopping(false);
     }
   }, [onRecordingStop]);

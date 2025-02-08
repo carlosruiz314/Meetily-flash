@@ -27,11 +27,14 @@ echo "Cleaning up npm, pnp and next..."
 rm -rf node_modules
 rm -rf .next
 rm -rf .pnp.cjs
+rm -rf out
 
 echo "Installing dependencies..."
 pnpm install
 
-
+# Build the Next.js application first
+echo "Building Next.js application..."
+pnpm run build
 
 echo "Building Tauri app..."
 pnpm run tauri dev
