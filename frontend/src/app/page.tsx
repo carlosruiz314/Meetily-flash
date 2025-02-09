@@ -359,24 +359,39 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: 'Failed to process transcript' }));
+        const errorData = await response.json();
         console.error('Process transcript failed:', errorData);
-        throw new Error(errorData.detail || 'Failed to process transcript');
+        setSummaryError(errorData.error || 'Failed to process transcript');
+        setSummaryStatus('error');
+        return;
       }
 
       const { process_id } = await response.json();
       console.log('Process ID:', process_id);
 
-      // Poll for summary status every 30 seconds
+      // Poll for summary status
       const pollInterval = setInterval(async () => {
         try {
           const statusResponse = await fetch(`http://localhost:5167/get-summary/${process_id}`);
+          
           if (!statusResponse.ok) {
-            throw new Error('Failed to get summary status');
+            const errorData = await statusResponse.json();
+            console.error('Get summary failed:', errorData);
+            setSummaryError(errorData.error || 'Unknown error');
+            setSummaryStatus('error');
+            clearInterval(pollInterval);
+            return;
           }
 
           const result = await statusResponse.json();
           console.log('Summary status:', result);
+
+          if (result.status === 'error') {
+            setSummaryError(result.error || 'Unknown error');
+            setSummaryStatus('error');
+            clearInterval(pollInterval);
+            return;
+          }
 
           if (result.status === 'completed' && result.data) {
             clearInterval(pollInterval);
@@ -405,17 +420,16 @@ export default function Home() {
 
             setAiSummary(formattedSummary);
             setSummaryStatus('completed');
-          } else if (result.status === 'error') {
-            clearInterval(pollInterval);
-            throw new Error(result.error || 'Failed to generate summary');
           }
-          // Continue polling for 'processing' status
         } catch (error) {
-          clearInterval(pollInterval);
           console.error('Failed to get summary status:', error);
-          setSummaryError(error instanceof Error ? error.message : 'An unexpected error occurred');
+          if (error instanceof Error) {
+            setSummaryError(`Failed to get summary status: ${error.message}`);
+          } else {
+            setSummaryError('Failed to get summary status: Unknown error');
+          }
           setSummaryStatus('error');
-          setAiSummary(null);
+          clearInterval(pollInterval);
         }
       }, 5000); // Poll every 30 seconds
 
@@ -424,9 +438,12 @@ export default function Home() {
       
     } catch (error) {
       console.error('Failed to generate summary:', error);
-      setSummaryError(error instanceof Error ? error.message : 'An unexpected error occurred');
+      if (error instanceof Error) {
+        setSummaryError(`Failed to generate summary: ${error.message}`);
+      } else {
+        setSummaryError('Failed to generate summary: Unknown error');
+      }
       setSummaryStatus('error');
-      setAiSummary(null);
     }
   }, [transcripts, modelConfig]);
 
@@ -528,6 +545,7 @@ export default function Home() {
       console.log('Regenerating summary with original transcript...');
       
       // Process transcript and get process_id
+      console.log('Processing transcript...');
       const response = await fetch('http://localhost:5167/process-transcript', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -541,9 +559,9 @@ export default function Home() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ detail: 'Failed to process transcript' }));
+        const errorData = await response.json();
         console.error('Process transcript failed:', errorData);
-        throw new Error(errorData.detail || 'Failed to process transcript');
+        throw new Error(errorData.error || 'Failed to process transcript');
       }
 
       const { process_id } = await response.json();
@@ -554,11 +572,20 @@ export default function Home() {
         try {
           const statusResponse = await fetch(`http://localhost:5167/get-summary/${process_id}`);
           if (!statusResponse.ok) {
-            throw new Error('Failed to get summary status');
+            const errorData = await statusResponse.json();
+            console.error('Get summary failed:', errorData);
+            throw new Error(errorData.error || 'Failed to get summary status');
           }
 
           const result = await statusResponse.json();
           console.log('Summary status:', result);
+
+          if (result.status === 'error') {
+            setSummaryError(result.error || 'Unknown error');
+            setSummaryStatus('error');
+            clearInterval(pollInterval);
+            return;
+          }
 
           if (result.status === 'completed' && result.data) {
             clearInterval(pollInterval);
@@ -594,7 +621,11 @@ export default function Home() {
         } catch (error) {
           clearInterval(pollInterval);
           console.error('Failed to get summary status:', error);
-          setSummaryError(error instanceof Error ? error.message : 'An unexpected error occurred');
+          if (error instanceof Error) {
+            setSummaryError(error.message);
+          } else {
+            setSummaryError('An unexpected error occurred');
+          }
           setSummaryStatus('error');
           setAiSummary(null);
         }
@@ -603,7 +634,11 @@ export default function Home() {
       return () => clearInterval(pollInterval);
     } catch (error) {
       console.error('Failed to regenerate summary:', error);
-      setSummaryError(error instanceof Error ? error.message : 'An unexpected error occurred');
+      if (error instanceof Error) {
+        setSummaryError(error.message);
+      } else {
+        setSummaryError('An unexpected error occurred');
+      }
       setSummaryStatus('error');
       setAiSummary(null);
     }
@@ -626,7 +661,11 @@ export default function Home() {
       await generateAISummary();
     } catch (error) {
       console.error('Failed to generate summary:', error);
-      setSummaryError(error instanceof Error ? error.message : 'Failed to generate summary');
+      if (error instanceof Error) {
+        setSummaryError(error.message);
+      } else {
+        setSummaryError('Failed to generate summary: Unknown error');
+      }
     }
   }, [transcripts, generateAISummary]);
 
