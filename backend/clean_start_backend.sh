@@ -233,7 +233,7 @@ python app/main.py &
 PYTHON_PID=$!
 
 # Wait for backend to start and check if it's running
-sleep 2
+sleep 10
 if ! kill -0 $PYTHON_PID 2>/dev/null; then
     handle_error "Python backend failed to start"
 fi

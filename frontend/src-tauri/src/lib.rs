@@ -11,7 +11,7 @@ use audio::{
     default_input_device, default_output_device, AudioStream,
     encode_single_audio,
 };
-use ollama::{OllamaModel, get_ollama_models};
+use ollama::{OllamaModel};
 use tauri::{Runtime, AppHandle, Emitter};
 use log::{info as log_info, error as log_error, debug as log_debug};
 use reqwest::multipart::{Form, Part};
@@ -806,7 +806,6 @@ pub fn run() {
             is_recording,
             read_audio_file,
             save_transcript,
-            ollama::get_ollama_models
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
