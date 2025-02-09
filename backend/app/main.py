@@ -55,6 +55,8 @@ app.add_middleware(
         "http://localhost:*",        # Any local port
         "tauri://localhost",         # Tauri app
         "tauri://*",                # Any Tauri origin
+        "app://localhost",          # Tauri app in release mode
+        "app://*",                  # Any app:// origin
     ],
     allow_credentials=True,
     allow_methods=["*"],            # Allow all methods
