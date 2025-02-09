@@ -7,7 +7,7 @@
     Open source Ai Assistant for taking meeting notes
     </h3>
     <p align="center">
-    <a href="https://meetily.zackriy.com"><b>Website</b></a> •
+    <a href="https://meetily.zackriya.com"><b>Website</b></a> •
     <a href="https://meetily.zackriya.com"><b>Contact Us</b></a> •
     <a href="https://x.com/sujithx007"><b>Author</b></a> •
     <a href="https://zackriya.com"><b>This project is supported by Zackriya</b>
