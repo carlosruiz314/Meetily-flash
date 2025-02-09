@@ -9,6 +9,9 @@ instance/*
 transcripts/
 chroma/
 models/
+whisper.cpp/
+whisper-server*
+whisper-server-package/
 *.db
 *.json
 

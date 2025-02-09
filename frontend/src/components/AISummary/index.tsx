@@ -730,13 +730,13 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
             <span>📋</span>
             <span>Copy as Markdown</span>
           </button>
-          <button
+          {/* <button
             onClick={handleExport}
             className="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-md flex items-center space-x-1"
           >
             <span>📝</span>
             <span>Export as Markdown</span>
-          </button>
+          </button> */}
           <button
             onClick={onRegenerateSummary}
             className="px-3 py-1 text-sm bg-gray-100 hover:bg-gray-200 rounded-md flex items-center space-x-1"

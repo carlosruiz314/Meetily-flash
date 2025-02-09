@@ -406,10 +406,16 @@ impl AudioStream {
             }
 
             if let Ok(StreamControl::Stop(response)) = stream_control_rx.recv() {
-                info!("stopped recording audio stream");
-                stream.pause().ok();
+                info!("stopping audio stream...");
+                // First stop the stream
+                if let Err(e) = stream.pause() {
+                    error!("failed to pause stream: {}", e);
+                }
+                // Close the stream to release OS resources
                 drop(stream);
+                // Signal completion
                 response.send(()).ok();
+                info!("audio stream stopped and cleaned up");
             }
         }))));
 
@@ -427,13 +433,18 @@ impl AudioStream {
         self.transmitter.subscribe()
     }
 
-    pub async fn stop(mut self) -> Result<()> {
-        self.is_disconnected.store(true, Ordering::Relaxed);
+    pub async fn stop(&self) -> Result<()> {
+        // Mark as disconnected first
+        self.is_disconnected.store(true, Ordering::Release);
+        
+        // Send stop signal and wait for confirmation
         let (tx, rx) = oneshot::channel();
         self.stream_control.send(StreamControl::Stop(tx))?;
         rx.await?;
 
-        if let Some(thread_arc) = self.stream_thread.take() {
+        // Wait for thread to finish
+        if let Some(thread_arc) = &self.stream_thread {
+            let thread_arc = thread_arc.clone();
             let thread_handle = tokio::task::spawn_blocking(move || {
                 let mut thread_guard = thread_arc.blocking_lock();
                 if let Some(join_handle) = thread_guard.take() {

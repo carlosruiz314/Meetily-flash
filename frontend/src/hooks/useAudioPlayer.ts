@@ -158,14 +158,17 @@ export const useAudioPlayer = (audioPath: string | null) => {
     try {
       // Initialize context if needed
       const initialized = await initAudioContext();
-      if (!initialized || !audioRef.current || !audioBufferRef.current) {
-        console.error('Cannot play: initialization failed', {
-          initialized,
-          hasContext: !!audioRef.current,
-          hasBuffer: !!audioBufferRef.current,
-          contextState: audioRef.current?.state
-        });
-        return;
+      if (!initialized) {
+        throw new Error('Audio context initialization failed');
+      }
+      if (!audioRef.current) {
+        throw new Error('Audio context is null after initialization');
+      }
+      if (!audioBufferRef.current) {
+        throw new Error('No audio buffer loaded - try loading the audio file first');
+      }
+      if (audioRef.current.state !== 'running') {
+        throw new Error(`Audio context is in invalid state: ${audioRef.current.state}`);
       }
 
       // Stop any existing playback

@@ -5,11 +5,13 @@ use serde::{Deserialize, Serialize};
 
 // Declare audio module
 pub mod audio;
+pub mod ollama;
 
 use audio::{
     default_input_device, default_output_device, AudioStream,
     encode_single_audio,
 };
+use ollama::{OllamaModel};
 use tauri::{Runtime, AppHandle, Emitter};
 use log::{info as log_info, error as log_error, debug as log_debug};
 use reqwest::multipart::{Form, Part};
@@ -20,6 +22,7 @@ static mut SYSTEM_BUFFER: Option<Arc<Mutex<Vec<f32>>>> = None;
 static mut MIC_STREAM: Option<Arc<AudioStream>> = None;
 static mut SYSTEM_STREAM: Option<Arc<AudioStream>> = None;
 static mut IS_RUNNING: Option<Arc<AtomicBool>> = None;
+static mut RECORDING_START_TIME: Option<std::time::Instant> = None;
 
 // Audio configuration constants
 const CHUNK_DURATION_MS: u32 = 30000; // 30 seconds per chunk for better sentence processing
@@ -29,6 +32,7 @@ const WAV_CHANNELS: u16 = 2; // Stereo for WAV files
 const WHISPER_CHANNELS: u16 = 1; // Mono for Whisper API
 const SENTENCE_TIMEOUT_MS: u64 = 1000; // Emit incomplete sentence after 1 second of silence
 const MIN_CHUNK_DURATION_MS: u32 = 2000; // Minimum duration before sending chunk
+const MIN_RECORDING_DURATION_MS: u64 = 2000; // 2 seconds minimum
 
 #[derive(Debug, Deserialize)]
 struct RecordingArgs {
@@ -223,6 +227,11 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     RECORDING_FLAG.store(true, Ordering::SeqCst);
     log_info!("Recording flag set to true");
 
+    // Store recording start time
+    unsafe {
+        RECORDING_START_TIME = Some(std::time::Instant::now());
+    }
+
     // Initialize audio buffers
     unsafe {
         MIC_BUFFER = Some(Arc::new(Mutex::new(Vec::new())));
@@ -304,7 +313,7 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let mut accumulator = TranscriptAccumulator::new();
     
     let device_config = mic_stream.device_config.clone();
-    let device_name = mic_stream.device.to_string();
+    let _device_name = mic_stream.device.to_string();
     let sample_rate = device_config.sample_rate().0;
     let channels = device_config.channels();
     
@@ -555,9 +564,23 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
 async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
     log_info!("Attempting to stop recording...");
     
-    if !is_recording() {
-        log_error!("No recording in progress");
-        return Err("No recording in progress".to_string());
+    // Only check recording state if we haven't already started stopping
+    if !RECORDING_FLAG.load(Ordering::SeqCst) {
+        log_info!("Recording is already stopped");
+        return Ok(());
+    }
+
+    // Check minimum recording duration
+    let elapsed_ms = unsafe {
+        RECORDING_START_TIME
+            .map(|start| start.elapsed().as_millis() as u64)
+            .unwrap_or(0)
+    };
+
+    if elapsed_ms < MIN_RECORDING_DURATION_MS {
+        let remaining = MIN_RECORDING_DURATION_MS - elapsed_ms;
+        log_info!("Waiting for minimum recording duration ({} ms remaining)...", remaining);
+        tokio::time::sleep(Duration::from_millis(remaining)).await;
     }
 
     // First set the recording flag to false to prevent new data from being processed
@@ -565,42 +588,43 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
     log_info!("Recording flag set to false");
     
     unsafe {
-        // Stop the running flag for audio streams
+        // Stop the running flag for audio streams first
         if let Some(is_running) = &IS_RUNNING {
+            // Set running flag to false first to stop the tokio task
             is_running.store(false, Ordering::SeqCst);
-            log_info!("Audio stream running flag set to false");
-        }
-    }
-    
-    // Give more time for the background task to complete and ensure synchronization
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    
-    unsafe {
-        // Now try to stop the streams with proper synchronization
-        if let Some(mic_stream) = MIC_STREAM.take() {
-            if let Ok(stream) = Arc::try_unwrap(mic_stream) {
-                match stream.stop().await {
-                    Ok(_) => log_info!("Successfully stopped mic stream"),
-                    Err(e) => log_error!("Error stopping mic stream: {}", e),
+            log_info!("Set recording flag to false, waiting for streams to stop...");
+            
+            // Give the tokio task time to finish and release its references
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            
+            // Stop mic stream if it exists
+            if let Some(mic_stream) = &MIC_STREAM {
+                log_info!("Stopping microphone stream...");
+                if let Err(e) = mic_stream.stop().await {
+                    log_error!("Error stopping mic stream: {}", e);
+                } else {
+                    log_info!("Microphone stream stopped successfully");
                 }
-            } else {
-                log_error!("Could not get exclusive ownership of mic stream");
             }
-        }
-
-        if let Some(system_stream) = SYSTEM_STREAM.take() {
-            if let Ok(stream) = Arc::try_unwrap(system_stream) {
-                match stream.stop().await {
-                    Ok(_) => log_info!("Successfully stopped system stream"),
-                    Err(e) => log_error!("Error stopping system stream: {}", e),
+            
+            // Stop system stream if it exists
+            if let Some(system_stream) = &SYSTEM_STREAM {
+                log_info!("Stopping system stream...");
+                if let Err(e) = system_stream.stop().await {
+                    log_error!("Error stopping system stream: {}", e);
+                } else {
+                    log_info!("System stream stopped successfully");
                 }
-            } else {
-                log_error!("Could not get exclusive ownership of system stream");
             }
+            
+            // Clear the stream references
+            MIC_STREAM = None;
+            SYSTEM_STREAM = None;
+            IS_RUNNING = None;
+            
+            // Give streams time to fully clean up
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
-        
-        // Additional cleanup to ensure streams are fully stopped
-        tokio::time::sleep(Duration::from_millis(500)).await;
     }
     
     // Get final buffers
@@ -687,11 +711,28 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
     
     log_info!("Created WAV file with {} bytes total", wav_file.len());
     
+    // Create the save directory if it doesn't exist
+    if let Some(parent) = std::path::Path::new(&args.save_path).parent() {
+        if !parent.exists() {
+            log_info!("Creating directory: {:?}", parent);
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                let err_msg = format!("Failed to create save directory: {}", e);
+                log_error!("{}", err_msg);
+                return Err(err_msg);
+            }
+        }
+    }
+
     // Save the recording
-    fs::write(&args.save_path, wav_file).map_err(|e| {
-        log_error!("Failed to save recording: {}", e);
-        e.to_string()
-    })?;
+    log_info!("Saving recording to: {}", args.save_path);
+    match fs::write(&args.save_path, wav_file) {
+        Ok(_) => log_info!("Successfully saved recording"),
+        Err(e) => {
+            let err_msg = format!("Failed to save recording: {}", e);
+            log_error!("{}", err_msg);
+            return Err(err_msg);
+        }
+    }
     
     // Clean up
     unsafe {
@@ -700,6 +741,7 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
         MIC_STREAM = None;
         SYSTEM_STREAM = None;
         IS_RUNNING = None;
+        RECORDING_START_TIME = None;
     }
     
     Ok(())
@@ -763,7 +805,7 @@ pub fn run() {
             stop_recording,
             is_recording,
             read_audio_file,
-            save_transcript
+            save_transcript,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

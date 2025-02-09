@@ -2,7 +2,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useRef } from 'react';
 import { Play, Pause, Square, Mic } from 'lucide-react';
 import { useAudioPlayer } from '@/hooks/useAudioPlayer';
 import { ProcessRequest, SummaryResponse } from '@/types/summary';
@@ -26,6 +26,12 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const [recordingPath, setRecordingPath] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<string>('');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isStarting, setIsStarting] = useState(false);
+  const [isStopping, setIsStopping] = useState(false);
+  const [stopCountdown, setStopCountdown] = useState(5);
+  const countdownInterval = useRef<NodeJS.Timeout | null>(null);
+  const stopTimeoutRef = useRef<{ stop: () => void } | null>(null);
+  const MIN_RECORDING_DURATION = 2000; // 2 seconds minimum recording time
   const { isPlaying, currentTime, duration, play, pause, seek } = useAudioPlayer(recordingPath);
 
   const formatTime = (time: number) => {
@@ -48,20 +54,27 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   }, []);
 
   const handleStartRecording = useCallback(async () => {
+    if (isStarting) return;
     console.log('Starting recording...');
+    setIsStarting(true);
     setShowPlayback(false);
+    setTranscript(''); // Clear any previous transcript
+    
     try {
       await invoke('start_recording');
       console.log('Recording started successfully');
+      setIsProcessing(false);
       onRecordingStart();
     } catch (error) {
       console.error('Failed to start recording:', error);
       alert('Failed to start recording. Please check the console for details.');
+    } finally {
+      setIsStarting(false);
     }
-  }, [onRecordingStart]);
+  }, [onRecordingStart, isStarting]);
 
-  const handleStopRecording = useCallback(async () => {
-    console.log('Stopping recording...');
+  const stopRecordingAction = useCallback(async () => {
+    console.log('Executing stop recording...');
     try {
       setIsProcessing(true);
       const dataDir = await appDataDir();
@@ -70,59 +83,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       
       console.log('Saving recording to:', savePath);
       const result = await invoke('stop_recording', { 
-        save_path: savePath 
-      });
-      
-      if (result && typeof result === 'object' && 'transcript' in result) {
-        const transcriptText = result.transcript as string;
-        setTranscript(transcriptText);
-        
-        try {
-          const request: ProcessRequest = {
-            transcript: transcriptText,
-            metadata: {
-              date: new Date().toISOString(),
-            }
-          };
-
-          const response = await fetch('http://localhost:5167/process', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(request),
-          });
-          
-          if (response.ok) {
-            const summaryResponse = await response.json() as SummaryResponse;
-            onTranscriptReceived(summaryResponse);
-          } else {
-            const errorText = await response.text();
-            console.error('Summary server error:', errorText);
-            onTranscriptReceived({
-              summary: {
-                key_points: [transcriptText],
-                action_items: [],
-                decisions: [],
-                main_topics: [],
-              },
-              raw_summary: transcriptText
-            });
-          }
-        } catch (error) {
-          console.log('Local AI server not available:', error);
-          onTranscriptReceived({
-            summary: {
-              key_points: [transcriptText],
-              action_items: [],
-              decisions: [],
-              main_topics: [],
-            },
-            raw_summary: transcriptText
-          });
+        args: {
+          save_path: savePath
         }
-      }
+      });
       
       setRecordingPath(savePath);
       setShowPlayback(true);
+      setIsProcessing(false);
       onRecordingStop();
     } catch (error) {
       console.error('Failed to stop recording:', error);
@@ -142,11 +110,63 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           return;
         }
       }
+      setIsProcessing(false);
       onRecordingStop();
     } finally {
-      setIsProcessing(false);
+      setIsStopping(false);
     }
-  }, [onRecordingStop, onTranscriptReceived]);
+  }, [onRecordingStop]);
+
+  const handleStopRecording = useCallback(async () => {
+    if (!isRecording || isStarting || isStopping) return;
+    
+    console.log('Starting stop countdown...');
+    setIsStopping(true);
+    setStopCountdown(5);
+
+    // Clear any existing intervals
+    if (countdownInterval.current) {
+      clearInterval(countdownInterval.current);
+      countdownInterval.current = null;
+    }
+
+    // Create a controller for the stop action
+    const controller = {
+      stop: () => {
+        if (countdownInterval.current) {
+          clearInterval(countdownInterval.current);
+          countdownInterval.current = null;
+        }
+        setIsStopping(false);
+        setStopCountdown(5);
+      }
+    };
+    stopTimeoutRef.current = controller;
+
+    // Start countdown
+    countdownInterval.current = setInterval(() => {
+      setStopCountdown(prev => {
+        if (prev <= 1) {
+          // Clear interval first
+          if (countdownInterval.current) {
+            clearInterval(countdownInterval.current);
+            countdownInterval.current = null;
+          }
+          // Schedule stop action
+          stopRecordingAction();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+  }, [isRecording, isStarting, isStopping, stopRecordingAction]);
+
+  const cancelStopRecording = useCallback(() => {
+    if (stopTimeoutRef.current) {
+      stopTimeoutRef.current.stop();
+      stopTimeoutRef.current = null;
+    }
+  }, []);
 
   useEffect(() => {
     if (recordingPath) {
@@ -156,6 +176,13 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         .catch(error => console.error('Error reading audio file:', error));
     }
   }, [recordingPath]);
+
+  useEffect(() => {
+    return () => {
+      if (countdownInterval.current) clearInterval(countdownInterval.current);
+      if (stopTimeoutRef.current) stopTimeoutRef.current.stop();
+    };
+  }, []);
 
   const togglePlayback = useCallback(async () => {
     console.log('Toggle playback:', {
@@ -238,10 +265,26 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           ) : (
             <>
               <button
-                onClick={isRecording ? handleStopRecording : handleStartRecording}
-                className="w-12 h-12 flex items-center justify-center bg-red-500 rounded-full text-white hover:bg-red-600 transition-colors"
+                onClick={isRecording ? 
+                  (isStopping ? cancelStopRecording : handleStopRecording) : 
+                  handleStartRecording}
+                disabled={isStarting || isProcessing}
+                className={`w-12 h-12 flex items-center justify-center ${
+                  isStarting || isProcessing ? 'bg-gray-400' : 'bg-red-500 hover:bg-red-600'
+                } rounded-full text-white transition-colors relative`}
               >
-                {isRecording ? <Square size={20} /> : <Mic size={20} />}
+                {isRecording ? (
+                  <>
+                    <Square size={20} />
+                    {isStopping && (
+                      <div className="absolute -top-8 text-red-500 font-medium">
+                        {stopCountdown > 0 ? `${stopCountdown}s` : 'Stopping...'}
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <Mic size={20} />
+                )}
               </button>
 
               <div className="flex items-center space-x-1 mx-4">

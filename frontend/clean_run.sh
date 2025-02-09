@@ -18,9 +18,9 @@ esac
 
 # Clean up previous builds
 echo "Cleaning up previous builds..."
-rm -rf target/
-rm -rf src-tauri/target
-rm -rf src-tauri/gen
+#rm -rf target/
+#rm -rf src-tauri/target
+#rm -rf src-tauri/gen
 
 # Clean up npm, pnp and next
 echo "Cleaning up npm, pnp and next..."
@@ -37,6 +37,6 @@ echo "Building Next.js application..."
 pnpm run build
 
 echo "Building Tauri app..."
-pnpm run tauri build
+pnpm run tauri dev
 
 sleep
