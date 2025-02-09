@@ -151,8 +151,6 @@ class TranscriptProcessor:
             
             logger.info(f"Processing transcript of length {len(transcript)} with chunk_size={chunk_size}, overlap={overlap}")
 
-            # Split transcript into chunks
-            chunks = [transcript[i:i+chunk_size] for i in range(0, len(transcript), chunk_size-overlap)]
             
             # Add chunks to collection
             if not self.collection:
@@ -169,6 +167,8 @@ class TranscriptProcessor:
                     result_retries=15, 
                 )
             elif model == "ollama":
+                chunk_size = 1900
+                overlap = 200
                 api_key = os.getenv("ANTHROPIC_API_KEY")
                 model = OllamaModel(model_name)
                 agent = Agent(
@@ -186,6 +186,8 @@ class TranscriptProcessor:
                 )
             else:
                 raise ValueError(f"Invalid model: {model}")
+            # Split transcript into chunks
+            chunks = [transcript[i:i+chunk_size] for i in range(0, len(transcript), chunk_size-overlap)]
             
             for i, chunk in enumerate(chunks):
                 logger.info(f"Adding chunk {i} to collection {chunk[:20]}......")
