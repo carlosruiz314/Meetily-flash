@@ -1,22 +1,35 @@
 <div align="center" style="border-bottom: none">
     <h1>
+        <img src="docs/6.png" width="400" style="border-radius: 10px;" />
         <br>
         Meetily - AI-Powered Meeting Assistant
     </h1>
+    <br>
+    <a href="https://github.com/Zackriya-Solutions/meeting-minutes/releases/tag/v0.0.2"><img src="https://img.shields.io/badge/Pre_Release-v0.0.2-brightgreen" alt="Pre-Release"></a>
+    <a href="https://github.com/Zackriya-Solutions/meeting-minutes/releases/tag/v0.0.2"><img src="https://img.shields.io/badge/License-MIT-blue" alt="MIT"></a>
+    <a href="https://github.com/Zackriya-Solutions/meeting-minutes/releases/tag/v0.0.2"><img src="https://img.shields.io/badge/Supported_OS-macOS-yellow" alt="Pre-Release"></a>
+    <br>
     <h3>
+    <br>
     Open source Ai Assistant for taking meeting notes
     </h3>
     <p align="center">
     <a href="https://meetily.zackriya.com"><b>Website</b></a> •
-    <a href="https://meetily.zackriya.com"><b>Contact Us</b></a> •
-    <a href="https://x.com/sujithx007"><b>Author</b></a> •
-    <a href="https://zackriya.com"><b>This project is supported by Zackriya</b>
-    </a>
+    <a href="https://www.linkedin.com/in/sujithscom/"><b>Author</b></a>
 </p>
     <p align="center">
+    
  An AI-Powered Meeting Assistant that captures live meeting audio, transcribes it in real-time, and generates summaries while ensuring user privacy. Perfect for teams who want to focus on discussions while automatically capturing and organizing meeting content without the need for external servers or complex infrastructure. 
 </p>
+
+<p align="center">
+    <img src="docs/demo_small.gif" width="650" alt="Meetily Demo" />
+    <br>
+    <a href="https://youtu.be/5k_Q5Wlahuk">View full Demo Video</a>
+</p>
+
 </div>
+
 
 ## Overview
 
@@ -82,19 +95,6 @@ Please check out the release [here](https://github.com/Zackriya-Solutions/meetin
 - Backend build process require CMake, C++ compiler, etc. Making it harder to build
 - Backend build process require Python 3.10 or newer
 - Frontend build process require Node.js
-
-### How to Get Started
-
-#### Frontend
-1. Download the app `dmg.zip` from [here](https://github.com/Zackriya-Solutions/meeting-minutes/releases/tag/v0.0.2)
-2. Double click the `Meeting Minutes.app` to run the app
-
-#### Backend
-0. Download the source code `Source Code.zip` from [here](https://github.com/Zackriya-Solutions/meeting-minutes/releases/tag/v0.0.2)
-1. Go to the `backend` directory: `cd backend`
-2. Make sure you have install all the pre requsites before proceeding - ffmpeg, cmake, c++ compiler and Python versions between 3.10 and 3.12 are required
-3. Build dependencies by eunning `build_whisper.sh`
-4. Run the server with `clean_start_backend.sh`
 
 
 ## LLM Integration
