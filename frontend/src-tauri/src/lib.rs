@@ -798,6 +798,12 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|_app| {
             log::info!("Application setup complete");
+
+            // Trigger microphone permission request on startup
+            if let Err(e) = audio::core::trigger_audio_permission() {
+                log::error!("Failed to trigger audio permission: {}", e);
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

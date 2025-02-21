@@ -3,7 +3,7 @@ use anyhow::{anyhow, Result};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::StreamError;
 use lazy_static::lazy_static;
-use log::{ error, info, warn};
+use log::{ error, info, warn, debug};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
@@ -273,18 +273,24 @@ pub fn trigger_audio_permission() -> Result<()> {
 
     let config = device.default_input_config()?;
 
-    // Attempt to build an input stream, which should trigger the permission request
-    let _stream = device.build_input_stream(
+    // Build and start an input stream to trigger the permission request
+    let stream = device.build_input_stream(
         &config.into(),
         |_data: &[f32], _: &cpal::InputCallbackInfo| {
             // Do nothing, we just want to trigger the permission request
         },
-        |err| eprintln!("Error in audio stream: {}", err),
+        |err| error!("Error in audio stream: {}", err),
         None,
     )?;
 
-    // We don't actually need to start the stream
-    // The mere attempt to build it should trigger the permission request
+    // Start the stream to actually trigger the permission dialog
+    stream.play()?;
+
+    // Sleep briefly to allow the permission dialog to appear
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // Stop the stream
+    drop(stream);
 
     Ok(())
 }
@@ -308,10 +314,23 @@ impl AudioStream {
         device: Arc<AudioDevice>,
         is_running: Arc<AtomicBool>,
     ) -> Result<Self> {
+        info!("Initializing audio stream for device: {}", device.to_string());
         let (tx, _) = broadcast::channel::<Vec<f32>>(1000);
         let tx_clone = tx.clone();
         let (cpal_audio_device, config) = get_device_and_config(&device).await?;
+        
+        // Verify we can actually get input config
+        match cpal_audio_device.default_input_config() {
+            Ok(conf) => info!("Default input config: {:?}", conf),
+            Err(e) => {
+                error!("Failed to get default input config: {}", e);
+                return Err(anyhow!("Failed to get default input config: {}", e));
+            }
+        }
+        
         let channels = config.channels();
+        info!("Audio config - Sample rate: {}, Channels: {}, Format: {:?}", 
+            config.sample_rate().0, channels, config.sample_format());
 
         let is_running_weak_2 = Arc::downgrade(&is_running);
         let is_disconnected = Arc::new(AtomicBool::new(false));
@@ -324,7 +343,9 @@ impl AudioStream {
         let stream_thread = Arc::new(tokio::sync::Mutex::new(Some(thread::spawn(move || {
             let device = device_clone;
             let device_name = device.to_string();
+            let device_name_clone = device_name.clone();  // Clone for the closure
             let config = config_clone;
+            info!("Starting audio stream thread for device: {}", device_name);
             let error_callback = move |err: StreamError| {
                 if err
                     .to_string()
@@ -332,13 +353,19 @@ impl AudioStream {
                 {
                     warn!(
                         "audio device {} disconnected. stopping recording.",
-                        device_name
+                        device_name_clone
                     );
                     stream_control_tx_clone
                         .send(StreamControl::Stop(oneshot::channel().0))
                         .unwrap();
 
                     is_disconnected_clone.store(true, Ordering::Relaxed);
+                } else if err.to_string().to_lowercase().contains("permission denied") || 
+                         err.to_string().to_lowercase().contains("access denied") {
+                    error!("Permission denied for audio device {}. Please check microphone permissions.", device_name_clone);
+                    if let Some(arc) = is_running_weak_2.upgrade() {
+                        arc.store(false, Ordering::Relaxed);
+                    }
                 } else {
                     error!("an error occurred on the audio stream: {}", err);
                     if err.to_string().contains("device is no longer valid") {
@@ -351,50 +378,86 @@ impl AudioStream {
             };
 
             let stream = match config.sample_format() {
-                cpal::SampleFormat::F32 => cpal_audio_device
-                    .build_input_stream(
+                cpal::SampleFormat::F32 => {
+                    match cpal_audio_device.build_input_stream(
                         &config.into(),
                         move |data: &[f32], _: &_| {
                             let mono = audio_to_mono(data, channels);
-                            let _ = tx.send(mono);
+                            debug!("Received audio chunk: {} samples", mono.len());
+                            if let Err(e) = tx.send(mono) {
+                                error!("Failed to send audio data: {}", e);
+                            }
                         },
-                        error_callback,
+                        error_callback.clone(),
                         None,
-                    )
-                    .expect("Failed to build input stream"),
-                cpal::SampleFormat::I16 => cpal_audio_device
-                    .build_input_stream(
+                    ) {
+                        Ok(stream) => stream,
+                        Err(e) => {
+                            error!("Failed to build input stream: {}", e);
+                            return;
+                        }
+                    }
+                }
+                cpal::SampleFormat::I16 => {
+                    match cpal_audio_device.build_input_stream(
                         &config.into(),
                         move |data: &[i16], _: &_| {
                             let mono = audio_to_mono(bytemuck::cast_slice(data), channels);
-                            let _ = tx.send(mono);
+                            debug!("Received audio chunk: {} samples", mono.len());
+                            if let Err(e) = tx.send(mono) {
+                                error!("Failed to send audio data: {}", e);
+                            }
                         },
-                        error_callback,
+                        error_callback.clone(),
                         None,
-                    )
-                    .expect("Failed to build input stream"),
-                cpal::SampleFormat::I32 => cpal_audio_device
-                    .build_input_stream(
+                    ) {
+                        Ok(stream) => stream,
+                        Err(e) => {
+                            error!("Failed to build input stream: {}", e);
+                            return;
+                        }
+                    }
+                }
+                cpal::SampleFormat::I32 => {
+                    match cpal_audio_device.build_input_stream(
                         &config.into(),
                         move |data: &[i32], _: &_| {
                             let mono = audio_to_mono(bytemuck::cast_slice(data), channels);
-                            let _ = tx.send(mono);
+                            debug!("Received audio chunk: {} samples", mono.len());
+                            if let Err(e) = tx.send(mono) {
+                                error!("Failed to send audio data: {}", e);
+                            }
                         },
-                        error_callback,
+                        error_callback.clone(),
                         None,
-                    )
-                    .expect("Failed to build input stream"),
-                cpal::SampleFormat::I8 => cpal_audio_device
-                    .build_input_stream(
+                    ) {
+                        Ok(stream) => stream,
+                        Err(e) => {
+                            error!("Failed to build input stream: {}", e);
+                            return;
+                        }
+                    }
+                }
+                cpal::SampleFormat::I8 => {
+                    match cpal_audio_device.build_input_stream(
                         &config.into(),
                         move |data: &[i8], _: &_| {
                             let mono = audio_to_mono(bytemuck::cast_slice(data), channels);
-                            let _ = tx.send(mono);
+                            debug!("Received audio chunk: {} samples", mono.len());
+                            if let Err(e) = tx.send(mono) {
+                                error!("Failed to send audio data: {}", e);
+                            }
                         },
-                        error_callback,
+                        error_callback.clone(),
                         None,
-                    )
-                    .expect("Failed to build input stream"),
+                    ) {
+                        Ok(stream) => stream,
+                        Err(e) => {
+                            error!("Failed to build input stream: {}", e);
+                            return;
+                        }
+                    }
+                }
                 _ => {
                     error!("unsupported sample format: {}", config.sample_format());
                     return;
@@ -403,8 +466,15 @@ impl AudioStream {
 
             if let Err(e) = stream.play() {
                 error!("failed to play stream for {}: {}", device.to_string(), e);
+                let err_str = e.to_string().to_lowercase();
+                if err_str.contains("permission") {
+                    error!("Permission error detected. Please check microphone permissions in System Preferences");
+                } else if err_str.contains("busy") {
+                    error!("Device is busy. Another application might be using it");
+                }
+                return;
             }
-
+            info!("Audio stream started successfully for device: {}", device_name);
             if let Ok(StreamControl::Stop(response)) = stream_control_rx.recv() {
                 info!("stopping audio stream...");
                 // First stop the stream
@@ -438,9 +508,8 @@ impl AudioStream {
         self.is_disconnected.store(true, Ordering::Release);
         
         // Send stop signal and wait for confirmation
-        let (tx, rx) = oneshot::channel();
+        let (tx, _rx) = oneshot::channel();
         self.stream_control.send(StreamControl::Stop(tx))?;
-        rx.await?;
 
         // Wait for thread to finish
         if let Some(thread_arc) = &self.stream_thread {
