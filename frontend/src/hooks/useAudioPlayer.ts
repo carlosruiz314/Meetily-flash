@@ -63,12 +63,6 @@ export const useAudioPlayer = (audioPath: string | null) => {
     }
 
     try {
-      // Cleanup any existing resources
-      stopPlayback();
-      if (audioBufferRef.current) {
-        audioBufferRef.current = null;
-      }
-      
       // Initialize context first
       const initialized = await initAudioContext();
       if (!initialized || !audioRef.current) {
@@ -89,11 +83,8 @@ export const useAudioPlayer = (audioPath: string | null) => {
       
       console.log('Audio file read, size:', result.length, 'bytes');
       
-      // Create a copy of the audio data and immediately clear the original
+      // Create a copy of the audio data
       const audioData = new Uint8Array(result).buffer;
-      
-      // Clear large arrays from memory
-      result.length = 0;
       
       console.log('Created audio buffer, size:', audioData.byteLength, 'bytes');
       
@@ -117,9 +108,6 @@ export const useAudioPlayer = (audioPath: string | null) => {
         );
       });
       
-      // Clear the raw audio data from memory
-      (audioData as any) = null;
-      
       audioBufferRef.current = audioBuffer;
       setDuration(audioBuffer.duration);
       setCurrentTime(0);
@@ -135,11 +123,6 @@ export const useAudioPlayer = (audioPath: string | null) => {
         });
       }
       setError('Failed to load audio file');
-      
-      // Cleanup on error
-      audioBufferRef.current = null;
-      setDuration(0);
-      setCurrentTime(0);
     }
   };
 
@@ -161,7 +144,6 @@ export const useAudioPlayer = (audioPath: string | null) => {
       try {
         sourceRef.current.stop();
         sourceRef.current.disconnect();
-        sourceRef.current.buffer = null;
       } catch (e) {
         console.log('Error stopping source:', e);
       }
@@ -226,34 +208,25 @@ export const useAudioPlayer = (audioPath: string | null) => {
       setIsPlaying(true);
       setError(null);
 
-      // Add throttling for UI updates
-      const THROTTLE_INTERVAL = 100; // Update UI every 100ms instead of every frame
-      let lastUpdateTime = 0;
-
+      // Setup time update
       const updateTime = () => {
         if (!audioRef.current || !sourceRef.current) {
           console.log('Update cancelled - context or source is null');
           return;
         }
         
-        const now = performance.now();
         const newTime = audioRef.current.currentTime - startTimeRef.current;
         
-        // Only update UI if enough time has passed
-        if (now - lastUpdateTime >= THROTTLE_INTERVAL) {
-          if (newTime >= duration) {
-            console.log('Playback finished');
-            stopPlayback();
-            setCurrentTime(0);
-            seekTimeRef.current = 0;
-          } else {
-            setCurrentTime(newTime);
-            seekTimeRef.current = newTime;
-            lastUpdateTime = now;
-          }
+        if (newTime >= duration) {
+          console.log('Playback finished');
+          stopPlayback();
+          setCurrentTime(0);
+          seekTimeRef.current = 0;
+        } else {
+          setCurrentTime(newTime);
+          seekTimeRef.current = newTime;
+          rafRef.current = requestAnimationFrame(updateTime);
         }
-        
-        rafRef.current = requestAnimationFrame(updateTime);
       };
       
       rafRef.current = requestAnimationFrame(updateTime);
