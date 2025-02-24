@@ -92,7 +92,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       });
       
       setRecordingPath(savePath);
-      setShowPlayback(true);
+      // setShowPlayback(true);
       setIsProcessing(false);
       onRecordingStop();
     } catch (error) {
