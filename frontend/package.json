@@ -1,6 +1,6 @@
 {
-  "name": "meeting-minutes-frontend",
-  "version": "0.1.0",
+  "name": "meetily-frontend",
+  "version": "0.0.4",
   "private": true,
   "main": "electron/main.js",
   "scripts": {

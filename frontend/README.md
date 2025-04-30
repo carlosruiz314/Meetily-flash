@@ -1,4 +1,4 @@
-# Meeting Minutes - Frontend
+# Meetily - Frontend
 
 A modern desktop application for recording, transcribing, and analyzing meetings with AI assistance. Built with Next.js and Tauri for a native desktop experience.
 

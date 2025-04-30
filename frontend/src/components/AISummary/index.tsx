@@ -12,9 +12,14 @@ interface Props {
   error: string | null;
   onSummaryChange: (summary: Summary) => void;
   onRegenerateSummary: () => void;
+  meeting?: {
+    id: string;
+    title: string;
+    created_at: string;
+  };
 }
 
-export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerateSummary }: Props) => {
+export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerateSummary, meeting }: Props) => {
   const generateUniqueId = (sectionKey: string) => {
     return `${sectionKey}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   };
@@ -515,7 +520,8 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
   };
 
   const convertToMarkdown = () => {
-    let markdown = '';
+    let markdown = `# AI Generated Summary of Meeting: ${meeting?.id || 'Unknown'} - ${meeting?.title || 'Untitled Meeting'}\n\n`;
+    markdown += `## Date: ${meeting?.created_at ? new Date(meeting.created_at).toLocaleDateString() : new Date().toLocaleDateString()}\n\n`;
     
     Object.entries(currentSummary).forEach(([key, section]) => {
       if (key === 'title') {

@@ -188,13 +188,22 @@ echo Run script created successfully
 REM Copy files to package directory
 echo Copying files to package directory...
 
+echo Waiting for 5 seconds...
+timeout /t 5 /nobreak >nul
+
 if not exist "%PACKAGE_NAME%" (
     mkdir "%PACKAGE_NAME%"
 )
 
+echo Waiting for 5 seconds...
+timeout /t 2 /nobreak >nul
+
 if not exist "%PACKAGE_NAME%\models" (
     mkdir "%PACKAGE_NAME%\models"
 )
+
+echo Waiting for 5 seconds...
+timeout /t 5 /nobreak >nul
 
 if exist "whisper.cpp\build\bin\Release\whisper-server.exe" (
     copy "whisper.cpp\build\bin\Release\whisper-server.exe" "%PACKAGE_NAME%\"
@@ -202,10 +211,16 @@ if exist "whisper.cpp\build\bin\Release\whisper-server.exe" (
     copy "whisper.cpp\build\bin\whisper-server.exe" "%PACKAGE_NAME%\"
 )
 
+echo Waiting for 5 seconds...
+timeout /t 5 /nobreak >nul
+
 if %ERRORLEVEL% neq 0 (
     echo Failed to copy whisper-server.exe
     goto :eof
 )
+
+echo Waiting for 5 seconds...
+timeout /t 5 /nobreak >nul
 
 copy "whisper.cpp\%MODEL_DIR%\%MODEL_NAME%" "%PACKAGE_NAME%\models\"
 if %ERRORLEVEL% neq 0 (
@@ -213,9 +228,15 @@ if %ERRORLEVEL% neq 0 (
     goto :eof
 )
 
+echo Waiting for 5 seconds...
+timeout /t 5 /nobreak >nul
+
 if exist "whisper.cpp\examples\server\public" (
     xcopy /E /Y /I "whisper.cpp\examples\server\public" "%PACKAGE_NAME%\public\"
 )
+
+echo Waiting for 5 seconds...
+timeout /t 5 /nobreak >nul
 
 echo === Environment Setup ===
 echo.
@@ -234,6 +255,9 @@ echo If you want to use Models hosted on Anthropic, OpenAi or GROQ, add the API 
 
 echo === Installing Python Dependencies ===
 echo.
+
+echo Waiting for 5 seconds...
+timeout /t 5 /nobreak >nul
 
 REM Create virtual environment only if it doesn't exist
 if not exist "venv" (

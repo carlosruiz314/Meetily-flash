@@ -7,7 +7,7 @@ if "%~1" neq "" (
     set "PORT=%~1"
 )
 
-echo Starting Meeting Minutes Backend with visible output...
+echo Starting Meetily Backend with visible output...
 echo Port: %PORT%
 echo.
 

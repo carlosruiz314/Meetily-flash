@@ -65,16 +65,14 @@ log_section "Building Whisper Server"
 log_info "Installing required dependencies..."
 brew install libomp llvm cmake || handle_error "Failed to install dependencies"
 
-log_info "Setting up compiler environment..."
-export CC=/opt/homebrew/opt/llvm/bin/clang
-export CXX=/opt/homebrew/opt/llvm/bin/clang++
-export LDFLAGS="-L/opt/homebrew/opt/llvm/lib"
-export CPPFLAGS="-I/opt/homebrew/opt/llvm/include"
-
 log_info "Building whisper.cpp..."
 rm -rf build
 mkdir build && cd build || handle_error "Failed to create build directory"
-cmake -DCMAKE_C_COMPILER=/opt/homebrew/opt/llvm/bin/clang -DCMAKE_CXX_COMPILER=/opt/homebrew/opt/llvm/bin/clang++ .. || handle_error "CMake configuration failed"
+
+# Configure CMake with simple warning suppression
+log_info "Configuring CMake..."
+cmake -DCMAKE_C_FLAGS="-w" -DCMAKE_CXX_FLAGS="-w" .. || handle_error "CMake configuration failed"
+
 make -j4 || handle_error "Make failed"
 cd ..
 log_success "Build completed successfully"

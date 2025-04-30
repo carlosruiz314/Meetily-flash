@@ -1,4 +1,4 @@
-# Meeting Minutes API Documentation
+# Meetily API Documentation
 
 ## Prerequisites
 

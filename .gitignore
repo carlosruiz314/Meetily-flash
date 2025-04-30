@@ -51,3 +51,8 @@ next-env.d.ts
 # Large media files
 docs/demo.mov
 docs/demo.gif
+
+
+meeting_minutes.db
+
+

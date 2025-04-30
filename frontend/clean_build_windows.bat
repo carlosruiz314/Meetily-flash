@@ -1,6 +1,4 @@
 @echo off
-echo Cleaning cargo build...
-cargo clean
 
 echo Cleaning npm dependencies...
 rd /s /q node_modules

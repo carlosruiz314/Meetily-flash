@@ -2,7 +2,7 @@
 setlocal enabledelayedexpansion
 
 echo ===================================
-echo Checking Meeting Minutes Backend Status
+echo Checking Meetily Backend Status
 echo ===================================
 echo.
 

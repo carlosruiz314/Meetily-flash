@@ -651,7 +651,7 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
             Vec::new()
         }
     };
-    
+    /*
     // Mix the audio and convert to 16-bit PCM
     let max_len = mic_data.len().max(system_data.len());
     let mut mixed_data = Vec::with_capacity(max_len);
@@ -719,7 +719,7 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
     wav_file.extend_from_slice(&bytes);
     
     log_info!("Created WAV file with {} bytes total", wav_file.len());
-    
+    */
     // Create the save directory if it doesn't exist
     if let Some(parent) = std::path::Path::new(&args.save_path).parent() {
         if !parent.exists() {
@@ -732,6 +732,7 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
         }
     }
 
+    /*
     // Save the recording
     log_info!("Saving recording to: {}", args.save_path);
     match fs::write(&args.save_path, wav_file) {
@@ -742,6 +743,7 @@ async fn stop_recording(args: RecordingArgs) -> Result<(), String> {
             return Err(err_msg);
         }
     }
+    */
     
     // Clean up
     unsafe {

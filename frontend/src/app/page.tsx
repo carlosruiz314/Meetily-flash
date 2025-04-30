@@ -12,6 +12,9 @@ import { writeTextFile } from '@tauri-apps/plugin-fs';
 import { downloadDir } from '@tauri-apps/api/path';
 import { listenerCount } from 'process';
 import { invoke } from '@tauri-apps/api/core';
+import { useNavigation } from '@/hooks/useNavigation';
+import { useRouter } from 'next/navigation';
+import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
 
 interface TranscriptUpdate {
   text: string;
@@ -40,7 +43,7 @@ export default function Home() {
   const [showSummary, setShowSummary] = useState(false);
   const [summaryStatus, setSummaryStatus] = useState<SummaryStatus>('idle');
   const [barHeights, setBarHeights] = useState(['58%', '76%', '58%']);
-  const [meetingTitle, setMeetingTitle] = useState('New Call');
+  const [meetingTitle, setMeetingTitle] = useState('+ New Call');
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [aiSummary, setAiSummary] = useState<Summary | null>({
     key_points: { title: "Key Points", blocks: [] },
@@ -49,21 +52,21 @@ export default function Home() {
     main_topics: { title: "Main Topics", blocks: [] }
   });
   const [summaryResponse, setSummaryResponse] = useState<SummaryResponse | null>(null);
-
   const [isCollapsed, setIsCollapsed] = useState(false);
-
   const [summaryError, setSummaryError] = useState<string | null>(null);
-
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
     provider: 'ollama',
     model: 'llama3.2:latest',
     whisperModel: 'large-v3'
   });
-
   const [originalTranscript, setOriginalTranscript] = useState<string>('');
-
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [error, setError] = useState<string>('');
+  const [showModelSettings, setShowModelSettings] = useState(false);
+
+  const { setCurrentMeeting, setMeetings ,meetings, isMeetingActive, setIsMeetingActive} = useSidebar();
+  const handleNavigation = useNavigation('', ''); // Initialize with empty values
+  const router = useRouter();
 
   const modelOptions = {
     ollama: models.map(model => model.name),
@@ -113,13 +116,36 @@ export default function Home() {
     'large-v3-turbo-q8_0'
   ];
 
-  const [showModelSettings, setShowModelSettings] = useState(false);
-
-  const { setCurrentMeeting } = useSidebar();
-
   useEffect(() => {
     setCurrentMeeting({ id: 'intro-call', title: meetingTitle });
   }, [meetingTitle, setCurrentMeeting]);
+
+  useEffect(() => {
+    const checkRecordingState = async () => {
+      try {
+        const { invoke } = await import('@tauri-apps/api/core');
+        const isCurrentlyRecording = await invoke('is_recording');
+        
+        if (isCurrentlyRecording && !isRecording) {
+          console.log('Recording is active in backend but not in UI, synchronizing state...');
+          setIsRecording(true);
+          setIsMeetingActive(true);
+        } else if (!isCurrentlyRecording && isRecording) {
+          console.log('Recording is inactive in backend but active in UI, synchronizing state...');
+          setIsRecording(false);
+        }
+      } catch (error) {
+        console.error('Failed to check recording state:', error);
+      }
+    };
+
+    checkRecordingState();
+    
+    // Set up a polling interval to periodically check recording state
+    const interval = setInterval(checkRecordingState, 5000); // Check every 5 seconds
+    
+    return () => clearInterval(interval);
+  }, [isRecording, setIsMeetingActive]);
 
   useEffect(() => {
     if (isRecording) {
@@ -230,12 +256,14 @@ export default function Home() {
     try {
       console.log('Starting recording...');
       const { invoke } = await import('@tauri-apps/api/core');
+      const randomTitle = `Meeting ${Math.random().toString(36).substring(2, 8)}`;
+      setMeetingTitle(randomTitle);
       
-      // First check if we're already recording
+      // Only check if we're already recording, but don't try to stop it first
       const isCurrentlyRecording = await invoke('is_recording');
       if (isCurrentlyRecording) {
-        console.log('Already recording, stopping first...');
-        await handleRecordingStop();
+        console.log('Already recording, cannot start a new recording');
+        return; // Just return without starting a new recording
       }
 
       // Start new recording with whisper model
@@ -247,6 +275,7 @@ export default function Home() {
       console.log('Recording started successfully');
       setIsRecording(true);
       setTranscripts([]); // Clear previous transcripts when starting new recording
+      setIsMeetingActive(true);
     } catch (error) {
       console.error('Failed to start recording:', error);
       alert('Failed to start recording. Check console for details.');
@@ -280,13 +309,13 @@ export default function Home() {
         .map(t => `[${t.timestamp}] ${t.text}`)
         .join('\n\n');
 
-      const documentContent = `Meeting Title: ${meetingTitle}\nDate: ${new Date().toLocaleString()}\n\nTranscript:\n${formattedTranscript}`;
+      // const documentContent = `Meeting Title: ${meetingTitle}\nDate: ${new Date().toLocaleString()}\n\nTranscript:\n${formattedTranscript}`;
 
-      await invoke('save_transcript', { 
-        filePath: transcriptPath,
-        content: documentContent
-      });
-      console.log('Transcript saved to:', transcriptPath);
+      // await invoke('save_transcript', { 
+      //   filePath: transcriptPath,
+      //   content: documentContent
+      // });
+      // console.log('Transcript saved to:', transcriptPath);
 
       setIsRecording(false);
       
@@ -307,6 +336,69 @@ export default function Home() {
       }
       alert('Failed to stop recording. Check console for details.');
       setIsRecording(false); // Reset state on error
+    }
+  };
+
+  const handleRecordingStop2 = async (isCallApi: boolean) => {
+    try {
+      console.log('Stopping recording (new implementation)...');
+      const { invoke } = await import('@tauri-apps/api/core');
+      const { appDataDir } = await import('@tauri-apps/api/path');
+      
+      const dataDir = await appDataDir();
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const transcriptPath = `${dataDir}transcript-${timestamp}.txt`;
+      const audioPath = `${dataDir}recording-${timestamp}.wav`;
+      
+      // Stop recording and get audio path
+      await invoke('stop_recording', { 
+        args: { 
+          model_config: modelConfig,
+          save_path: audioPath
+        }
+      });
+      console.log('Recording stopped successfully');
+
+      // Save to SQLite
+      if (isCallApi) {
+        console.log('Saving transcript to database...', transcripts);
+        const response = await fetch('http://localhost:5167/save-transcript', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            meeting_title: meetingTitle,
+            transcripts: transcripts
+          })
+        });
+
+        if (!response.ok) {
+          setIsRecording(false);
+          throw new Error('Failed to save transcript to database');
+        }
+
+        const responseData = await response.json();
+        const meetingId = responseData.meeting_id;
+        setMeetings((prev: CurrentMeeting[]) => [{ id: meetingId, title: meetingTitle }, ...prev]);
+        
+        // Set current meeting and navigate
+        setCurrentMeeting({ id: meetingId, title: meetingTitle });
+        setIsMeetingActive(false);
+        router.push('/meeting-details');
+      }
+
+      setIsRecording(false);
+      
+      // Show summary button if we have transcript content
+      if (transcripts.length > 0) {
+        setShowSummary(true);
+      } else {
+        console.log('No transcript content available');
+      }
+    } catch (error) {
+      console.error('Error in handleRecordingStop2:', error);
+      setIsRecording(false);
     }
   };
 
@@ -368,6 +460,7 @@ export default function Home() {
 
       const { process_id } = await response.json();
       console.log('Process ID:', process_id);
+   
 
       // Poll for summary status
       const pollInterval = setInterval(async () => {
@@ -571,6 +664,7 @@ export default function Home() {
       const pollInterval = setInterval(async () => {
         try {
           const statusResponse = await fetch(`http://localhost:5167/get-summary/${process_id}`);
+          
           if (!statusResponse.ok) {
             const errorData = await statusResponse.json();
             console.error('Get summary failed:', errorData);
@@ -768,7 +862,7 @@ export default function Home() {
             <div className="bg-white rounded-full shadow-lg flex items-center">
               <RecordingControls
                 isRecording={isRecording}
-                onRecordingStop={handleRecordingStop}
+                onRecordingStop={() => handleRecordingStop2(true)}
                 onRecordingStart={handleRecordingStart}
                 onTranscriptReceived={handleTranscriptUpdate}
                 barHeights={barHeights}

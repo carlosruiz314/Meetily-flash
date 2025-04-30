@@ -1,6 +1,6 @@
 [package]
-name = "meeting-minutes-frontend-app"
-version = "0.1.0"
+name = "meetily-frontend-app"
+version = "0.0.4"
 description = "A Tauri App for meeting minutes"
 authors = ["Sujith S"]
 license = "MIT"
@@ -65,9 +65,6 @@ ndarray = "0.16"
 bytes = { version = "1.9.0", features = ["serde"] }
 
 esaxx-rs = "0.1.10"
-samplerate = { version = "0.2.4" }
-libsamplerate-sys = "0.1.10"
-
 symphonia = { version = "0.5.4", features = ["aac", "isomp4", "opt-simd"] }
 rand = "0.8.5"
 rubato = "0.15.0"

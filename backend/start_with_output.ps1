@@ -8,7 +8,7 @@ if ($args.Count -gt 0) {
 }
 
 Write-Host "====================================="
-Write-Host "Meeting Minutes Backend Startup"
+Write-Host "Meetily Backend Startup"
 Write-Host "====================================="
 Write-Host "Python Backend Port: $port"
 Write-Host "====================================="
@@ -140,7 +140,7 @@ if (-not (Test-Path $modelFile)) {
 }
 
 Write-Host "====================================="
-Write-Host "Starting Meeting Minutes Backend"
+Write-Host "Starting Meetily Backend"
 Write-Host "====================================="
 Write-Host "Model: $modelName"
 Write-Host "Python Backend Port: $port"

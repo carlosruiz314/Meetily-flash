@@ -16,6 +16,19 @@ case $LOG_LEVEL in
         ;;
 esac
 
+# Check and install CMake if needed
+echo "Checking CMake version..."
+if ! command -v cmake &> /dev/null; then
+    echo "CMake not found. Installing via Homebrew..."
+    brew install cmake
+else
+    CMAKE_VERSION=$(cmake --version | head -n1 | cut -d" " -f3)
+    if [[ "$CMAKE_VERSION" < "3.5" ]]; then
+        echo "CMake version $CMAKE_VERSION is too old. Updating via Homebrew..."
+        brew upgrade cmake
+    fi
+fi
+
 # Clean up previous builds
 echo "Cleaning up previous builds..."
 rm -rf target/
@@ -36,7 +49,9 @@ pnpm install
 echo "Building Next.js application..."
 pnpm run build
 
+# Set environment variables for the build
+
 echo "Building Tauri app..."
 pnpm run tauri build
-
 sleep
+

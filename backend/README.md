@@ -1,4 +1,4 @@
-# Meeting Minutes Backend
+# Meetily Backend
 
 FastAPI backend for meeting transcription and analysis
 
