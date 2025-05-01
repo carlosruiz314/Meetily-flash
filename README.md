@@ -40,6 +40,38 @@
 
 </div>
 
+# Table of Contents
+- [Overview](#overview)
+- [Features](#features)
+- [System Architecture](#system-architecture)
+  - [Core Components](#core-components)
+  - [Deployment Architecture](#deployment-architecture)
+- [Prerequisites](#prerequisites)
+- [Setup Instructions](#setup-instructions)
+  - [Windows OS](#windows-os)
+    - [Frontend Setup](#1-frontend-setup)
+    - [Backend Setup](#2-backend-setup)
+  - [macOS](#for-macos)
+    - [Frontend Setup](#1-frontend-setup-1)
+    - [Backend Setup](#2-backend-setup-1)
+- [Development Setup](#development-setup)
+- [Whisper Model Selection](#whisper-model-selection)
+- [Known Issues](#known-issues)
+- [LLM Integration](#llm-integration)
+  - [Supported Providers](#supported-providers)
+  - [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+  - [Backend Issues](#backend-issues)
+  - [Frontend Issues](#frontend-issues)
+- [Uninstallation](#uninstallation)
+- [Development Guidelines](#development-guidelines)
+- [Contributing](#contributing)
+- [License](#license)
+- [Introducing Subscription](#introducing-subscription)
+- [Contributions](#contributions)
+- [Acknowledgments](#acknowledgments)
+- [Star History](#star-history)
+
 # Overview
 
 An AI-powered meeting assistant that captures live meeting audio, transcribes it in real-time, and generates summaries while ensuring user privacy. Perfect for teams who want to focus on discussions while automatically capturing and organizing meeting content.
@@ -231,20 +263,35 @@ Provide necessary permissions for audio capture and microphone access.
 
 **Option 1: Using Homebrew (Recommended)**
 ```bash
-# Install the backend using Homebrew
-brew install meetily-backend
 
-# Download a Whisper model (choose size based on your needs)
-meetily-download-model medium
+(Optional)
 
-# Start the backend server
-meetily-server
+# If meetily is already installed in your system, uninstall the current versions
+
+brew uninstall meetily
+
+brew uninstall meetily-backend
+
+brew untap zackriya-solutions/meetily
+
 ```
 
-You can set up API keys during installation or manually:
 ```bash
-echo "ANTHROPIC_API_KEY=your_key_here" > $(brew --prefix)/opt/meetily-backend/backend/.env
-echo "GROQ_API_KEY=your_key_here" >> $(brew --prefix)/opt/meetily-backend/backend/.env
+
+  
+
+# Install Meetily using Homebrew
+
+brew tap zackriya-solutions/meetily
+
+brew install --cask meetily
+
+  
+
+# Start the backend server
+
+meetily-server --language en --model medium
+
 ```
 
 **Option 2: Manual Setup**
@@ -260,11 +307,6 @@ source venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
-# Add environment file with API keys
-echo -e "ANTHROPIC_API_KEY=your_api_key\nGROQ_API_KEY=your_api_key" | tee .env
-
-# Configure environment variables for Groq
-export GROQ_API_KEY=your_groq_api_key
 
 # Build dependencies
 chmod +x build_whisper.sh
@@ -321,16 +363,7 @@ The backend supports multiple LLM providers through a unified interface. Current
 - **Groq** (Llama3.2 90 B)
 - **Ollama** (Local models that supports function calling)
 
-### Configuration
-Create `.env` file with your API keys:
-```env
-# Required for Anthropic
-ANTHROPIC_API_KEY=your_key_here  
 
-# Required for Groq 
-GROQ_API_KEY=your_key_here
-
-```
 
 ## Troubleshooting
 

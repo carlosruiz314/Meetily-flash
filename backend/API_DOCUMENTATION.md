@@ -73,10 +73,9 @@ backend/
 │   ├── __init__.py
 │   ├── main.py              # Main FastAPI application
 │   ├── db.py               # Database operations
-│   └── Process_transcrip.py # Transcript processing logic
+│   └── transcript_processor.py.py # Transcript processing logic
 ├── requirements.txt         # Python dependencies
-├── .env                    # Environment variables
-└── meetings.db             # SQLite database
+└── meeting_minutes.db             # SQLite database
 ```
 
 ## Overview

@@ -83,12 +83,7 @@ FastAPI backend for meeting transcription and analysis
    - Pull required models: `ollama pull mistral` (or your preferred model)
    - Verify installation: `ollama list`
 
-### 1. Environment Setup
-Create `.env` file in the backend directory:
-```bash
-ANTHROPIC_API_KEY=your_key_here  # Optional, for Claude
-GROQ_API_KEY=your_key_here      # Optional, for Groq
-```
+
 
 ### 2. Python Dependencies
 Install Python dependencies:
