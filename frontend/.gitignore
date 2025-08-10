@@ -15,6 +15,13 @@ package-lock.json
 !.yarn/versions
 *.mp4
 
+transcripts/
+chroma/
+models/
+whisper.cpp/
+whisper-server*
+whisper-server-package/
+
 # testing
 /coverage
 /dist

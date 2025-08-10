@@ -1,20 +1,49 @@
 import aiosqlite
 import json
+import os
 from datetime import datetime
 from typing import Optional, Dict
 import logging
 from contextlib import asynccontextmanager
 import sqlite3
+try:
+    from .schema_validator import SchemaValidator
+except ImportError:
+    # Handle case when running as script directly
+    import sys
+    import os
+    sys.path.append(os.path.dirname(__file__))
+    from schema_validator import SchemaValidator
 
 logger = logging.getLogger(__name__)
 
 class DatabaseManager:
-    def __init__(self, db_path: str = "meeting_minutes.db"):
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            db_path = os.getenv('DATABASE_PATH', 'meeting_minutes.db')
         self.db_path = db_path
+        self.schema_validator = SchemaValidator(self.db_path)
         self._init_db()
 
     def _init_db(self):
-        """Initialize the database with required tables"""
+        """Initialize the database with legacy approach"""
+        try:
+            # Run legacy initialization (handles all table creation)
+            logger.info("Initializing database tables...")
+            self._legacy_init_db()
+            
+            # Validate schema integrity
+            logger.info("Validating schema integrity...")
+            self.schema_validator.validate_schema()
+            
+        except Exception as e:
+            logger.error(f"Database initialization failed: {str(e)}")
+            raise
+
+
+
+    def _legacy_init_db(self):
+        """Legacy database initialization (for backward compatibility)"""
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
@@ -85,6 +114,20 @@ class DatabaseManager:
                     openaiApiKey TEXT,
                     anthropicApiKey TEXT,
                     ollamaApiKey TEXT
+                )
+            """)
+
+            # Create transcript_settings table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS transcript_settings (
+                    id TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    whisperApiKey TEXT,
+                    deepgramApiKey TEXT,
+                    elevenLabsApiKey TEXT,
+                    groqApiKey TEXT,
+                    openaiApiKey TEXT
                 )
             """)
 
@@ -406,7 +449,175 @@ class DatabaseManager:
         async with self._get_connection() as conn:
             cursor = await conn.execute(f"SELECT {api_key_name} FROM settings WHERE id = '1'")
             row = await cursor.fetchone()
-            return row[0] if row else None
+            return row[0] if row and row[0] else ""
+
+    async def get_transcript_config(self):
+        """Get the current transcript configuration"""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("SELECT provider, model FROM transcript_settings")
+            row = await cursor.fetchone()
+            if row:
+                return dict(zip([col[0] for col in cursor.description], row))
+            else:
+                # Return default configuration if no transcript settings exist
+                return {
+                    "provider": "localWhisper",
+                    "model": "large-v3"
+                }
+
+    async def save_transcript_config(self, provider: str, model: str):
+        """Save the transcript settings"""
+        async with self._get_connection() as conn:
+            # Check if the configuration already exists
+            cursor = await conn.execute("SELECT id FROM transcript_settings")
+            existing_config = await cursor.fetchone()
+            if existing_config:
+                # Update existing configuration
+                await conn.execute("""
+                    UPDATE transcript_settings 
+                    SET provider = ?, model = ?
+                    WHERE id = '1'
+                """, (provider, model))
+            else:
+                # Insert new configuration
+                await conn.execute("""
+                    INSERT INTO transcript_settings (id, provider, model)
+                    VALUES (?, ?, ?)
+                """, ('1', provider, model))
+            await conn.commit()
+
+    async def save_transcript_api_key(self, api_key: str, provider: str):
+        """Save the transcript API key"""
+        provider_list = ["localWhisper","deepgram","elevenLabs","groq","openai"]
+        if provider not in provider_list:
+            raise ValueError(f"Invalid provider: {provider}")
+        if provider == "localWhisper":
+            api_key_name = "whisperApiKey"
+        elif provider == "deepgram":
+            api_key_name = "deepgramApiKey"
+        elif provider == "elevenLabs":
+            api_key_name = "elevenLabsApiKey"
+        elif provider == "groq":
+            api_key_name = "groqApiKey"
+        elif provider == "openai":
+            api_key_name = "openaiApiKey"
+        async with self._get_connection() as conn:
+            await conn.execute(f"UPDATE transcript_settings SET {api_key_name} = ? WHERE id = '1'", (api_key,))
+            await conn.commit()
+
+    async def get_transcript_api_key(self, provider: str):
+        """Get the transcript API key"""
+        provider_list = ["localWhisper","deepgram","elevenLabs","groq","openai"]
+        if provider not in provider_list:
+            raise ValueError(f"Invalid provider: {provider}")
+        if provider == "localWhisper":
+            api_key_name = "whisperApiKey"
+        elif provider == "deepgram":
+            api_key_name = "deepgramApiKey"
+        elif provider == "elevenLabs":
+            api_key_name = "elevenLabsApiKey"
+        elif provider == "groq":
+            api_key_name = "groqApiKey"
+        elif provider == "openai":
+            api_key_name = "openaiApiKey"
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(f"SELECT {api_key_name} FROM transcript_settings WHERE id = '1'")
+            row = await cursor.fetchone()
+            return row[0] if row and row[0] else ""
+
+    async def search_transcripts(self, query: str):
+        """Search through meeting transcripts for the given query"""
+        if not query or query.strip() == "":
+            return []
+            
+        # Convert query to lowercase for case-insensitive search
+        search_query = f"%{query.lower()}%"
+        
+        try:
+            async with self._get_connection() as conn:
+                # Search in transcripts table
+                cursor = await conn.execute("""
+                    SELECT m.id, m.title, t.transcript, t.timestamp
+                    FROM meetings m
+                    JOIN transcripts t ON m.id = t.meeting_id
+                    WHERE LOWER(t.transcript) LIKE ?
+                    ORDER BY m.created_at DESC
+                """, (search_query,))
+                
+                rows = await cursor.fetchall()
+                
+                # Also search in transcript_chunks for full transcripts
+                cursor2 = await conn.execute("""
+                    SELECT m.id, m.title, tc.transcript_text
+                    FROM meetings m
+                    JOIN transcript_chunks tc ON m.id = tc.meeting_id
+                    WHERE LOWER(tc.transcript_text) LIKE ?
+                    AND m.id NOT IN (SELECT DISTINCT meeting_id FROM transcripts WHERE LOWER(transcript) LIKE ?)
+                    ORDER BY m.created_at DESC
+                """, (search_query, search_query))
+                
+                chunk_rows = await cursor2.fetchall()
+                
+                # Format the results
+                results = []
+                
+                # Process transcript matches
+                for row in rows:
+                    meeting_id, title, transcript, timestamp = row
+                    
+                    # Find the matching context (snippet around the match)
+                    transcript_lower = transcript.lower()
+                    match_index = transcript_lower.find(query.lower())
+                    
+                    # Extract context around the match (100 chars before and after)
+                    start_index = max(0, match_index - 100)
+                    end_index = min(len(transcript), match_index + len(query) + 100)
+                    context = transcript[start_index:end_index]
+                    
+                    # Add ellipsis if we truncated the text
+                    if start_index > 0:
+                        context = "..." + context
+                    if end_index < len(transcript):
+                        context += "..."
+                    
+                    results.append({
+                        'id': meeting_id,
+                        'title': title,
+                        'matchContext': context,
+                        'timestamp': timestamp
+                    })
+                
+                # Process transcript_chunks matches
+                for row in chunk_rows:
+                    meeting_id, title, transcript_text = row
+                    
+                    # Find the matching context (snippet around the match)
+                    transcript_lower = transcript_text.lower()
+                    match_index = transcript_lower.find(query.lower())
+                    
+                    # Extract context around the match (100 chars before and after)
+                    start_index = max(0, match_index - 100)
+                    end_index = min(len(transcript_text), match_index + len(query) + 100)
+                    context = transcript_text[start_index:end_index]
+                    
+                    # Add ellipsis if we truncated the text
+                    if start_index > 0:
+                        context = "..." + context
+                    if end_index < len(transcript_text):
+                        context += "..."
+                    
+                    results.append({
+                        'id': meeting_id,
+                        'title': title,
+                        'matchContext': context,
+                        'timestamp': datetime.utcnow().isoformat()  # Use current time as fallback
+                    })
+                
+                return results
+                
+        except Exception as e:
+            logger.error(f"Error searching transcripts: {str(e)}")
+            raise
         
     async def delete_api_key(self, provider: str):
         """Delete the API key"""
@@ -424,6 +635,39 @@ class DatabaseManager:
         async with self._get_connection() as conn:
             await conn.execute(f"UPDATE settings SET {api_key_name} = NULL WHERE id = '1'")
             await conn.commit()
-            
+    
+    async def update_meeting_summary(self, meeting_id: str, summary: dict):
+        """Update a meeting's summary"""
+        now = datetime.utcnow().isoformat()
+        try:
+            async with self._get_connection() as conn:
+                # Check if the meeting exists
+                cursor = await conn.execute("SELECT id FROM meetings WHERE id = ?", (meeting_id,))
+                meeting = await cursor.fetchone()
+                
+                if not meeting:
+                    raise ValueError(f"Meeting with ID {meeting_id} not found")
+                
+                # Update the summary in the summary_processes table
+                await conn.execute("""
+                    UPDATE summary_processes
+                    SET result = ?, updated_at = ?
+                    WHERE meeting_id = ?
+                """, (json.dumps(summary), now, meeting_id))
+                
+                # Update the meeting's updated_at timestamp
+                await conn.execute("""
+                    UPDATE meetings
+                    SET updated_at = ?
+                    WHERE id = ?
+                """, (now, meeting_id))
+                
+                await conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"Error updating meeting summary: {str(e)}")
+            raise
+
+
    
 

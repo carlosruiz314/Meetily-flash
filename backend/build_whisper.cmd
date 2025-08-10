@@ -170,6 +170,11 @@ if not exist "%PACKAGE_NAME%\models" (
     echo     shift /2
     echo     goto parse_args
     echo )
+    echo if "%%~1"=="--language" (
+    echo     set "LANGUAGE=%%~2"
+    echo     shift /2
+    echo     goto parse_args
+    echo )
     echo echo Unknown option: %%~1
     echo exit /b 1
     echo.
@@ -180,6 +185,7 @@ if not exist "%PACKAGE_NAME%\models" (
     echo     --host "%%HOST%%" ^
     echo     --port "%%PORT%%" ^
     echo     --diarize ^
+    echo     --language "%%LANGUAGE%%" ^
     echo     --print-progress
 ) > "%PACKAGE_NAME%\run-server.cmd"
 

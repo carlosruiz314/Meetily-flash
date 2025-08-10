@@ -203,8 +203,49 @@ log_section "Starting Services"
 
 # Start the whisper server in background
 log_info "Starting Whisper server... 🎙️"
+
+# Start whisper server in background
+WHISPER_PORT=8178
+
+# Ask user to change the whisper server port if needed
+read -p "$(echo -e "${YELLOW}🎯 Enter the Whisper server port (default: 8178):${NC} ")" -n 1 -r
+if [[ ! $REPLY =~ ^[0-9]+$ ]]; then
+    WHISPER_PORT=8178
+else
+    # Check if port is valid 4 numbers that is already not in use and is not part of standard ports
+    if [[ $REPLY =~ ^[0-9]{4}$ ]]; then
+        if lsof -i :$REPLY | grep -q LISTEN; then
+            log_warning "Port $REPLY is already in use"
+            read -p "$(echo -e "${YELLOW}🤔 Kill it? (y/N)${NC} ")" -n 1 -r
+            echo
+            if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+                handle_error "User chose not to terminate existing backend app"
+            fi
+
+            log_info "Terminating backend app..."
+            if ! kill -9 $(lsof -t -i :$    REPLY) 2>/dev/null; then
+                handle_error "Failed to terminate backend app"
+            fi
+            log_success "Backend app terminated"
+            sleep 1  # Give processes time to terminate
+        fi
+        WHISPER_PORT=$REPLY
+    else
+        log_warning "Invalid port number. Using default port 8178"
+        WHISPER_PORT=8178
+    fi
+fi
+
+# Enter language
+read -p "$(echo -e "${YELLOW}🎯 Enter the language (default: en):${NC} ")" -n 2 -r
+if [[ ! $REPLY =~ ^[a-zA-Z]+$ ]]; then
+    LANGUAGE="en"
+else
+    LANGUAGE=$REPLY
+fi
+
 cd "$PACKAGE_NAME" || handle_error "Failed to change to whisper-server directory"
-./run-server.sh --model "models/$MODEL_NAME" &
+./run-server.sh --model "models/$MODEL_NAME" --host "0.0.0.0" --port $WHISPER_PORT --language $LANGUAGE &
 WHISPER_PID=$!
 cd .. || handle_error "Failed to return to root directory"
 
@@ -229,7 +270,7 @@ if ! pip show fastapi >/dev/null 2>&1; then
     handle_error "FastAPI not found. Please run build_whisper.sh to install dependencies"
 fi
 
-python app/main.py &
+source venv/bin/activate && python app/main.py &
 PYTHON_PID=$!
 
 # Wait for backend to start and check if it's running
@@ -239,8 +280,8 @@ if ! kill -0 $PYTHON_PID 2>/dev/null; then
 fi
 
 # Check if the port is actually listening
-if ! lsof -i :$PORT | grep -q LISTEN; then
-    handle_error "Python backend is not listening on port $PORT"
+if ! lsof -i :$WHISPER_PORT | grep -q LISTEN; then
+    handle_error "Python backend is not listening on port $WHISPER_PORT"
 fi
 
 log_success "🎉 All services started successfully!"
@@ -249,8 +290,8 @@ echo -e "${GREEN}🐍 Python Backend (PID: $PYTHON_PID)${NC}"
 echo -e "${BLUE}Press Ctrl+C to stop all services${NC}"
 
 # Show whisper server port and python backend port
-echo -e "${BLUE}Whisper Server Port: $PORT${NC}"
-echo -e "${BLUE}Python Backend Port: 8178${NC}"
+echo -e "${BLUE}Whisper Server Port: $WHISPER_PORT${NC}"
+echo -e "${BLUE}Python Backend Port: $PORT${NC}"
 
 # Keep the script running and wait for both processes
 wait $WHISPER_PID $PYTHON_PID || handle_error "One of the services crashed"

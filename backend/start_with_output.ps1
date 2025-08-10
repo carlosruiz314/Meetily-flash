@@ -2,15 +2,22 @@
 # This script uses PowerShell's Start-Process to run both servers and show their output
 
 # Set the port for Python backend (default: 5167)
-$port = 5167
+$portPython = 5167
 if ($args.Count -gt 0) {
-    $port = $args[0]
+    $portPython = $args[0]
+}
+
+# Set the port for Whisper server (default: 8178)
+$portWhisper = 8178
+if ($args.Count -gt 1) {
+    $portWhisper = $args[1]
 }
 
 Write-Host "====================================="
 Write-Host "Meetily Backend Startup"
 Write-Host "====================================="
-Write-Host "Python Backend Port: $port"
+Write-Host "Python Backend Port: $portPython"
+Write-Host "Whisper Server Port: $portWhisper"
 Write-Host "====================================="
 Write-Host ""
 
@@ -62,6 +69,21 @@ $validModels = @(
     "large-v3-turbo-q5_0", "large-v3-turbo-q8_0"
 )
 
+# Define available languages
+$validLanguages = @(
+    "en", "ar", "bg", "bn", "bs", "ca", "cs", "da", "de", "el", "es", "et", "fa", "fi", "fr", "he", "hi", "hr", "hu", "id", "it", "ja", "ko", "lt", "lv", "mk", "ml", "mr", "ms", "mt", "nl", "no", "pl", "pt", "ro", "ru", "sk", "sl", "so", "sq", "sr", "sv", "ta", "te", "th", "tr", "uk", "ur", "vi", "zh"
+)
+
+# Select language
+if ($args.Count -gt 2) {
+    $language = $args[2]
+    if ($validLanguages -notcontains $language) {
+        Write-Host "Invalid language: $language"
+        Write-Host "Available languages: $($validLanguages -join ", ")"
+        exit 1
+    }
+}
+
 # Get available models
 $availableModels = @()
 if (Test-Path "whisper-server-package\models") {
@@ -88,7 +110,9 @@ if ($availableModels.Count -gt 0) {
 
 Write-Host ""
 Write-Host "Default model: small"
+Write-Host "Default language: en"
 $modelInput = Read-Host "Select a model (1-$($availableModels.Count)) or type model name or press Enter for default (small)"
+$languageInput = Read-Host "Select a language (1-$($validLanguages.Count)) or type language name or press Enter for default (en)"
 
 # Process the model selection
 $modelName = "small"  # Default model
@@ -109,6 +133,41 @@ if (-not [string]::IsNullOrWhiteSpace($modelInput)) {
         }
     }
 }
+
+# Process the language selection
+$languageName = "en"  # Default language
+if (-not [string]::IsNullOrWhiteSpace($languageInput)) {
+    if ([int]::TryParse($languageInput, [ref]$null)) {
+        $index = [int]$languageInput - 1
+        if ($index -ge 0 -and $index -lt $validLanguages.Count) {
+            $languageName = $validLanguages[$index]
+        } else {
+            Write-Host "Invalid selection. Using default language (en)."
+        }
+    } else {
+        # Check if the input is a valid language name
+        if ($validLanguages -contains $languageInput) {
+            $languageName = $languageInput
+        } else {
+            Write-Host "Invalid language name. Using default language (en)."
+        }
+    }
+}
+
+Write-Host "Selected language: $languageName"
+
+# Get port number from user
+$portInput = Read-Host "Enter Whisper server port number (default: 8178)"
+$portWhisper = 8178
+if (-not [string]::IsNullOrWhiteSpace($portInput)) {
+    if ([int]::TryParse($portInput, [ref]$null)) {
+        $portWhisper = [int]$portInput
+    } else {
+        Write-Host "Invalid port number. Using default port (8178)."
+    }
+}
+
+Write-Host "Selected port: $portWhisper"
 
 # Check if the model file exists
 $modelFile = "whisper-server-package\models\ggml-$modelName.bin"
@@ -143,7 +202,9 @@ Write-Host "====================================="
 Write-Host "Starting Meetily Backend"
 Write-Host "====================================="
 Write-Host "Model: $modelName"
-Write-Host "Python Backend Port: $port"
+Write-Host "Python Backend Port: $portPython"
+Write-Host "Whisper Server Port: $portWhisper"
+Write-Host "Language: $languageName"
 Write-Host "====================================="
 Write-Host ""
 
@@ -163,7 +224,7 @@ if (-not (Test-Path "app\main.py")) {
 
 # Start Whisper server in a new window
 Write-Host "Starting Whisper server..."
-Start-Process -FilePath "cmd.exe" -ArgumentList "/k cd whisper-server-package && whisper-server.exe --model models\ggml-$modelName.bin --host 127.0.0.1 --port 8178 --diarize --print-progress" -WindowStyle Normal
+Start-Process -FilePath "cmd.exe" -ArgumentList "/k cd whisper-server-package && whisper-server.exe --model models\ggml-$modelName.bin --host 127.0.0.1 --port $portWhisper --diarize --print-progress --language $languageName" -WindowStyle Normal
 
 # Wait for Whisper server to start
 Write-Host "Waiting for Whisper server to start..."
@@ -182,7 +243,7 @@ try {
 
 # Start Python backend in a new window
 Write-Host "Starting Python backend..."
-Start-Process -FilePath "cmd.exe" -ArgumentList "/k call venv\Scripts\activate.bat && set PORT=$port && python app\main.py" -WindowStyle Normal
+Start-Process -FilePath "cmd.exe" -ArgumentList "/k call venv\Scripts\activate.bat && set PORT=$portPython && python app\main.py" -WindowStyle Normal
 
 # Wait for Python backend to start
 Write-Host "Waiting for Python backend to start..."
@@ -208,21 +269,21 @@ $pythonListening = $false
 Start-Sleep -Seconds 5
 
 # Check Whisper server port
-$netstatWhisper = netstat -ano | Select-String -Pattern ":8178.*LISTENING"
+$netstatWhisper = netstat -ano | Select-String -Pattern ":$portWhisper.*LISTENING"
 if ($netstatWhisper) {
     $whisperListening = $true
-    Write-Host "Whisper server is listening on port 8178"
+    Write-Host "Whisper server is listening on port $portWhisper"
 } else {
-    Write-Host "Warning: Whisper server is not listening on port 8178"
+    Write-Host "Warning: Whisper server is not listening on port $portWhisper"
 }
 
 # Check Python backend port
-$netstatPython = netstat -ano | Select-String -Pattern ":$port.*LISTENING"
+$netstatPython = netstat -ano | Select-String -Pattern ":$portPython.*LISTENING"
 if ($netstatPython) {
     $pythonListening = $true
-    Write-Host "Python backend is listening on port $port"
+    Write-Host "Python backend is listening on port $portPython"
 } else {
-    Write-Host "Warning: Python backend is not listening on port $port"
+    Write-Host "Warning: Python backend is not listening on port $portPython"
 }
 
 # Final status
@@ -231,9 +292,9 @@ Write-Host "====================================="
 Write-Host "Backend Status"
 Write-Host "====================================="
 Write-Host "Whisper Server: $(if ($whisperRunning) { "RUNNING" } else { "NOT RUNNING" })"
-Write-Host "Whisper Server Port: $(if ($whisperListening) { "LISTENING on 8178" } else { "NOT LISTENING on 8178" })"
+Write-Host "Whisper Server Port: $(if ($whisperListening) { "LISTENING on $portWhisper" } else { "NOT LISTENING on $portWhisper" })"
 Write-Host "Python Backend: $(if ($pythonRunning) { "RUNNING" } else { "NOT RUNNING" })"
-Write-Host "Python Backend Port: $(if ($pythonListening) { "LISTENING on $port" } else { "NOT LISTENING on $port" })"
+Write-Host "Python Backend Port: $(if ($pythonListening) { "LISTENING on $portPython" } else { "NOT LISTENING on $portPython" })"
 Write-Host ""
 Write-Host "The backend services are now running in separate windows."
 Write-Host "You can close those windows to stop the services."

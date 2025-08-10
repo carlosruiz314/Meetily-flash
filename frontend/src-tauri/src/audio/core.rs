@@ -466,6 +466,8 @@ impl AudioStream {
             let device_name_clone = device_name.clone();  // Clone for the closure
             let config = config_clone;
             info!("Starting audio stream thread for device: {}", device_name);
+            let is_running_weak_for_error = is_running_weak_2.clone();
+            let is_running_weak_for_data = is_running_weak_2.clone();
             let error_callback = move |err: StreamError| {
                 if err
                     .to_string()
@@ -483,14 +485,14 @@ impl AudioStream {
                 } else if err.to_string().to_lowercase().contains("permission denied") || 
                          err.to_string().to_lowercase().contains("access denied") {
                     error!("Permission denied for audio device {}. Please check microphone permissions.", device_name_clone);
-                    if let Some(arc) = is_running_weak_2.upgrade() {
+                    if let Some(arc) = is_running_weak_for_error.upgrade() {
                         arc.store(false, Ordering::Relaxed);
                     }
                 } else {
                     error!("an error occurred on the audio stream: {}", err);
                     if err.to_string().contains("device is no longer valid") {
                         warn!("audio device disconnected. stopping recording.");
-                        if let Some(arc) = is_running_weak_2.upgrade() {
+                        if let Some(arc) = is_running_weak_for_error.upgrade() {
                             arc.store(false, Ordering::Relaxed);
                         }
                     }
@@ -502,6 +504,16 @@ impl AudioStream {
                     match cpal_audio_device.build_input_stream(
                         &config.into(),
                         move |data: &[f32], _: &_| {
+                            log::debug!("Audio callback triggered (F32)");
+                            if let Some(arc) = is_running_weak_for_data.upgrade() {
+                                if !arc.load(Ordering::Relaxed) {
+                                    log::debug!("Audio callback: is_running is false, returning early (F32)");
+                                    return;
+                                }
+                            } else {
+                                log::debug!("Audio callback: is_running Arc was dropped, returning early (F32)");
+                                return;
+                            }
                             let mono = audio_to_mono(data, channels);
                             debug!("Received audio chunk: {} samples", mono.len());
                             if let Err(e) = tx.send(mono) {
@@ -522,6 +534,16 @@ impl AudioStream {
                     match cpal_audio_device.build_input_stream(
                         &config.into(),
                         move |data: &[i16], _: &_| {
+                            log::debug!("Audio callback triggered (I16)");
+                            if let Some(arc) = is_running_weak_for_data.upgrade() {
+                                if !arc.load(Ordering::Relaxed) {
+                                    log::debug!("Audio callback: is_running is false, returning early (I16)");
+                                    return;
+                                }
+                            } else {
+                                log::debug!("Audio callback: is_running Arc was dropped, returning early (I16)");
+                                return;
+                            }
                             let mono = audio_to_mono(bytemuck::cast_slice(data), channels);
                             debug!("Received audio chunk: {} samples", mono.len());
                             if let Err(e) = tx.send(mono) {
@@ -542,6 +564,16 @@ impl AudioStream {
                     match cpal_audio_device.build_input_stream(
                         &config.into(),
                         move |data: &[i32], _: &_| {
+                            log::debug!("Audio callback triggered (I32)");
+                            if let Some(arc) = is_running_weak_for_data.upgrade() {
+                                if !arc.load(Ordering::Relaxed) {
+                                    log::debug!("Audio callback: is_running is false, returning early (I32)");
+                                    return;
+                                }
+                            } else {
+                                log::debug!("Audio callback: is_running Arc was dropped, returning early (I32)");
+                                return;
+                            }
                             let mono = audio_to_mono(bytemuck::cast_slice(data), channels);
                             debug!("Received audio chunk: {} samples", mono.len());
                             if let Err(e) = tx.send(mono) {
@@ -562,6 +594,16 @@ impl AudioStream {
                     match cpal_audio_device.build_input_stream(
                         &config.into(),
                         move |data: &[i8], _: &_| {
+                            log::debug!("Audio callback triggered (I8)");
+                            if let Some(arc) = is_running_weak_for_data.upgrade() {
+                                if !arc.load(Ordering::Relaxed) {
+                                    log::debug!("Audio callback: is_running is false, returning early (I8)");
+                                    return;
+                                }
+                            } else {
+                                log::debug!("Audio callback: is_running Arc was dropped, returning early (I8)");
+                                return;
+                            }
                             let mono = audio_to_mono(bytemuck::cast_slice(data), channels);
                             debug!("Received audio chunk: {} samples", mono.len());
                             if let Err(e) = tx.send(mono) {

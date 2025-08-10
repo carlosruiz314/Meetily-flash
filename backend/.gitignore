@@ -16,6 +16,12 @@ whisper-server-package/
 *.json
 *.bin
 
+config/
+data/
+.docker-preferences
+
+meeting_minutes.db*
+
 
 ### Flask.Python Stack ###
 # Byte-compiled / optimized / DLL files
