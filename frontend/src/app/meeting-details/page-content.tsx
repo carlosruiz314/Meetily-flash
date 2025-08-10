@@ -354,49 +354,6 @@ export default function PageContent({ meeting, summaryData }: { meeting: any, su
     [meeting.id, handleSaveSummary]
   );
 
-  const handleSaveSummary = async (summary: Summary) => {
-    try {
-      // Format the summary in a structure that the backend expects
-      const formattedSummary = {
-        MeetingName: meetingTitle,
-        MeetingNotes: {
-          sections: Object.entries(summary).map(([key, section]) => ({
-            title: section.title,
-            blocks: section.blocks
-          }))
-        }
-      };
-      
-      const payload = {
-        meetingId: meeting.id,
-        summary: formattedSummary
-      };
-      console.log('Saving meeting summary with payload:', payload);
-      
-      await invokeTauri('api_save_meeting_summary', {
-        meetingId: payload.meetingId,
-        summary: payload.summary,
-      });
-
-      console.log('Save meeting summary success');
-    } catch (error) {
-      console.error('Failed to save meeting summary:', error);
-      if (error instanceof Error) {
-        setError(error.message);
-      } else {
-        setError('Failed to save meeting summary: Unknown error');
-      }
-    }
-  };
-
-  // Create a debounced version of the save function to avoid excessive API calls
-  const debouncedSaveSummary = useCallback(
-    debounce((summary: Summary) => {
-      handleSaveSummary(summary);
-    }, 2000),
-    [meeting.id, handleSaveSummary]
-  );
-
   const handleSummaryChange = (newSummary: Summary) => {
     setAiSummary(newSummary);
     debouncedSaveSummary(newSummary);
