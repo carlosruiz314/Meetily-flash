@@ -64,7 +64,10 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts }) =
             </div>
           </div>
           <p className={`text-sm text-gray-800`}>
-            {transcript.text}
+            {(() => {
+              const filteredText = transcript.text.replace(/^Thank you\.?\s*$/gi, '').trim();
+              return filteredText === '' ? '[Silence]' : filteredText;
+            })()}
           </p>
         </div>
       ))}

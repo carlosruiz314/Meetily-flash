@@ -605,7 +605,7 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
         <h3 className="text-red-700 font-medium">Error Generating Summary</h3>
       </div>
       <p className="text-red-600 text-sm">{error}</p>
-      <p className="text-red-500 text-xs mt-2">Please try again or contact support if the issue persists.</p>
+      <p className="text-red-500 text-xs mt-2">Please check your model configuration and API keys, or try again.</p>
     </div>
   );
 
@@ -783,28 +783,32 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
         </div>
       </div>
 
-      {Object.entries(currentSummary)
-        .filter(([key, section]) => section?.blocks?.length > 0)
-        .map(([key, section]) => (
-        <Section
-          key={key}
-          section={section}
-          sectionKey={key}
-          selectedBlocks={selectedBlocks}
-          onBlockTypeChange={handleBlockTypeChange}
-          onBlockChange={(blockId, content) => handleBlockChange(key, blockId, content)}
-          onBlockMouseDown={(blockId, e) => handleBlockMouseDown(blockId, key, e)}
-          onBlockMouseEnter={(blockId) => handleBlockMouseEnter(blockId, key)}
-          onBlockMouseUp={(blockId, e) => handleBlockMouseUp(blockId, key, e)}
-          onKeyDown={handleKeyDown}
-          onTitleChange={handleTitleChange}
-          onSectionDelete={handleSectionDelete}
-          onBlockDelete={(blockId, mergeContent) => handleBlockDelete(blockId, mergeContent)}
-          onContextMenu={handleContextMenu}
-          onBlockNavigate={(blockId, direction) => handleBlockNavigate(blockId, direction)}
-          onCreateNewBlock={handleCreateNewBlock}
-        />
-      ))}
+      {Object.keys(currentSummary)
+        .filter(key => currentSummary[key]?.blocks?.length > 0)
+        .map(key => {
+          const section = currentSummary[key];
+          return (
+            <Section
+              key={key}
+              section={section}
+              sectionKey={key}
+              selectedBlocks={selectedBlocks}
+              onBlockTypeChange={handleBlockTypeChange}
+              onBlockChange={(blockId, content) => handleBlockChange(key, blockId, content)}
+              onBlockMouseDown={(blockId, e) => handleBlockMouseDown(blockId, key, e)}
+              onBlockMouseEnter={(blockId) => handleBlockMouseEnter(blockId, key)}
+              onBlockMouseUp={(blockId, e) => handleBlockMouseUp(blockId, key, e)}
+              onKeyDown={handleKeyDown}
+              onTitleChange={handleTitleChange}
+              onSectionDelete={handleSectionDelete}
+              onBlockDelete={(blockId, mergeContent) => handleBlockDelete(blockId, mergeContent)}
+              onContextMenu={handleContextMenu}
+              onBlockNavigate={(blockId, direction) => handleBlockNavigate(blockId, direction)}
+              onCreateNewBlock={handleCreateNewBlock}
+            />
+          );
+        })}
+
     </div>
   );
 };

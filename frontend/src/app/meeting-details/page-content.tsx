@@ -176,8 +176,10 @@ export default function PageContent({ meeting, summaryData }: { meeting: any, su
             meetingId: process_id,
           }) as any;
           console.log('Summary status:', result);
+          console.log('Error from backend:', result.error);
 
           if (result.status === 'error') {
+            console.error('Backend returned error:', result.error);
             setSummaryError(result.error || 'Unknown error');
             setSummaryStatus('error');
             clearInterval(pollInterval);
@@ -198,7 +200,17 @@ export default function PageContent({ meeting, summaryData }: { meeting: any, su
             const summarySections = Object.entries(result.data).filter(([key]) => key !== 'MeetingName');
             const allEmpty = summarySections.every(([, section]) => !(section as any).blocks || (section as any).blocks.length === 0);
             if (allEmpty) {
-              setSummaryError('Summary generation failed. Please check your model/API key settings.');
+              console.error('Summary completed but all sections empty. Backend error:', result.error);
+              const transcriptLength = transcripts?.map(t => t.text).join('\n').length || 0;
+              let errorMsg = result.error;
+              if (!errorMsg) {
+                if (transcriptLength < 500) {
+                  errorMsg = 'Transcript is too short for meaningful summary generation. Please add more content or use a longer transcript.';
+                } else {
+                  errorMsg = 'Summary generation completed but returned empty content. Try adjusting your model settings or using a different model.';
+                }
+              }
+              setSummaryError(errorMsg);
               setSummaryStatus('error');
               clearInterval(pollInterval);
               
@@ -298,9 +310,49 @@ export default function PageContent({ meeting, summaryData }: { meeting: any, su
     }
   }, [transcripts, modelConfig, meeting.id]);
 
-  const handleSummary = useCallback((summary: any) => {
-    setAiSummary(summary);
-  }, []);
+
+  const handleSaveSummary = async (summary: Summary) => {
+    try {
+      // Format the summary in a structure that the backend expects
+      const formattedSummary = {
+        MeetingName: meetingTitle,
+        MeetingNotes: {
+          sections: Object.entries(summary).map(([, section]) => ({
+            title: section.title,
+            blocks: section.blocks
+          }))
+        }
+      };
+      
+      const payload = {
+        meetingId: meeting.id,
+        summary: formattedSummary
+      };
+      console.log('Saving meeting summary with payload:', payload);
+      
+      await invokeTauri('api_save_meeting_summary', {
+        meetingId: payload.meetingId,
+        summary: payload.summary,
+      });
+
+      console.log('Save meeting summary success');
+    } catch (error) {
+      console.error('Failed to save meeting summary:', error);
+      if (error instanceof Error) {
+        setError(error.message);
+      } else {
+        setError('Failed to save meeting summary: Unknown error');
+      }
+    }
+  };
+
+  // Create a debounced version of the save function to avoid excessive API calls
+  const debouncedSaveSummary = useCallback(
+    debounce((summary: Summary) => {
+      handleSaveSummary(summary);
+    }, 2000),
+    [meeting.id, handleSaveSummary]
+  );
 
   const handleSaveSummary = async (summary: Summary) => {
     try {
@@ -414,8 +466,10 @@ export default function PageContent({ meeting, summaryData }: { meeting: any, su
             meetingId: process_id,
           }) as any;
           console.log('Summary status:', result);
+          console.log('Error from backend:', result.error);
 
           if (result.status === 'error') {
+            console.error('Backend returned error:', result.error);
             setSummaryError(result.error || 'Unknown error');
             setSummaryStatus('error');
             clearInterval(pollInterval);
@@ -946,7 +1000,7 @@ export default function PageContent({ meeting, summaryData }: { meeting: any, su
                   summary={aiSummary} 
                   status={summaryStatus} 
                   error={summaryError}
-                  onSummaryChange={(newSummary) => setAiSummary(newSummary)}
+                  onSummaryChange={handleSummaryChange}
                   onRegenerateSummary={() => {
                     Analytics.trackButtonClick('regenerate_summary', 'meeting_details');
                     handleRegenerateSummary();
