@@ -2,7 +2,6 @@
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { load } from '@tauri-apps/plugin-store';
 import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
 
@@ -47,7 +46,7 @@ interface SidebarContextType {
   serverAddress: string;
   transcriptServerAddress: string;
   setTranscriptServerAddress: (address: string) => void;
-  debugStoreContents: () => Promise<void>;
+  
 }
 
 const SidebarContext = createContext<SidebarContextType | null>(null);
@@ -101,21 +100,9 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const fetchSettings = async () => {
-        const store = await load('store.json', { autoSave: false });
-        let serverAddress = await store.get('appServerUrl') as string | null;
-        let transcriptServerAddress = await store.get('transcriptServerUrl') as string | null;
-        if (!serverAddress) {
-          await store.set('appServerUrl', 'http://localhost:5167');
-          serverAddress = await store.get('appServerUrl') as string;
-          await store.save();
-        }
-        if (!transcriptServerAddress) {
-          await store.set('transcriptServerUrl', 'http://127.0.0.1:8178/stream');
-          transcriptServerAddress = await store.get('transcriptServerUrl') as string;
-          await store.save();
-        }
-        setServerAddress(serverAddress);
-        setTranscriptServerAddress(transcriptServerAddress);
+        
+        setServerAddress('http://localhost:5167');
+        setTranscriptServerAddress('http://127.0.0.1:8178/stream');
         
       
     };
@@ -189,14 +176,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const debugStoreContents = async () => {
-    try {
-      const result = await invoke('debug_store_contents') as string;
-      console.log('Store debug info:', result);
-    } catch (error) {
-      console.error('Error debugging store:', error);
-    }
-  };
+ 
 
   return (
     <SidebarContext.Provider value={{ 
@@ -219,7 +199,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       serverAddress,
       transcriptServerAddress,
       setTranscriptServerAddress,
-      debugStoreContents
+      
     }}>
       {children}
     </SidebarContext.Provider>

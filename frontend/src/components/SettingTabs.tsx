@@ -1,7 +1,6 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ModelConfig, ModelSettingsModal } from "./ModelSettingsModal"
 import { TranscriptModelProps } from "./TranscriptSettings"
-import { ServerSettings } from "./ServerSettings"
 import { About } from "./About";
 
 interface SettingTabsProps {
@@ -19,9 +18,6 @@ export function SettingTabs({
     modelConfig, 
     setModelConfig, 
     onSave, 
-    transcriptModelConfig, 
-    setTranscriptModelConfig, 
-    onSaveTranscript, 
     setSaveSuccess,
     defaultTab = "modelSettings"
 }: SettingTabsProps) {
@@ -35,7 +31,6 @@ export function SettingTabs({
   <TabsList>
     <TabsTrigger value="modelSettings">Model Settings</TabsTrigger>
     {/* <TabsTrigger value="transcriptSettings">Transcript Settings</TabsTrigger> */}
-    <TabsTrigger value="serverSettings">Server Settings</TabsTrigger>
     <TabsTrigger value="about">About</TabsTrigger>
   </TabsList>
   <TabsContent value="modelSettings">
@@ -53,11 +48,7 @@ onSave={onSave}
     onSave={onSaveTranscript}
   />
   </TabsContent> */}
-  <TabsContent value="serverSettings">
-    <ServerSettings 
-    setSaveSuccess={setSaveSuccess}
-    />
-  </TabsContent>
+  
   <TabsContent value="about">
     <About />
   </TabsContent>

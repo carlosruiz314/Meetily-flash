@@ -4,6 +4,9 @@ use tauri::{AppHandle, Runtime};
 use tauri_plugin_store::StoreExt;
 use log::{info as log_info, error as log_error, debug as log_debug, warn as log_warn};
 
+// Hardcoded server URL
+const APP_SERVER_URL: &str = "http://localhost:5167";
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ApiResponse<T> {
     pub success: bool,
@@ -204,25 +207,10 @@ async fn get_auth_token<R: Runtime>(app: &AppHandle<R>) -> Option<String> {
     }
 }
 
-// Helper function to get server address from store
-async fn get_server_address<R: Runtime>(app: &AppHandle<R>) -> Result<String, String> {
-    let store = app.store("store.json").map_err(|e| e.to_string())?;
-    
-    match store.get("appServerUrl") {
-        Some(url) => {
-            if let Some(url_str) = url.as_str() {
-                log_info!("Using server URL: {}", url_str);
-                Ok(url_str.to_string())
-            } else {
-                log_warn!("Server URL is not a string");
-                Err("Server URL is not a string".to_string())
-            }
-        }
-        None => {
-            log_warn!("No server URL found, using default: http://localhost:5168");
-            Ok("http://localhost:5168".to_string()) // Default fallback to match current backend port
-        },
-    }
+// Helper function to get server address - now hardcoded
+async fn get_server_address<R: Runtime>(_app: &AppHandle<R>) -> Result<String, String> {
+    log_info!("Using hardcoded server URL: {}", APP_SERVER_URL);
+    Ok(APP_SERVER_URL.to_string())
 }
 
 // Generic API call function with optional authentication
@@ -616,25 +604,7 @@ pub async fn api_process_transcript<R: Runtime>(
     make_api_request::<R, ProcessTranscriptResponse>(&app, "/process-transcript", "POST", Some(&body), None, auth_token).await
 }
 
-// Debug command to check store contents
-#[tauri::command]
-pub async fn debug_store_contents<R: Runtime>(app: AppHandle<R>) -> Result<String, String> {
-    let store = app.store("store.json").map_err(|e| e.to_string())?;
-    
-    let auth_token = store.get("authToken");
-    let server_url = store.get("appServerUrl");
-    let license_key = store.get("licenseKey");
-    
-    let debug_info = format!(
-        "Store contents:\n- authToken: {}\n- appServerUrl: {}\n- licenseKey: {}",
-        if auth_token.is_some() { "present" } else { "missing" },
-        server_url.as_ref().and_then(|v| v.as_str()).unwrap_or("missing"),
-        if license_key.is_some() { "present" } else { "missing" }
-    );
-    
-    log_debug!("{}", debug_info);
-    Ok(debug_info)
-}
+
 
 // Simple test command to check backend connectivity
 #[tauri::command]

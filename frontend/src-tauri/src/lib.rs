@@ -54,6 +54,9 @@ const MIN_CHUNK_DURATION_MS: u32 = 2000; // Minimum duration before sending chun
 const MIN_RECORDING_DURATION_MS: u64 = 2000; // 2 seconds minimum
 const MAX_AUDIO_QUEUE_SIZE: usize = 10; // Maximum number of chunks in queue
 
+// Server configuration constants
+const TRANSCRIPT_SERVER_URL: &str = "http://127.0.0.1:8178";
+
 #[derive(Debug, Deserialize)]
 struct RecordingArgs {
     save_path: String,
@@ -770,13 +773,9 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     // Create HTTP client for transcription
     let client = reqwest::Client::new();
     
-    // Get the transcript server URL from the store
-    let store = app.store("store.json").map_err(|e| e.to_string())?;
-    let stream_url = match store.get("transcriptServerUrl") {
-        Some(url) => url.as_str().unwrap_or("http://127.0.0.1:8178/stream").to_string(),
-        None => "http://127.0.0.1:8178/stream".to_string(),
-    };
-    log_info!("Using stream URL: {}", stream_url);
+    // Use hardcoded transcript server URL
+    let stream_url = format!("{}/stream", TRANSCRIPT_SERVER_URL);
+    log_info!("Using hardcoded stream URL: {}", stream_url);
 
     let device_config = mic_stream.device_config.clone();
     let sample_rate = device_config.sample_rate().0;
@@ -1492,7 +1491,7 @@ pub fn run() {
             api::api_get_summary,
             api::api_save_transcript,
             api::api_process_transcript,
-            api::debug_store_contents,
+    
             api::test_backend_connection,
             api::debug_backend_connection,
             api::open_external_url,
