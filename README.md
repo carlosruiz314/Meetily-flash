@@ -139,7 +139,7 @@ Choose your setup method based on your needs:
 
 ### Windows Users:
 1. **Frontend:** Download and run [meetily-frontend_0.0.5_x64-setup.exe](https://github.com/Zackriya-Solutions/meeting-minutes/releases/latest)
-2. **Backend:** Follow [Windows Backend Setup](#backend-setup)
+2. **Backend:** Download backend zip from [releases](https://github.com/Zackriya-Solutions/meeting-minutes/releases/latest), extract, run `Get-ChildItem -Path . -Recurse | Unblock-File`, then `.\start_with_output.ps1`
 
 For safety and to maintain proper user permissions for frontend app:
 
@@ -347,11 +347,43 @@ For safety and to maintain proper user permissions:
 Provide necessary permissions for audio capture and microphone access.
 
 ### Backend Setup
-⏱️ **Time:** ~10-15 minutes (includes dependency installation)
+⏱️ **Time:** ~5-10 minutes
 
-**📦 Option 1: Docker (Recommended - Easier)**
+**📦 Option 1: Pre-built Release (Recommended - Easiest)**
 
-Docker provides the easiest setup with automatic dependency management. This is the recommended approach for most Windows users as it handles all dependencies automatically.
+The simplest way to get started with the backend is to download the pre-built release:
+
+1. **Download Backend:**
+   - Go to [Latest Releases](https://github.com/Zackriya-Solutions/meeting-minutes/releases/latest)
+   - Download the backend zip file (e.g., `meetily_backend.zip`)
+   - Extract to a folder (e.g., `C:\meetily_backend\`)
+
+2. **Unblock Files:**
+   ```powershell
+   # Navigate to extracted directory
+   cd C:\meetily_backend\
+   
+   # Unblock all files (Windows security feature)
+   Get-ChildItem -Path . -Recurse | Unblock-File
+   ```
+
+3. **Start Backend:**
+   ```powershell
+   # Start the backend with interactive setup
+   .\start_with_output.ps1
+   ```
+
+**What's Included:**
+- Pre-compiled whisper-server.exe
+- Python app with all dependencies
+- Automatic model download and setup
+- Interactive model and language selection
+
+✅ **Success Check:** The script will guide you through model selection and start both Whisper server (port 8178) and Meeting app (port 5167).
+
+**🐳 Option 2: Docker (Alternative - Easier Dependency Management)**
+
+Docker provides easy setup with automatic dependency management, though it's slower than the pre-built release:
 
 ```powershell
 # Navigate to backend directory
@@ -371,7 +403,7 @@ cd meeting-minutes/backend
 
 ✅ **Success Check:** Docker will automatically handle dependencies and you should see both Whisper server (port 8178) and Meeting app (port 5167) start successfully.
 
-**🛠️ Option 2: Local Build (Best Performance)**
+**🛠️ Option 3: Local Build (Best Performance)**
 
 Local building provides the best performance but requires installing all dependencies manually. Choose this if you want optimal speed and don't mind the extra setup steps.
 

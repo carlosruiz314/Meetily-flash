@@ -191,17 +191,44 @@ Native deployment offers optimal performance by running directly on the host sys
 
 ### Windows Setup
 
-**🔧 Required Dependencies (Install First):**
+**📦 Option 1: Pre-built Release (Recommended - Easiest)**
 
-Before running any build commands, ensure these dependencies are installed:
+The simplest and fastest way to get started is using the pre-built backend release:
 
-- **Python 3.9+** with pip (add to PATH)
-- **Visual Studio Build Tools** (C++ workload)
-- **CMake** (add to PATH)
-- **Git** (with submodules support)
-- **Visual Studio Redistributables**
+**Prerequisites:**
+- No additional dependencies required
 
-**📦 Option 1: Docker Setup (Recommended - Easier)**
+**Installation Steps:**
+1. Download the latest backend zip file from [releases](https://github.com/Zackriya-Solutions/meeting-minutes/releases/latest)
+2. Extract to a folder (e.g., `C:\meetily_backend\`)
+3. Open PowerShell and navigate to the extracted folder
+4. Unblock all files (Windows security requirement):
+   ```powershell
+   Get-ChildItem -Path . -Recurse | Unblock-File
+   ```
+5. Start the backend:
+   ```powershell
+   .\start_with_output.ps1
+   ```
+
+**What it includes:**
+- Pre-compiled `whisper-server.exe` binary
+- Complete Python application with virtual environment
+- All required dependencies pre-installed
+- Automatic model download and setup
+- Interactive model and language selection
+
+**Features:**
+- Automatic whisper-server.exe download from GitHub releases if not present
+- Interactive model selection (tiny to large-v3)
+- Language selection (40+ supported languages)
+- Port configuration with conflict detection
+- Virtual environment setup and dependency installation
+- Option to download and install the frontend application
+
+✅ **Success Check:** The script will guide you through setup and start both Whisper server (port 8178) and Meeting app (port 5167) automatically.
+
+**📦 Option 2: Docker Setup (Alternative - Easier)**
 
 Docker handles all dependencies automatically:
 
@@ -218,9 +245,16 @@ cd backend
 - Docker Desktop installed
 - 8GB+ RAM allocated to Docker
 
-**🛠️ Option 2: Local Build (Best Performance)**
+**🛠️ Option 3: Local Build (Best Performance)**
 
 For optimal performance, build locally after installing dependencies:
+
+**🔧 Required Dependencies (Install First):**
+- **Python 3.9+** with pip (add to PATH)
+- **Visual Studio Build Tools** (C++ workload)
+- **CMake** (add to PATH)
+- **Git** (with submodules support)
+- **Visual Studio Redistributables**
 
 **Step 1: Install Dependencies**
 ```powershell
