@@ -55,7 +55,8 @@ cd backend
 # Navigate to backend directory
 cd backend
 
-# Windows
+# Windows - Install dependencies first, then build
+.\install_dependancies_for_windows.ps1  # Run as Administrator
 build_whisper.cmd small
 start_with_output.ps1
 
@@ -190,10 +191,47 @@ Native deployment offers optimal performance by running directly on the host sys
 
 ### Windows Setup
 
-```cmd
+**🔧 Required Dependencies (Install First):**
+
+Before running any build commands, ensure these dependencies are installed:
+
+- **Python 3.9+** with pip (add to PATH)
+- **Visual Studio Build Tools** (C++ workload)
+- **CMake** (add to PATH)
+- **Git** (with submodules support)
+- **Visual Studio Redistributables**
+
+**📦 Option 1: Docker Setup (Recommended - Easier)**
+
+Docker handles all dependencies automatically:
+
+```powershell
 # Navigate to backend directory
 cd backend
 
+# Build and start (CPU version)
+.\build-docker.ps1 cpu
+.\run-docker.ps1 start -Interactive
+```
+
+**Prerequisites:**
+- Docker Desktop installed
+- 8GB+ RAM allocated to Docker
+
+**🛠️ Option 2: Local Build (Best Performance)**
+
+For optimal performance, build locally after installing dependencies:
+
+**Step 1: Install Dependencies**
+```powershell
+# Run dependency installer (as Administrator)
+Set-ExecutionPolicy Bypass -Scope Process -Force
+.\install_dependancies_for_windows.ps1
+```
+*⚠️ This takes 15-30 minutes and installs all required tools*
+
+**Step 2: Build Whisper**
+```cmd
 # Build whisper.cpp with model (e.g., 'small', 'base.en', 'large-v3')
 build_whisper.cmd small
 
@@ -212,6 +250,16 @@ clean_start_backend.cmd
 5. Installs dependencies from `requirements.txt`
 6. Downloads specified Whisper model
 7. Creates `whisper-server-package/` with all files
+
+**Dependency Installation Details:**
+The `install_dependancies_for_windows.ps1` script installs:
+- Chocolatey package manager
+- Python 3.11 (if not present)
+- Visual Studio Build Tools 2022 with C++ workload
+- CMake with PATH integration
+- Git with submodule support
+- Visual Studio Redistributables
+- Development tools (bun, if needed)
 
 ### macOS Setup
 
