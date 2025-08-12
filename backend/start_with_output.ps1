@@ -37,18 +37,73 @@ if ($pythonProcesses) {
     Start-Sleep -Seconds 1
 }
 
-# Check if whisper-server-package exists
+# Check if whisper-server-package exists, create if not
 if (-not (Test-Path "whisper-server-package")) {
-    Write-Host "Error: whisper-server-package directory not found"
-    Write-Host "Please run build_whisper.cmd first"
-    exit 1
+    Write-Host "Creating whisper-server-package directory..."
+    New-Item -ItemType Directory -Path "whisper-server-package" -Force | Out-Null
 }
 
-# Check if whisper-server.exe exists
+# Check if whisper-server.exe exists, download if not
 if (-not (Test-Path "whisper-server-package\whisper-server.exe")) {
-    Write-Host "Error: whisper-server.exe not found"
-    Write-Host "Please run build_whisper.cmd first"
-    exit 1
+    Write-Host "whisper-server.exe not found. Fetching latest release..."
+    
+    try {
+        # Fetch the latest release information from GitHub API
+        Write-Host "Getting latest release information from GitHub..."
+        $headers = @{}
+        # Add User-Agent header to avoid API rate limiting
+        $headers["User-Agent"] = "PowerShell-Script"
+        
+        $apiUrl = "https://api.github.com/repos/Zackriya-Solutions/meeting-minutes/releases/latest"
+        $releaseInfo = Invoke-RestMethod -Uri $apiUrl -Headers $headers -UseBasicParsing
+        
+        $tagName = $releaseInfo.tag_name
+        Write-Host "Latest release tag: $tagName"
+        
+        # Construct the download URL with the actual tag
+        $downloadUrl = "https://github.com/Zackriya-Solutions/meeting-minutes/releases/download/$tagName/whisper-server.exe"
+        $destinationPath = "whisper-server-package\whisper-server.exe"
+        
+        # Download the file
+        Write-Host "Downloading whisper-server.exe from release $tagName..."
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $destinationPath -UseBasicParsing
+        
+        # Unblock the downloaded file (Windows security feature)
+        Write-Host "Unblocking downloaded file..."
+        Unblock-File -Path $destinationPath
+        
+        Write-Host "whisper-server.exe downloaded and unblocked successfully from release $tagName."
+    } catch {
+        Write-Host "Error: Failed to download whisper-server.exe"
+        Write-Host "Error details: $_"
+        
+        # Try alternative method - look for any recent release
+        Write-Host "Attempting alternative download method..."
+        try {
+            $allReleasesUrl = "https://api.github.com/repos/Zackriya-Solutions/meeting-minutes/releases"
+            $headers = @{"User-Agent" = "PowerShell-Script"}
+            $releases = Invoke-RestMethod -Uri $allReleasesUrl -Headers $headers -UseBasicParsing
+            
+            if ($releases.Count -gt 0) {
+                $latestTag = $releases[0].tag_name
+                Write-Host "Found release: $latestTag"
+                $altDownloadUrl = "https://github.com/Zackriya-Solutions/meeting-minutes/releases/download/$latestTag/whisper-server.exe"
+                
+                Write-Host "Downloading from: $altDownloadUrl"
+                Invoke-WebRequest -Uri $altDownloadUrl -OutFile "whisper-server-package\whisper-server.exe" -UseBasicParsing
+                Unblock-File -Path "whisper-server-package\whisper-server.exe"
+                Write-Host "whisper-server.exe downloaded successfully from release $latestTag."
+            } else {
+                throw "No releases found"
+            }
+        } catch {
+            Write-Host "Alternative method also failed."
+            Write-Host "Please download whisper-server.exe manually from:"
+            Write-Host "https://github.com/Zackriya-Solutions/meeting-minutes/releases"
+            Write-Host "And place it in: whisper-server-package\whisper-server.exe"
+            exit 1
+        }
+    }
 }
 
 # Check if models directory exists
@@ -173,29 +228,82 @@ Write-Host "Selected port: $portWhisper"
 $modelFile = "whisper-server-package\models\ggml-$modelName.bin"
 if (-not (Test-Path $modelFile)) {
     Write-Host "Model file not found: $modelFile"
-    Write-Host "Attempting to download model..."
+    Write-Host "Attempting to download model $modelName..."
+    
+    # Change to backend directory to run download script
+    Push-Location $PSScriptRoot
     
     # Download the model using download-ggml-model.cmd
     $process = Start-Process -FilePath "cmd.exe" -ArgumentList "/c download-ggml-model.cmd $modelName" -NoNewWindow -Wait -PassThru
-    if ($process.ExitCode -ne 0) {
-        Write-Host "Failed to download model. Using small model instead."
-        $modelName = "small"
+    
+    if ($process.ExitCode -eq 0) {
+        Write-Host "Model download completed. Checking for downloaded file..."
         
-        # Check if small model exists
-        if (-not (Test-Path "whisper-server-package\models\ggml-small.bin")) {
-            Write-Host "Downloading small model..."
-            Start-Process -FilePath "cmd.exe" -ArgumentList "/c download-ggml-model.cmd small" -NoNewWindow -Wait
+        # Check multiple possible locations for the downloaded model
+        $possibleLocations = @(
+            "whisper.cpp\models\ggml-$modelName.bin",
+            "models\ggml-$modelName.bin",
+            "whisper-server-package\models\ggml-$modelName.bin"
+        )
+        
+        $modelFound = $false
+        foreach ($location in $possibleLocations) {
+            if (Test-Path $location) {
+                Write-Host "Found model at: $location"
+                
+                # Ensure target directory exists
+                if (-not (Test-Path "whisper-server-package\models")) {
+                    New-Item -ItemType Directory -Path "whisper-server-package\models" -Force | Out-Null
+                }
+                
+                # Copy to target location if not already there
+                if ($location -ne "whisper-server-package\models\ggml-$modelName.bin") {
+                    Copy-Item $location "whisper-server-package\models\ggml-$modelName.bin" -Force
+                    Write-Host "Model copied to whisper-server-package\models directory."
+                }
+                $modelFound = $true
+                break
+            }
+        }
+        
+        if (-not $modelFound) {
+            Write-Host "Warning: Model download succeeded but file not found in expected locations."
+            Write-Host "Falling back to small model..."
+            $modelName = "small"
         }
     } else {
-        # Move the model to the models directory if it was downloaded to whisper.cpp/models
-        if (Test-Path "whisper.cpp\models\ggml-$modelName.bin") {
-            if (-not (Test-Path "whisper-server-package\models")) {
-                New-Item -ItemType Directory -Path "whisper-server-package\models" -Force | Out-Null
+        Write-Host "Failed to download model $modelName. Falling back to small model..."
+        $modelName = "small"
+    }
+    
+    # If we're falling back to small model, ensure it exists
+    if ($modelName -eq "small" -and -not (Test-Path "whisper-server-package\models\ggml-small.bin")) {
+        Write-Host "Downloading fallback small model..."
+        $smallProcess = Start-Process -FilePath "cmd.exe" -ArgumentList "/c download-ggml-model.cmd small" -NoNewWindow -Wait -PassThru
+        
+        if ($smallProcess.ExitCode -eq 0) {
+            # Check for downloaded small model in possible locations
+            $smallLocations = @(
+                "whisper.cpp\models\ggml-small.bin",
+                "models\ggml-small.bin"
+            )
+            
+            foreach ($location in $smallLocations) {
+                if (Test-Path $location) {
+                    Copy-Item $location "whisper-server-package\models\ggml-small.bin" -Force
+                    Write-Host "Small model downloaded and copied successfully."
+                    break
+                }
             }
-            Copy-Item "whisper.cpp\models\ggml-$modelName.bin" "whisper-server-package\models\" -Force
-            Write-Host "Model copied to whisper-server-package\models directory."
+        } else {
+            Write-Host "Error: Failed to download fallback small model."
+            Write-Host "Please download the model manually and place it in whisper-server-package\models\"
+            Pop-Location
+            exit 1
         }
     }
+    
+    Pop-Location
 }
 
 Write-Host "====================================="
@@ -208,19 +316,83 @@ Write-Host "Language: $languageName"
 Write-Host "====================================="
 Write-Host ""
 
-# Check if virtual environment exists
+# Change to script directory to ensure we're in the right location
+Push-Location $PSScriptRoot
+
+# Check if virtual environment exists, create if not found
 if (-not (Test-Path "venv")) {
-    Write-Host "Error: Virtual environment not found"
-    Write-Host "Please run build_whisper.cmd first"
-    exit 1
+    Write-Host "Virtual environment not found in: $PSScriptRoot"
+    Write-Host "Creating new virtual environment..."
+    
+    # Create virtual environment
+    $createVenvProcess = Start-Process -FilePath "python" -ArgumentList "-m venv venv" -NoNewWindow -Wait -PassThru
+    if ($createVenvProcess.ExitCode -ne 0) {
+        Write-Host "Error: Failed to create virtual environment"
+        Write-Host "Please ensure Python is installed and accessible from PATH"
+        exit 1
+    }
+    
+    Write-Host "Virtual environment created successfully."
+    
+    # Upgrade pip first
+    Write-Host "Upgrading pip..."
+    $upgradePipProcess = Start-Process -FilePath "cmd.exe" -ArgumentList "/c venv\Scripts\python.exe -m pip install --upgrade pip" -NoNewWindow -Wait -PassThru
+    if ($upgradePipProcess.ExitCode -ne 0) {
+        Write-Host "Warning: Failed to upgrade pip, continuing with existing version"
+    }
+    
+    Write-Host "Installing dependencies from requirements.txt..."
+    
+    # Check if requirements.txt exists
+    $requirementsPath = Join-Path $PSScriptRoot "requirements.txt"
+    if (Test-Path $requirementsPath) {
+        # Install dependencies using the venv's python directly
+        Write-Host "Installing packages from: $requirementsPath"
+        Write-Host "Installing packages: fastapi, uvicorn, and other dependencies..."
+        $installDepsProcess = Start-Process -FilePath "venv\Scripts\python.exe" -ArgumentList "-m pip install -r `"$requirementsPath`"" -NoNewWindow -Wait -PassThru
+        if ($installDepsProcess.ExitCode -ne 0) {
+            Write-Host "Warning: Failed to install some dependencies from requirements.txt"
+            Write-Host "Attempting to install core dependencies individually..."
+            
+            # Try installing core dependencies one by one
+            $coreDeps = @("fastapi", "uvicorn", "python-multipart", "pydantic", "python-dotenv")
+            foreach ($dep in $coreDeps) {
+                Write-Host "Installing $dep..."
+                Start-Process -FilePath "venv\Scripts\python.exe" -ArgumentList "-m pip install $dep" -NoNewWindow -Wait
+            }
+        } else {
+            Write-Host "Dependencies installed successfully."
+        }
+    } else {
+        Write-Host "Warning: requirements.txt not found. Installing core dependencies..."
+        # Install minimal required dependencies
+        $coreDeps = @("fastapi", "uvicorn[standard]", "python-multipart", "pydantic", "python-dotenv")
+        foreach ($dep in $coreDeps) {
+            Write-Host "Installing $dep..."
+            Start-Process -FilePath "venv\Scripts\python.exe" -ArgumentList "-m pip install $dep" -NoNewWindow -Wait
+        }
+    }
+    
+    # Verify FastAPI installation
+    Write-Host "Verifying FastAPI installation..."
+    $verifyProcess = Start-Process -FilePath "venv\Scripts\python.exe" -ArgumentList "-c `"import fastapi; print('FastAPI installed successfully')`"" -NoNewWindow -Wait -PassThru
+    if ($verifyProcess.ExitCode -ne 0) {
+        Write-Host "Error: FastAPI installation verification failed"
+        Write-Host "Please manually install dependencies using: venv\Scripts\pip.exe install -r requirements.txt"
+        exit 1
+    }
 }
 
 # Check if Python app exists
 if (-not (Test-Path "app\main.py")) {
     Write-Host "Error: app\main.py not found"
-    Write-Host "Please run build_whisper.cmd first"
+    Write-Host "Please ensure app\main.py exists in: $PSScriptRoot\app"
+    Pop-Location
     exit 1
 }
+
+# Restore original directory
+Pop-Location
 
 # Start Whisper server in a new window
 Write-Host "Starting Whisper server..."
@@ -243,7 +415,12 @@ try {
 
 # Start Python backend in a new window
 Write-Host "Starting Python backend..."
-Start-Process -FilePath "cmd.exe" -ArgumentList "/k call venv\Scripts\activate.bat && set PORT=$portPython && python app\main.py" -WindowStyle Normal
+Write-Host "Using virtual environment at: $PSScriptRoot\venv"
+Write-Host "Starting with PORT=$portPython"
+
+# Create a batch command that changes to the correct directory first
+$pythonCommand = "/k cd /d `"$PSScriptRoot`" && call venv\Scripts\activate.bat && set PORT=$portPython && echo Activated virtual environment && python --version && python app\main.py"
+Start-Process -FilePath "cmd.exe" -ArgumentList $pythonCommand -WindowStyle Normal
 
 # Wait for Python backend to start
 Write-Host "Waiting for Python backend to start..."
