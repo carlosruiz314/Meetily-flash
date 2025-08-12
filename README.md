@@ -587,6 +587,22 @@ brew upgrade --cask meetily
 brew upgrade meetily-backend
 ```
 
+> **⚠️ Data Backup Warning**: You are upgrading from Meetily 0.0.4 to 0.0.5. **This upgrade will automatically migrate your data to a new persistent location**, but it's recommended to backup your data first.
+> 
+> **Current Data Location (Version 0.0.4):**
+> - **Database**: `/opt/homebrew/Cellar/meetily-backend/0.0.4/backend/meeting_minutes.db`
+> 
+> **New Persistent Location (Version 0.0.5+):**
+> - **Database**: `/opt/homebrew/var/meetily/meeting_minutes.db`
+> 
+> **What Happens During Upgrade:**
+> - ✅ Your data will be automatically migrated to the new persistent location
+> - ✅ Data will survive future upgrades
+> - ✅ The old data in the Cellar directory will be cleaned up
+> 
+> **Backup Recommendation:**
+> The upgrade ensures data loss doesn't happen, but it's always better to backup your data before proceeding.
+
 **Option 2: Manual Installation**
 ⏱️ **Time:** ~8-12 minutes
 
@@ -619,6 +635,22 @@ meetily-server --language en --model medium
 # Update to latest version
 brew upgrade meetily-backend
 ```
+
+> **⚠️ Data Backup Warning**: You are upgrading from Meetily 0.0.4 to 0.0.5. **This upgrade will automatically migrate your data to a new persistent location**, but it's recommended to backup your data first.
+> 
+> **Current Data Location (Version 0.0.4):**
+> - **Database**: `/opt/homebrew/Cellar/meetily-backend/0.0.4/backend/meeting_minutes.db`
+> 
+> **New Persistent Location (Version 0.0.5+):**
+> - **Database**: `/opt/homebrew/var/meetily/meeting_minutes.db`
+> 
+> **What Happens During Upgrade:**
+> - ✅ Your data will be automatically migrated to the new persistent location
+> - ✅ Data will survive future upgrades
+> - ✅ The old data in the Cellar directory will be cleaned up
+> 
+> **Backup Recommendation:**
+> The upgrade ensures data loss doesn't happen, but it's always better to backup your data before proceeding.
 
 **Option 2: Complete Manual Setup**
 ⏱️ **Time:** ~10-15 minutes
