@@ -349,37 +349,53 @@ Provide necessary permissions for audio capture and microphone access.
 ### Backend Setup
 ⏱️ **Time:** ~5-10 minutes
 
+
+**Step 2: Install and Start the Backend**
+
 **📦 Option 1: Pre-built Release (Recommended - Easiest)**
 
 The simplest way to get started with the backend is to download the pre-built release:
 
-1. **Download Backend:**
-   - Go to [Latest Releases](https://github.com/Zackriya-Solutions/meeting-minutes/releases/latest)
+4. **Download the backend**:
+   - From the same [releases page](https://github.com/Zackriya-Solutions/meeting-minutes/releases/latest)
    - Download the backend zip file (e.g., `meetily_backend.zip`)
-   - Extract to a folder (e.g., `C:\meetily_backend\`)
+   - Extract the zip to a folder like `C:\meetily_backend\`
 
-2. **Unblock Files:**
-   ```powershell
-   # Navigate to extracted directory
-   cd C:\meetily_backend\
-   
-   # Unblock all files (Windows security feature)
-   Get-ChildItem -Path . -Recurse | Unblock-File
-   ```
+5. **Prepare backend files**:
+   - Open **PowerShell** (search for it in Start menu)
+   - Navigate to your extracted backend folder:
+     ```powershell
+     cd C:\meetily_backend
+     ```
+   - Unblock all files (Windows security requirement):
+     ```powershell
+     Get-ChildItem -Path . -Recurse | Unblock-File
+     ```
 
-3. **Start Backend:**
+6. **Start the backend services**:
    ```powershell
-   # Start the backend with interactive setup
    .\start_with_output.ps1
    ```
+   - This script will:
+     - Guide you through Whisper model selection (recommended: `base` or `medium`)
+     - Ask for language preference (default: English)
+     - Download the selected model automatically
+     - Start both Whisper server (port 8178) and Meeting app (port 5167)
 
-**What's Included:**
-- Pre-compiled whisper-server.exe
-- Python app with all dependencies
-- Automatic model download and setup
-- Interactive model and language selection
+**What happens during startup:**
+- **Model Selection**: Choose from tiny (fastest, basic accuracy) to large (slowest, best accuracy)
+- **Language Setup**: Select your preferred language for transcription
+- **Auto-download**: Selected models are downloaded automatically (~150MB to 1.5GB depending on model)
+- **Service Launch**: Both transcription and meeting services start automatically
 
-✅ **Success Check:** The script will guide you through model selection and start both Whisper server (port 8178) and Meeting app (port 5167).
+✅ **Success Verification**:
+1. **Check services are running**:
+   - Open browser and visit http://localhost:8178 (should show Whisper API interface)
+   - Visit http://localhost:5167/docs (should show Meeting app API documentation)
+2. **Test the application**:
+   - Launch **Meetily** from desktop/Start menu
+   - Grant microphone permissions when prompted
+   - You should see the main interface ready to record meetings
 
 **🐳 Option 2: Docker (Alternative - Easier Dependency Management)**
 
@@ -400,6 +416,7 @@ cd meeting-minutes/backend
 - Docker Desktop installed ([docker.com](https://docker.com))
 - 8GB+ RAM allocated to Docker
 - Internet connection for model downloads
+
 
 ✅ **Success Check:** Docker will automatically handle dependencies and you should see both Whisper server (port 8178) and Meeting app (port 5167) start successfully.
 
@@ -467,7 +484,9 @@ The build process will:
 - Install Python dependencies
 - Download the specified Whisper model
 
+
 **Step 3: Start the Backend**
+
 
 Finally, when the installation is successful, run the backend using:
 
@@ -476,6 +495,7 @@ Finally, when the installation is successful, run the backend using:
 ```
 
 ✅ **Success Check:** You should see both Whisper server (port 8178) and Meeting app (port 5167) start successfully with log messages indicating they're running.
+
 
 #### Troubleshooting
 
@@ -533,6 +553,7 @@ cd backend
 - **Whisper Server**: http://localhost:8178
 - **Meeting App**: http://localhost:5167 (with API docs at `/docs`)
 
+
 ### Advanced Options
 ```bash
 # GPU acceleration (Windows/Linux only)
@@ -543,6 +564,7 @@ cd backend
 .\run-docker.ps1 start -Model large-v3 -Language es -Detach
 ./run-docker.sh start --model large-v3 --language es --detach
 ```
+
 
 ### Management Commands
 ```bash
@@ -582,6 +604,10 @@ meetily-server --language en --model medium
 
 **To update existing installation:**
 ```bash
+
+# Update Homebrew and get latest package information
+brew update
+
 # Update to latest version
 brew upgrade --cask meetily
 brew upgrade meetily-backend
@@ -632,6 +658,11 @@ meetily-server --language en --model medium
 
 **To update existing backend installation:**
 ```bash
+
+# Update Homebrew and get latest package information
+brew update
+
+
 # Update to latest version
 brew upgrade meetily-backend
 ```
@@ -776,6 +807,7 @@ The backend supports multiple LLM providers through a unified interface. Current
 - **Ollama** (Local models that supports function calling)
 
 # Troubleshooting
+
 
 Common issues and solutions organized by setup method:
 

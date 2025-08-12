@@ -1,7 +1,6 @@
 import React from "react";
 import { invoke } from '@tauri-apps/api/core';
 import Image from 'next/image';
-import { ScrollArea } from "@/components/ui/scroll-area";
 import AnalyticsConsentSwitch from "./AnalyticsConsentSwitch";
 
 
@@ -15,7 +14,7 @@ export function About() {
     };
 
     return (
-        <ScrollArea className="p-4 space-y-4 h-[80vh]">
+        <div className="p-4 space-y-4 h-[80vh] overflow-y-auto">
             {/* Compact Header */}
             <div className="text-center">
                 <div className="mb-3">
@@ -85,6 +84,7 @@ export function About() {
                 </p>
             </div>
             <AnalyticsConsentSwitch />
-        </ScrollArea>
+        </div>
+
     )
 }
