@@ -584,6 +584,7 @@ meetily-server --language en --model medium
 ```bash
 # Update to latest version
 brew upgrade --cask meetily
+brew upgrade meetily-backend
 ```
 
 **Option 2: Manual Installation**
@@ -611,6 +612,12 @@ brew install meetily-backend
 
 # Start the backend server
 meetily-server --language en --model medium
+```
+
+**To update existing backend installation:**
+```bash
+# Update to latest version
+brew upgrade meetily-backend
 ```
 
 **Option 2: Complete Manual Setup**
