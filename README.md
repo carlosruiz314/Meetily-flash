@@ -349,6 +349,32 @@ Provide necessary permissions for audio capture and microphone access.
 ### Backend Setup
 ⏱️ **Time:** ~10-15 minutes (includes dependency installation)
 
+**📦 Option 1: Docker (Recommended - Easier)**
+
+Docker provides the easiest setup with automatic dependency management. This is the recommended approach for most Windows users as it handles all dependencies automatically.
+
+```powershell
+# Navigate to backend directory
+cd ~/Downloads
+git clone https://github.com/Zackriya-Solutions/meeting-minutes
+cd meeting-minutes/backend
+
+# Build and start using Docker (CPU version)
+.\build-docker.ps1 cpu
+.\run-docker.ps1 start -Interactive
+```
+
+**Prerequisites for Docker:**
+- Docker Desktop installed ([docker.com](https://docker.com))
+- 8GB+ RAM allocated to Docker
+- Internet connection for model downloads
+
+✅ **Success Check:** Docker will automatically handle dependencies and you should see both Whisper server (port 8178) and Meeting app (port 5167) start successfully.
+
+**🛠️ Option 2: Local Build (Best Performance)**
+
+Local building provides the best performance but requires installing all dependencies manually. Choose this if you want optimal speed and don't mind the extra setup steps.
+
 Click on the image to see installation video
 
 <p align="center">
@@ -357,11 +383,16 @@ Click on the image to see installation video
 </a>
 </p>
 
-**Option 1: Manual Setup (Recommended)**
+**Step 1: Install Dependencies**
 
-**Step 1: Install Dependencies (Optional)**
+**⚠️ Required Dependencies (must be installed before build_whisper.cmd):**
+- Python 3.9+ (with pip)
+- Visual Studio Build Tools (C++ workload)
+- CMake
+- Git
+- Visual Studio Redistributables
 
-Open PowerShell as administrator and enter the following command to install dependencies:
+Open PowerShell as administrator and run the dependency installer:
 
 ```powershell
 cd ~/Downloads
@@ -373,7 +404,14 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 
 **⚠️ This can take up to 30 minutes depending on your system**
 
-Once the installation is complete, close the PowerShell terminal and open a new terminal.
+The script will install:
+- Chocolatey (package manager)
+- Python 3.11 (if not already installed)
+- Git, CMake, Visual Studio Build Tools
+- Visual Studio Redistributables
+- Required development tools
+
+Once installation is complete, **restart your terminal** before proceeding.
 
 **Step 2: Build Whisper**
 
@@ -389,6 +427,13 @@ If the build fails, run the command again:
 ```cmd
 .\build_whisper.cmd
 ```
+
+The build process will:
+- Update git submodules (whisper.cpp)
+- Compile whisper.cpp with server support
+- Create Python virtual environment
+- Install Python dependencies
+- Download the specified Whisper model
 
 **Step 3: Start the Backend**
 
