@@ -349,6 +349,7 @@ Provide necessary permissions for audio capture and microphone access.
 ### Backend Setup
 ⏱️ **Time:** ~5-10 minutes
 
+
 **Step 2: Install and Start the Backend**
 
 **📦 Option 1: Pre-built Release (Recommended - Easiest)**
@@ -416,6 +417,7 @@ cd meeting-minutes/backend
 - 8GB+ RAM allocated to Docker
 - Internet connection for model downloads
 
+
 ✅ **Success Check:** Docker will automatically handle dependencies and you should see both Whisper server (port 8178) and Meeting app (port 5167) start successfully.
 
 **🛠️ Option 3: Local Build (Best Performance)**
@@ -482,7 +484,9 @@ The build process will:
 - Install Python dependencies
 - Download the specified Whisper model
 
+
 **Step 3: Start the Backend**
+
 
 Finally, when the installation is successful, run the backend using:
 
@@ -491,6 +495,7 @@ Finally, when the installation is successful, run the backend using:
 ```
 
 ✅ **Success Check:** You should see both Whisper server (port 8178) and Meeting app (port 5167) start successfully with log messages indicating they're running.
+
 
 #### Troubleshooting
 
@@ -548,6 +553,7 @@ cd backend
 - **Whisper Server**: http://localhost:8178
 - **Meeting App**: http://localhost:5167 (with API docs at `/docs`)
 
+
 ### Advanced Options
 ```bash
 # GPU acceleration (Windows/Linux only)
@@ -558,6 +564,7 @@ cd backend
 .\run-docker.ps1 start -Model large-v3 -Language es -Detach
 ./run-docker.sh start --model large-v3 --language es --detach
 ```
+
 
 ### Management Commands
 ```bash
@@ -597,6 +604,7 @@ meetily-server --language en --model medium
 
 **To update existing installation:**
 ```bash
+
 # Update Homebrew and get latest package information
 brew update
 
@@ -650,8 +658,10 @@ meetily-server --language en --model medium
 
 **To update existing backend installation:**
 ```bash
+
 # Update Homebrew and get latest package information
 brew update
+
 
 # Update to latest version
 brew upgrade meetily-backend
@@ -797,6 +807,7 @@ The backend supports multiple LLM providers through a unified interface. Current
 - **Ollama** (Local models that supports function calling)
 
 # Troubleshooting
+
 
 Common issues and solutions organized by setup method:
 
