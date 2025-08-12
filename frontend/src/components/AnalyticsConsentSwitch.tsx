@@ -1,6 +1,6 @@
 import React, { useContext, useState, useEffect } from 'react';
 import { Switch } from '@/components/ui/switch';
-import { Info } from 'lucide-react';
+import { Info, Loader2 } from 'lucide-react';
 import { AnalyticsContext } from './AnalyticsProvider';
 import { load } from '@tauri-apps/plugin-store';
 import { invoke } from '@tauri-apps/api/core';
@@ -9,6 +9,7 @@ import { Analytics } from '@/lib/analytics';
 
 export default function AnalyticsConsentSwitch() {
   const { setIsAnalyticsOptedIn, isAnalyticsOptedIn } = useContext(AnalyticsContext);
+  const [isProcessing, setIsProcessing] = useState(false);
   
   // Load saved preference on component mount
   useEffect(() => {
@@ -27,6 +28,10 @@ export default function AnalyticsConsentSwitch() {
   }, [setIsAnalyticsOptedIn]);
 
   const handleToggle = async (enabled: boolean) => {
+    // Optimistic update - immediately update UI state
+    setIsAnalyticsOptedIn(enabled);
+    setIsProcessing(true);
+    
     try {
       const store = await load('analytics.json', { autoSave: false });
       await store.set('analyticsOptedIn', enabled);
@@ -59,10 +64,13 @@ export default function AnalyticsConsentSwitch() {
         await Analytics.disable();
         console.log('Analytics disabled successfully');
       }
-      
-      setIsAnalyticsOptedIn(enabled);
     } catch (error) {
       console.error('Failed to toggle analytics:', error);
+      // Revert the optimistic update on error
+      setIsAnalyticsOptedIn(!enabled);
+      // You could also show a toast notification here to inform the user
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -86,13 +94,20 @@ export default function AnalyticsConsentSwitch() {
       <div className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
         <div>
           <h4 className="font-semibold text-gray-800">Enable Analytics</h4>
-          <p className="text-sm text-gray-600">Anonymous usage patterns only</p>
+          <p className="text-sm text-gray-600">
+            {isProcessing ? 'Updating...' : 'Anonymous usage patterns only'}
+          </p>
         </div>
-        <Switch
-          checked={isAnalyticsOptedIn}
-          onCheckedChange={handleToggle}
-          className="ml-4"
-        />
+        <div className="flex items-center gap-2 ml-4">
+          {isProcessing && (
+            <Loader2 className="w-4 h-4 animate-spin text-gray-500" />
+          )}
+          <Switch
+            checked={isAnalyticsOptedIn}
+            onCheckedChange={handleToggle}
+            disabled={isProcessing}
+          />
+        </div>
       </div>
 
       <div className="flex items-start gap-2 p-2 bg-blue-50 rounded border border-blue-200">
