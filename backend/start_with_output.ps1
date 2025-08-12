@@ -39,8 +39,227 @@ if ($pythonProcesses) {
 
 # Check if whisper-server-package exists, create if not
 if (-not (Test-Path "whisper-server-package")) {
-    Write-Host "Creating whisper-server-package directory..."
-    New-Item -ItemType Directory -Path "whisper-server-package" -Force | Out-Null
+    Write-Host "whisper-server-package directory not found."
+    
+    # Check if whisper-custom exists and has a public folder to copy
+    if (Test-Path "whisper-custom\public") {
+        Write-Host "Found whisper-custom\public folder. Creating whisper-server-package and copying public folder..."
+        New-Item -ItemType Directory -Path "whisper-server-package" -Force | Out-Null
+        
+        # Copy public folder from whisper-custom
+        Write-Host "Copying public folder from whisper-custom..."
+        Copy-Item -Path "whisper-custom\public" -Destination "whisper-server-package\public" -Recurse -Force
+        Write-Host "Public folder copied successfully."
+    } else {
+        Write-Host "Creating whisper-server-package directory..."
+        New-Item -ItemType Directory -Path "whisper-server-package" -Force | Out-Null
+        
+        # Create public folder with basic index.html
+        Write-Host "Creating public folder with default index.html..."
+        New-Item -ItemType Directory -Path "whisper-server-package\public" -Force | Out-Null
+        
+        # Create a simple index.html file
+        $indexContent = @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whisper Server</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .container {
+            text-align: center;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 40px;
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+            max-width: 600px;
+        }
+        h1 {
+            font-size: 2.5em;
+            margin-bottom: 20px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+        p {
+            font-size: 1.2em;
+            line-height: 1.6;
+            margin-bottom: 30px;
+        }
+        .status {
+            display: inline-block;
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 50px;
+            font-weight: bold;
+        }
+        .status.running {
+            background: rgba(72, 187, 120, 0.8);
+        }
+        .info {
+            margin-top: 30px;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+        }
+        .info h2 {
+            font-size: 1.3em;
+            margin-bottom: 15px;
+        }
+        .endpoint {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 8px 15px;
+            border-radius: 5px;
+            margin: 5px 0;
+            font-family: 'Courier New', monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ Whisper Server</h1>
+        <p>Speech-to-Text Service</p>
+        <div class="status running">Server Running</div>
+        
+        <div class="info">
+            <h2>API Endpoints</h2>
+            <div class="endpoint">POST /inference - Transcribe audio</div>
+            <div class="endpoint">GET /load - Load model</div>
+            <div class="endpoint">GET /models - List available models</div>
+        </div>
+        
+        <div class="info">
+            <h2>Service Information</h2>
+            <p style="margin: 10px 0;">This is the Whisper speech recognition server.<br>
+            It provides real-time transcription services for audio files.</p>
+        </div>
+    </div>
+</body>
+</html>
+"@
+        Set-Content -Path "whisper-server-package\public\index.html" -Value $indexContent
+        Write-Host "Default index.html created successfully."
+    }
+} else {
+    # whisper-server-package exists, but check if it has a public folder
+    if (-not (Test-Path "whisper-server-package\public")) {
+        # Check if whisper-custom has a public folder to copy
+        if (Test-Path "whisper-custom\public") {
+            Write-Host "Copying public folder from whisper-custom to existing whisper-server-package..."
+            Copy-Item -Path "whisper-custom\public" -Destination "whisper-server-package\public" -Recurse -Force
+            Write-Host "Public folder copied successfully."
+        } else {
+            # Create default public folder
+            Write-Host "Creating public folder with default index.html..."
+            New-Item -ItemType Directory -Path "whisper-server-package\public" -Force | Out-Null
+            
+            # Create a simple index.html file
+            $indexContent = @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Whisper Server</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .container {
+            text-align: center;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 40px;
+            border-radius: 20px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+            max-width: 600px;
+        }
+        h1 {
+            font-size: 2.5em;
+            margin-bottom: 20px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+        p {
+            font-size: 1.2em;
+            line-height: 1.6;
+            margin-bottom: 30px;
+        }
+        .status {
+            display: inline-block;
+            padding: 10px 20px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 50px;
+            font-weight: bold;
+        }
+        .status.running {
+            background: rgba(72, 187, 120, 0.8);
+        }
+        .info {
+            margin-top: 30px;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.2);
+            border-radius: 10px;
+        }
+        .info h2 {
+            font-size: 1.3em;
+            margin-bottom: 15px;
+        }
+        .endpoint {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 8px 15px;
+            border-radius: 5px;
+            margin: 5px 0;
+            font-family: 'Courier New', monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎙️ Whisper Server</h1>
+        <p>Speech-to-Text Service</p>
+        <div class="status running">Server Running</div>
+        
+        <div class="info">
+            <h2>API Endpoints</h2>
+            <div class="endpoint">POST /inference - Transcribe audio</div>
+            <div class="endpoint">GET /load - Load model</div>
+            <div class="endpoint">GET /models - List available models</div>
+        </div>
+        
+        <div class="info">
+            <h2>Service Information</h2>
+            <p style="margin: 10px 0;">This is the Whisper speech recognition server.<br>
+            It provides real-time transcription services for audio files.</p>
+        </div>
+    </div>
+</body>
+</html>
+"@
+            Set-Content -Path "whisper-server-package\public\index.html" -Value $indexContent
+            Write-Host "Default index.html created successfully."
+        }
+    }
 }
 
 # Check if whisper-server.exe exists, download if not
@@ -475,4 +694,231 @@ Write-Host "Python Backend Port: $(if ($pythonListening) { "LISTENING on $portPy
 Write-Host ""
 Write-Host "The backend services are now running in separate windows."
 Write-Host "You can close those windows to stop the services."
+Write-Host "====================================="
+
+# Check for frontend installation
+Write-Host ""
+Write-Host "====================================="
+Write-Host "Frontend Application Check"
+Write-Host "====================================="
+
+# Check if meetily-frontend is installed
+$frontendInstalled = $false
+$frontendPath = $null
+
+# Check common installation paths for meetily-frontend
+$possiblePaths = @(
+    "$env:LOCALAPPDATA\Programs\meetily-frontend\meetily-frontend.exe",
+    "$env:LOCALAPPDATA\Programs\meetily\meetily-frontend.exe",
+    "$env:ProgramFiles\meetily-frontend\meetily-frontend.exe",
+    "${env:ProgramFiles(x86)}\meetily-frontend\meetily-frontend.exe",
+    "$env:APPDATA\meetily-frontend\meetily-frontend.exe"
+)
+
+foreach ($path in $possiblePaths) {
+    if (Test-Path $path) {
+        $frontendInstalled = $true
+        $frontendPath = $path
+        break
+    }
+}
+
+# Also check if meetily is in the registry (properly installed)
+try {
+    $regPath = Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue | 
+               Where-Object { $_.DisplayName -like "*meetily*" }
+    if (-not $regPath) {
+        $regPath = Get-ItemProperty -Path "HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*" -ErrorAction SilentlyContinue | 
+                   Where-Object { $_.DisplayName -like "*meetily*" }
+    }
+    if ($regPath) {
+        $frontendInstalled = $true
+        if (-not $frontendPath -and $regPath.InstallLocation) {
+            # Clean up the install location path (remove quotes if present)
+            $installLocation = $regPath.InstallLocation -replace '^"(.+)"$', '$1'
+            
+            # Try to find the executable in the install location
+            $possibleExeNames = @("meetily-frontend.exe", "meetily.exe")
+            foreach ($exeName in $possibleExeNames) {
+                $testPath = Join-Path $installLocation $exeName
+                if (Test-Path $testPath) {
+                    $frontendPath = $testPath
+                    break
+                }
+            }
+        }
+    }
+} catch {
+    # Registry check failed, continue with file system check
+}
+
+if ($frontendInstalled) {
+    Write-Host "Meetily frontend application is installed."
+    if ($frontendPath) {
+        Write-Host "Location: $frontendPath"
+        
+        # Ask if user wants to launch the frontend
+        $launchFrontend = Read-Host "Do you want to launch the Meetily frontend application? (Y/N)"
+        if ($launchFrontend -eq 'Y' -or $launchFrontend -eq 'y') {
+            Write-Host "Launching Meetily frontend..."
+            Start-Process -FilePath $frontendPath
+            Write-Host "Meetily frontend launched successfully."
+        }
+    }
+} else {
+    Write-Host "Meetily frontend application is not installed."
+    Write-Host ""
+    $installFrontend = Read-Host "Would you like to download and install the Meetily frontend application? (Y/N)"
+    
+    if ($installFrontend -eq 'Y' -or $installFrontend -eq 'y') {
+        Write-Host "Fetching latest release information..."
+        
+        try {
+            # Fetch the latest release information
+            $headers = @{"User-Agent" = "PowerShell-Script"}
+            $apiUrl = "https://api.github.com/repos/Zackriya-Solutions/meeting-minutes/releases/latest"
+            $releaseInfo = Invoke-RestMethod -Uri $apiUrl -Headers $headers -UseBasicParsing
+            
+            # Find the setup.exe asset - looking for files ending with _x64-setup.exe or similar
+            $setupAsset = $releaseInfo.assets | Where-Object { 
+                $_.name -like "*setup.exe" -or 
+                $_.name -like "*Setup.exe" -or 
+                $_.name -like "*_x64-setup.exe" -or
+                $_.name -like "*_x64_en-US.msi"
+            }
+            
+            if ($setupAsset) {
+                $downloadUrl = $setupAsset.browser_download_url
+                $setupFileName = $setupAsset.name
+                $tempPath = Join-Path $env:TEMP $setupFileName
+                
+                Write-Host "Found frontend installer: $setupFileName"
+                Write-Host "Downloading from: $downloadUrl"
+                Write-Host "This may take a few minutes..."
+                
+                # Download the installer with progress
+                $ProgressPreference = 'SilentlyContinue'
+                Invoke-WebRequest -Uri $downloadUrl -OutFile $tempPath -UseBasicParsing
+                $ProgressPreference = 'Continue'
+                
+                # Unblock the downloaded file
+                Unblock-File -Path $tempPath
+                
+                Write-Host "Download completed. Starting installation..."
+                Write-Host ""
+                Write-Host "IMPORTANT: The installer may require administrator privileges."
+                Write-Host "Please follow the installation prompts in the installer window."
+                Write-Host ""
+                
+                # Start the installer
+                # The installer will handle UAC elevation if needed
+                if ($setupFileName -like "*.msi") {
+                    # For MSI files, use msiexec
+                    $installerProcess = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$tempPath`"" -PassThru -Wait
+                } else {
+                    # For EXE files
+                    $installerProcess = Start-Process -FilePath $tempPath -PassThru -Wait
+                }
+                
+                if ($installerProcess.ExitCode -eq 0) {
+                    Write-Host "Installation completed successfully!"
+                    
+                    # Check if meetily is now installed and launch it
+                    Start-Sleep -Seconds 2  # Give the system a moment to register the installation
+                    foreach ($path in $possiblePaths) {
+                        if (Test-Path $path) {
+                            Write-Host "Launching Meetily frontend..."
+                            Start-Process -FilePath $path
+                            break
+                        }
+                    }
+                } elseif ($installerProcess.ExitCode -eq 1602) {
+                    Write-Host "Installation was cancelled by the user."
+                } else {
+                    Write-Host "Installation completed with exit code: $($installerProcess.ExitCode)"
+                }
+                
+                # Clean up temp file
+                if (Test-Path $tempPath) {
+                    Remove-Item $tempPath -Force -ErrorAction SilentlyContinue
+                }
+                
+            } else {
+                Write-Host "Could not find frontend installer in the latest release."
+                Write-Host "Available assets in the release:"
+                foreach ($asset in $releaseInfo.assets) {
+                    Write-Host "  - $($asset.name)"
+                }
+                Write-Host ""
+                Write-Host "Please download the installer manually from:"
+                Write-Host "https://github.com/Zackriya-Solutions/meeting-minutes/releases"
+            }
+            
+        } catch {
+            Write-Host "Error downloading or installing frontend: $_"
+            
+            # Try alternative method - look for any recent release
+            try {
+                Write-Host "Attempting alternative download method..."
+                $allReleasesUrl = "https://api.github.com/repos/Zackriya-Solutions/meeting-minutes/releases"
+                $releases = Invoke-RestMethod -Uri $allReleasesUrl -Headers @{"User-Agent" = "PowerShell-Script"} -UseBasicParsing
+                
+                if ($releases.Count -gt 0) {
+                    foreach ($release in $releases) {
+                        $setupAsset = $release.assets | Where-Object { 
+                            $_.name -like "*setup.exe" -or 
+                            $_.name -like "*Setup.exe" -or 
+                            $_.name -like "*_x64-setup.exe" -or
+                            $_.name -like "*_x64_en-US.msi"
+                        }
+                        if ($setupAsset) {
+                            $downloadUrl = $setupAsset.browser_download_url
+                            $setupFileName = $setupAsset.name
+                            $tempPath = Join-Path $env:TEMP $setupFileName
+                            
+                            Write-Host "Found frontend installer in release $($release.tag_name): $setupFileName"
+                            Write-Host "Downloading..."
+                            
+                            $ProgressPreference = 'SilentlyContinue'
+                            Invoke-WebRequest -Uri $downloadUrl -OutFile $tempPath -UseBasicParsing
+                            $ProgressPreference = 'Continue'
+                            Unblock-File -Path $tempPath
+                            
+                            Write-Host "Starting installation..."
+                            if ($setupFileName -like "*.msi") {
+                                $installerProcess = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$tempPath`"" -PassThru -Wait
+                            } else {
+                                $installerProcess = Start-Process -FilePath $tempPath -PassThru -Wait
+                            }
+                            
+                            if ($installerProcess.ExitCode -eq 0) {
+                                Write-Host "Installation completed successfully!"
+                            }
+                            
+                            # Clean up
+                            if (Test-Path $tempPath) {
+                                Remove-Item $tempPath -Force -ErrorAction SilentlyContinue
+                            }
+                            break
+                        }
+                    }
+                    
+                    if (-not $setupAsset) {
+                        Write-Host "No installer found in any recent releases."
+                        Write-Host "Please download the frontend installer manually from:"
+                        Write-Host "https://github.com/Zackriya-Solutions/meeting-minutes/releases"
+                    }
+                }
+            } catch {
+                Write-Host "Alternative method also failed."
+                Write-Host "Please download the frontend installer manually from:"
+                Write-Host "https://github.com/Zackriya-Solutions/meeting-minutes/releases"
+            }
+        }
+    }
+}
+
+Write-Host ""
+Write-Host "====================================="
+Write-Host "Setup Complete"
 Write-Host "====================================="
