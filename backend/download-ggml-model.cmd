@@ -45,7 +45,14 @@ if exist "whisper.cpp\models" (
 )
 
 if exist "ggml-%model%.bin" (
-  echo Model %model% already exists. Skipping download.
+  echo Model %model% already exists in current directory. Skipping download.
+  goto :eof
+)
+
+REM Also check if model exists in target directory
+set target_model=%models_path%\whisper-server-package\models\ggml-%model%.bin
+if exist "%target_model%" (
+  echo Model %model% already exists in whisper-server-package\models. Skipping download.
   goto :eof
 )
 
@@ -65,8 +72,86 @@ if %ERRORLEVEL% neq 0 (
   goto :eof
 )
 
-echo Done! Model %model% saved in %CD%\ggml-%model%.bin
-echo You can now use it with the Whisper server.
+set current_dir=%CD%
+set source_file=%current_dir%\ggml-%model%.bin
+echo Done! Model %model% saved in %source_file%
+
+REM Set target directory for whisper-server-package
+set target_dir=%models_path%\whisper-server-package\models
+
+REM Debug output
+echo.
+echo Checking if model needs to be moved...
+echo Current directory: %current_dir%
+echo Target directory: %target_dir%
+echo.
+
+REM Check if we're already in the target directory
+if "%current_dir%"=="%target_dir%" (
+    echo Model is already in the correct location.
+) else (
+    REM Check if target directory exists
+    if exist "%target_dir%" (
+        echo Target directory exists. Copying model...
+        
+        REM Ensure target directory exists
+        if not exist "%target_dir%" mkdir "%target_dir%"
+        
+        REM Copy the model to the target directory
+        copy /Y "%source_file%" "%target_dir%\ggml-%model%.bin"
+        
+        if %ERRORLEVEL% equ 0 (
+            REM Verify the copy was successful by checking file size
+            if exist "%target_dir%\ggml-%model%.bin" (
+                echo Model successfully copied to whisper-server-package\models
+                
+                REM Delete the source file to save space
+                echo Removing model from temporary location: %source_file%
+                del /F /Q "%source_file%"
+                
+                if exist "%source_file%" (
+                    echo Warning: Could not remove temporary model file.
+                    echo The file may be in use or you may not have permission.
+                ) else (
+                    echo Cleanup completed successfully.
+                    echo Model removed from: %current_dir%
+                )
+            ) else (
+                echo Warning: Copy verification failed. Keeping source file.
+            )
+        ) else (
+            echo Warning: Failed to copy model to whisper-server-package\models
+            echo Model remains in: %source_file%
+        )
+    ) else (
+        echo Target directory does not exist: %target_dir%
+        
+        REM Try to create it
+        echo Attempting to create target directory...
+        mkdir "%target_dir%" 2>nul
+        
+        if exist "%target_dir%" (
+            echo Directory created. Copying model...
+            copy /Y "%source_file%" "%target_dir%\ggml-%model%.bin"
+            
+            if %ERRORLEVEL% equ 0 (
+                if exist "%target_dir%\ggml-%model%.bin" (
+                    echo Model successfully copied.
+                    del /F /Q "%source_file%"
+                    if not exist "%source_file%" (
+                        echo Cleanup completed successfully.
+                    )
+                )
+            )
+        ) else (
+            echo Could not create target directory.
+            echo Model saved in: %source_file%
+        )
+    )
+)
+
+echo.
+echo You can now use the model with the Whisper server.
 
 goto :eof
 
