@@ -15,6 +15,7 @@ interface BlockProps {
   onDelete?: () => void;
   onContextMenu: (e: React.MouseEvent) => void;
   onNavigate?: (direction: 'up' | 'down', cursorPosition: number) => void;
+  onCreateNewBlock?: (blockId: string, newBlockContent: string, blockType: Block['type'], currentBlockContent?: string) => void;
 }
 
 interface CommandOption {
@@ -68,6 +69,7 @@ export const BlockComponent: React.FC<BlockProps> = ({
   onDelete,
   onContextMenu,
   onNavigate,
+  onCreateNewBlock,
 }) => {
   const [showCommands, setShowCommands] = useState(false);
   const [commandFilter, setCommandFilter] = useState('');
@@ -126,7 +128,7 @@ export const BlockComponent: React.FC<BlockProps> = ({
         setShowCommands(false);
       }
     } else if (e.key === 'Enter') {
-      if (!e.shiftKey) {
+      if (!e.shiftKey && onCreateNewBlock) {
         e.preventDefault();
         const textarea = textareaRef.current;
         if (!textarea) return;
@@ -138,18 +140,8 @@ export const BlockComponent: React.FC<BlockProps> = ({
         const textBeforeCursor = block.content.substring(0, cursorPosition);
         const textAfterCursor = block.content.substring(selectionEnd);
         
-        // Update current block with text before cursor
-        onChange(textBeforeCursor);
-        
-        // Pass the text after cursor to parent for new block
-        if (textAfterCursor) {
-          e.currentTarget.dataset.newBlockContent = textAfterCursor;
-          onKeyDown(e);
-        } else {
-          // If no text after cursor, still create new empty block
-          e.currentTarget.dataset.newBlockContent = '';
-          onKeyDown(e);
-        }
+        // Create new block with remaining content and pass the updated current block content
+        onCreateNewBlock(block.id, textAfterCursor, block.type, textBeforeCursor);
       }
     } else if (e.key === 'Backspace' && onDelete) {
       const textarea = textareaRef.current;
@@ -158,17 +150,18 @@ export const BlockComponent: React.FC<BlockProps> = ({
       const cursorPosition = textarea.selectionStart || 0;
       const selectionLength = (textarea.selectionEnd || 0) - cursorPosition;
       
-      // Only delete block if cursor is at start and content is empty
-      if (block.content === '' && cursorPosition === 0 && selectionLength === 0) {
+      // Only handle backspace at the start of the block (no selection)
+      if (cursorPosition === 0 && selectionLength === 0) {
         e.preventDefault();
-        // Store cursor position in dataset for parent component
-        e.currentTarget.dataset.cursorPosition = '0';
-        onDelete();
-      } else if (cursorPosition === 0 && selectionLength === 0) {
-        // If at start of block but has content, merge with previous block
-        e.preventDefault();
-        e.currentTarget.dataset.mergeContent = block.content;
-        onDelete();
+        
+        if (block.content === '') {
+          // Empty block - just delete it
+          onDelete();
+        } else {
+          // Block has content - merge with previous block
+          e.currentTarget.dataset.mergeContent = block.content;
+          onDelete();
+        }
       }
     } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && onNavigate) {
       const textarea = textareaRef.current;
@@ -227,8 +220,8 @@ export const BlockComponent: React.FC<BlockProps> = ({
 
   return (
     <div 
-      className={`group relative min-h-[24px] flex items-start rounded transition-colors
-        ${isSelected ? 'bg-blue-50 ring-1 ring-blue-200' : 'hover:bg-gray-50'}`}
+      className={`group relative min-h-[24px] flex items-start rounded transition-all duration-150 ease-in-out
+        ${isSelected ? 'bg-blue-50 ring-1 ring-blue-200 shadow-sm' : 'hover:bg-gray-50'}`}
       onMouseDown={onMouseDown}
       onMouseEnter={onMouseEnter}
       onMouseUp={onMouseUp}
@@ -252,6 +245,7 @@ export const BlockComponent: React.FC<BlockProps> = ({
           rows={1}
           className={`
             w-full resize-none overflow-hidden bg-transparent border-none p-0 focus:outline-none focus:ring-0
+            transition-all duration-150 ease-in-out
             ${block.color === 'gray' ? 'text-gray-500' : ''}
             ${block.type === 'heading1' ? 'text-xl font-bold' : ''}
             ${block.type === 'heading2' ? 'text-lg font-semibold' : ''}
@@ -262,7 +256,8 @@ export const BlockComponent: React.FC<BlockProps> = ({
         {showCommands && (
           <div 
             ref={commandsRef}
-            className="absolute left-0 top-full mt-1 w-64 bg-white rounded-lg shadow-lg border border-gray-200 py-2 z-50"
+            className="absolute left-0 top-full mt-1 w-64 bg-white rounded-lg shadow-lg border border-gray-200 py-2 z-50
+                       animate-in fade-in slide-in-from-top-2 duration-150"
           >
             {filteredCommands.map((cmd, index) => (
               <button

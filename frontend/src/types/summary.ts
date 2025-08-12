@@ -13,6 +13,7 @@ export interface SummaryResponse {
 
 export interface ProcessRequest {
     transcript: string;
+    custom_prompt?: string;
     metadata?: {
         meeting_title?: string;
         date?: string;

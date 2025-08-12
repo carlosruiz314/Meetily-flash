@@ -5,13 +5,18 @@ import { appDataDir } from '@tauri-apps/api/path';
 import { useCallback, useEffect, useState, useRef } from 'react';
 import { Play, Pause, Square, Mic } from 'lucide-react';
 import { ProcessRequest, SummaryResponse } from '@/types/summary';
+import { listen } from '@tauri-apps/api/event';
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import Analytics from '@/lib/analytics';
 
 interface RecordingControlsProps {
   isRecording: boolean;
   barHeights: string[];
-  onRecordingStop: () => void;
+  onRecordingStop: (callApi?: boolean) => void;
   onRecordingStart: () => void;
   onTranscriptReceived: (summary: SummaryResponse) => void;
+  onTranscriptionError?: (message: string) => void;
+  isRecordingDisabled: boolean;
 }
 
 export const RecordingControls: React.FC<RecordingControlsProps> = ({
@@ -20,6 +25,8 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   onRecordingStop,
   onRecordingStart,
   onTranscriptReceived,
+  onTranscriptionError,
+  isRecordingDisabled,
 }) => {
   const [showPlayback, setShowPlayback] = useState(false);
   const [recordingPath, setRecordingPath] = useState<string | null>(null);
@@ -27,10 +34,9 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const [isProcessing, setIsProcessing] = useState(false);
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
-  const [stopCountdown, setStopCountdown] = useState(5);
-  const countdownInterval = useRef<NodeJS.Timeout | null>(null);
-  const stopTimeoutRef = useRef<{ stop: () => void } | null>(null);
   const MIN_RECORDING_DURATION = 2000; // 2 seconds minimum recording time
+  const [transcriptionErrors, setTranscriptionErrors] = useState(0);
+
 
   const currentTime = 0;
   const duration = 0;
@@ -94,7 +100,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       setRecordingPath(savePath);
       // setShowPlayback(true);
       setIsProcessing(false);
-      onRecordingStop();
+      
+      // Track successful transcription
+      Analytics.trackTranscriptionSuccess();
+      
+      onRecordingStop(true);
     } catch (error) {
       console.error('Failed to stop recording:', error);
       if (error instanceof Error) {
@@ -114,7 +124,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         }
       }
       setIsProcessing(false);
-      onRecordingStop();
+      onRecordingStop(false);
     } finally {
       setIsStopping(false);
     }
@@ -123,62 +133,63 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const handleStopRecording = useCallback(async () => {
     if (!isRecording || isStarting || isStopping) return;
     
-    console.log('Starting stop countdown...');
+    console.log('Stopping recording...');
     setIsStopping(true);
-    setStopCountdown(5);
-
-    // Clear any existing intervals
-    if (countdownInterval.current) {
-      clearInterval(countdownInterval.current);
-      countdownInterval.current = null;
-    }
-
-    // Create a controller for the stop action
-    const controller = {
-      stop: () => {
-        if (countdownInterval.current) {
-          clearInterval(countdownInterval.current);
-          countdownInterval.current = null;
-        }
-        setIsStopping(false);
-        setStopCountdown(5);
-      }
-    };
-    stopTimeoutRef.current = controller;
-
-    // Start countdown
-    countdownInterval.current = setInterval(() => {
-      setStopCountdown(prev => {
-        if (prev <= 1) {
-          // Clear interval first
-          if (countdownInterval.current) {
-            clearInterval(countdownInterval.current);
-            countdownInterval.current = null;
-          }
-          // Schedule stop action
-          stopRecordingAction();
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+    
+    // Immediately trigger the stop action
+    await stopRecordingAction();
   }, [isRecording, isStarting, isStopping, stopRecordingAction]);
-
-  const cancelStopRecording = useCallback(() => {
-    if (stopTimeoutRef.current) {
-      stopTimeoutRef.current.stop();
-      stopTimeoutRef.current = null;
-    }
-  }, []);
 
   useEffect(() => {
     return () => {
-      if (countdownInterval.current) clearInterval(countdownInterval.current);
-      if (stopTimeoutRef.current) stopTimeoutRef.current.stop();
+      // Cleanup on unmount if needed
     };
   }, []);
 
-  return (
+  useEffect(() => {
+    console.log('Setting up transcript-error event listener');
+    let unsubscribe: (() => void) | undefined;
+    
+    const setupListener = async () => {
+      try {
+        unsubscribe = await listen('transcript-error', (event) => {
+          console.log('transcript-error event received:', event);
+          console.error('Transcription error received:', event.payload);
+          const errorMessage = event.payload as string;
+          
+          // Track the error (no debouncing needed since backend only emits once)
+          Analytics.trackTranscriptionError(errorMessage);
+          console.log('Tracked transcription error:', errorMessage);
+          
+          setTranscriptionErrors(prev => {
+            const newCount = prev + 1;
+            console.log('Transcription error count incremented:', newCount);
+            return newCount;
+          });
+          setIsProcessing(false);
+          console.log('Calling onRecordingStop(false) due to transcript error');
+          onRecordingStop(false);
+          if (onTranscriptionError) {
+            onTranscriptionError(errorMessage);
+          }
+        });
+        console.log('transcript-error event listener set up successfully');
+      } catch (error) {
+        console.error('Failed to set up transcript-error event listener:', error);
+      }
+    };
+    
+    setupListener();
+    
+    return () => {
+      console.log('Cleaning up transcript-error event listener');
+      if (unsubscribe && typeof unsubscribe === 'function') {
+        unsubscribe();
+      }
+    };
+  }, []); // Include dependencies
+
+    return (
     <div className="flex flex-col space-y-2">
       <div className="flex items-center space-x-2 bg-white rounded-full shadow-lg px-4 py-2">
         {isProcessing ? (
@@ -226,20 +237,27 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             ) : (
               <>
                 <button
-                  onClick={isRecording ? 
-                    (isStopping ? cancelStopRecording : handleStopRecording) : 
-                    handleStartRecording}
-                  disabled={isStarting || isProcessing}
+                  onClick={() => {
+                    if (isRecording) {
+                      Analytics.trackButtonClick('stop_recording', 'recording_controls');
+                      handleStopRecording();
+                    } else {
+                      Analytics.trackButtonClick('start_recording', 'recording_controls');
+                      handleStartRecording();
+                    }
+                  }}
+                  disabled={isStarting || isProcessing || isStopping || isRecordingDisabled}
                   className={`w-12 h-12 flex items-center justify-center ${
-                    isStarting || isProcessing ? 'bg-gray-400' : 'bg-red-500 hover:bg-red-600'
+                    isStarting || isProcessing || isStopping ? 'bg-gray-400' : 'bg-red-500 hover:bg-red-600'
                   } rounded-full text-white transition-colors relative`}
+
                 >
                   {isRecording ? (
                     <>
                       <Square size={20} />
                       {isStopping && (
-                        <div className="absolute -top-8 text-red-500 font-medium">
-                          {stopCountdown > 0 ? `${stopCountdown}s` : 'Stopping...'}
+                        <div className="absolute -top-8 text-gray-600 font-medium text-sm">
+                          Stopping...
                         </div>
                       )}
                     </>
@@ -264,7 +282,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           </>
         )}
       </div>
-      {/* {showPlayback && recordingPath && (
+            {/* {showPlayback && recordingPath && (
         <div className="text-sm text-gray-600 px-4">
           Recording saved to: {recordingPath}
         </div>

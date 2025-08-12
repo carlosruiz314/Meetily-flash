@@ -1,7 +1,7 @@
 'use client';
 
-import { useState, useEffect, useContext, useCallback } from 'react';
-import { Transcript, Summary, SummaryResponse } from '@/types';
+import { useState, useEffect, useContext, useCallback, useRef } from 'react';
+import { Transcript, TranscriptUpdate, Summary, SummaryResponse } from '@/types';
 import { EditableTitle } from '@/components/EditableTitle';
 import { TranscriptView } from '@/components/TranscriptView';
 import { RecordingControls } from '@/components/RecordingControls';
@@ -15,12 +15,10 @@ import { invoke } from '@tauri-apps/api/core';
 import { useNavigation } from '@/hooks/useNavigation';
 import { useRouter } from 'next/navigation';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import Analytics from '@/lib/analytics';
 
-interface TranscriptUpdate {
-  text: string;
-  timestamp: string;
-  source: string;
-}
+
 
 interface ModelConfig {
   provider: 'ollama' | 'groq' | 'claude';
@@ -38,13 +36,14 @@ interface OllamaModel {
 }
 
 export default function Home() {
-  const [isRecording, setIsRecording] = useState(false);
+  const [isRecording, setIsRecordingState] = useState(false);
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
   const [showSummary, setShowSummary] = useState(false);
   const [summaryStatus, setSummaryStatus] = useState<SummaryStatus>('idle');
   const [barHeights, setBarHeights] = useState(['58%', '76%', '58%']);
   const [meetingTitle, setMeetingTitle] = useState('+ New Call');
   const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const [customPrompt, setCustomPrompt] = useState('');
   const [aiSummary, setAiSummary] = useState<Summary | null>({
     key_points: { title: "Key Points", blocks: [] },
     action_items: { title: "Action Items", blocks: [] },
@@ -63,10 +62,27 @@ export default function Home() {
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [error, setError] = useState<string>('');
   const [showModelSettings, setShowModelSettings] = useState(false);
+  const [showErrorAlert, setShowErrorAlert] = useState(false);
+  const [errorMessage, setErrorMessage] = useState('');
+  const [showChunkDropWarning, setShowChunkDropWarning] = useState(false);
+  const [chunkDropMessage, setChunkDropMessage] = useState('');
+  const [isSavingTranscript, setIsSavingTranscript] = useState(false);
+  const [isRecordingDisabled, setIsRecordingDisabled] = useState(false);
 
-  const { setCurrentMeeting, setMeetings ,meetings, isMeetingActive, setIsMeetingActive} = useSidebar();
+  const { setCurrentMeeting, setMeetings, meetings, isMeetingActive, setIsMeetingActive, setIsRecording: setSidebarIsRecording , serverAddress} = useSidebar();
   const handleNavigation = useNavigation('', ''); // Initialize with empty values
   const router = useRouter();
+  
+  // Ref for final buffer flush functionality
+  const finalFlushRef = useRef<(() => void) | null>(null);
+  
+  // Ref to avoid stale closure issues with transcripts
+  const transcriptsRef = useRef<Transcript[]>(transcripts);
+  
+  // Keep ref updated with current transcripts
+  useEffect(() => {
+    transcriptsRef.current = transcripts;
+  }, [transcripts]);
 
   const modelOptions = {
     ollama: models.map(model => model.name),
@@ -117,7 +133,13 @@ export default function Home() {
   ];
 
   useEffect(() => {
+    // Track page view
+    Analytics.trackPageView('home');
+  }, []);
+
+  useEffect(() => {
     setCurrentMeeting({ id: 'intro-call', title: meetingTitle });
+    
   }, [meetingTitle, setCurrentMeeting]);
 
   useEffect(() => {
@@ -128,11 +150,11 @@ export default function Home() {
         
         if (isCurrentlyRecording && !isRecording) {
           console.log('Recording is active in backend but not in UI, synchronizing state...');
-          setIsRecording(true);
+          setIsRecordingState(true);
           setIsMeetingActive(true);
         } else if (!isCurrentlyRecording && isRecording) {
           console.log('Recording is inactive in backend but active in UI, synchronizing state...');
-          setIsRecording(false);
+          setIsRecordingState(false);
         }
       } catch (error) {
         console.error('Failed to check recording state:', error);
@@ -142,10 +164,12 @@ export default function Home() {
     checkRecordingState();
     
     // Set up a polling interval to periodically check recording state
-    const interval = setInterval(checkRecordingState, 5000); // Check every 5 seconds
+    const interval = setInterval(checkRecordingState, 1000); // Check every 1 second
     
     return () => clearInterval(interval);
   }, [isRecording, setIsMeetingActive]);
+  
+
 
   useEffect(() => {
     if (isRecording) {
@@ -162,49 +186,210 @@ export default function Home() {
       return () => clearInterval(interval);
     }
   }, [isRecording]);
+  
+  // Update sidebar recording state when local recording state changes
+  useEffect(() => {
+    setSidebarIsRecording(isRecording);
+  }, [isRecording, setSidebarIsRecording]);
 
   useEffect(() => {
     let unlistenFn: (() => void) | undefined;
-    let transcriptCounter = 0;  // Counter for unique IDs
+    let transcriptCounter = 0;
+    let transcriptBuffer = new Map<number, Transcript>();
+    let lastProcessedSequence = 0;
+    let processingTimer: NodeJS.Timeout | undefined;
+
+    const processBufferedTranscripts = (forceFlush = false) => {
+      const sortedTranscripts: Transcript[] = [];
+      
+      // Process all available sequential transcripts
+      let nextSequence = lastProcessedSequence + 1;
+      while (transcriptBuffer.has(nextSequence)) {
+        const bufferedTranscript = transcriptBuffer.get(nextSequence)!;
+        sortedTranscripts.push(bufferedTranscript);
+        transcriptBuffer.delete(nextSequence);
+        lastProcessedSequence = nextSequence;
+        nextSequence++;
+      }
+
+      // Add any buffered transcripts that might be out of order
+      const now = Date.now();
+      const staleThreshold = 5000; // 5 seconds
+      const recentThreshold = 2000; // 2 seconds - for recent out-of-order transcripts
+      const staleTranscripts: Transcript[] = [];
+      const recentTranscripts: Transcript[] = [];
+      const forceFlushTranscripts: Transcript[] = [];
+      
+      for (const [sequenceId, transcript] of transcriptBuffer.entries()) {
+        if (forceFlush) {
+          // Force flush mode: process ALL remaining transcripts regardless of timing
+          forceFlushTranscripts.push(transcript);
+          transcriptBuffer.delete(sequenceId);
+          console.log(`Force flush: processing transcript with sequence_id ${sequenceId}`);
+        } else {
+          const transcriptAge = now - parseInt(transcript.id.split('-')[0]);
+          if (transcriptAge > staleThreshold) {
+            // Process truly stale transcripts (>5s old)
+            staleTranscripts.push(transcript);
+            transcriptBuffer.delete(sequenceId);
+          } else if (transcriptAge > recentThreshold) {
+            // Process recent out-of-order transcripts (2-5s old)
+            recentTranscripts.push(transcript);
+            transcriptBuffer.delete(sequenceId);
+            console.log(`Processing recent out-of-order transcript with sequence_id ${sequenceId}, age: ${transcriptAge}ms`);
+          }
+        }
+      }
+      
+      // Sort both stale and recent transcripts by chunk_start_time, then by sequence_id
+      const sortTranscripts = (transcripts: Transcript[]) => {
+        return transcripts.sort((a, b) => {
+          const chunkTimeDiff = (a.chunk_start_time || 0) - (b.chunk_start_time || 0);
+          if (chunkTimeDiff !== 0) return chunkTimeDiff;
+          return (a.sequence_id || 0) - (b.sequence_id || 0);
+        });
+      };
+
+      const sortedStaleTranscripts = sortTranscripts(staleTranscripts);
+      const sortedRecentTranscripts = sortTranscripts(recentTranscripts);
+      const sortedForceFlushTranscripts = sortTranscripts(forceFlushTranscripts);
+
+      const allNewTranscripts = [...sortedTranscripts, ...sortedRecentTranscripts, ...sortedStaleTranscripts, ...sortedForceFlushTranscripts];
+      
+      if (allNewTranscripts.length > 0) {
+        setTranscripts(prev => {
+          // Create a set of existing sequence_ids for deduplication
+          const existingSequenceIds = new Set(prev.map(t => t.sequence_id).filter(id => id !== undefined));
+          
+          // Filter out any new transcripts that already exist
+          const uniqueNewTranscripts = allNewTranscripts.filter(transcript => 
+            transcript.sequence_id !== undefined && !existingSequenceIds.has(transcript.sequence_id)
+          );
+          
+          // Only combine if we have unique new transcripts
+          if (uniqueNewTranscripts.length === 0) {
+            console.log('No unique transcripts to add - all were duplicates');
+            return prev; // No new unique transcripts to add
+          }
+          
+          console.log(`Adding ${uniqueNewTranscripts.length} unique transcripts out of ${allNewTranscripts.length} received`);
+          
+          // Merge with existing transcripts, maintaining chronological order
+          const combined = [...prev, ...uniqueNewTranscripts];
+          
+          // Sort by chunk_start_time first, then by sequence_id
+          return combined.sort((a, b) => {
+            const chunkTimeDiff = (a.chunk_start_time || 0) - (b.chunk_start_time || 0);
+            if (chunkTimeDiff !== 0) return chunkTimeDiff;
+            return (a.sequence_id || 0) - (b.sequence_id || 0);
+          });
+        });
+        
+        // Log the processing summary
+        const logMessage = forceFlush 
+          ? `Force flush processed ${allNewTranscripts.length} transcripts (${sortedTranscripts.length} sequential, ${forceFlushTranscripts.length} forced)`
+          : `Processed ${allNewTranscripts.length} transcripts (${sortedTranscripts.length} sequential, ${recentTranscripts.length} recent, ${staleTranscripts.length} stale)`;
+        console.log(logMessage);
+      }
+    };
+
+    // Assign final flush function to ref for external access
+    finalFlushRef.current = () => processBufferedTranscripts(true);
 
     const setupListener = async () => {
       try {
-        console.log('Setting up transcript listener...');
+        console.log('🔥 Setting up MAIN transcript listener during component initialization...');
         unlistenFn = await listen<TranscriptUpdate>('transcript-update', (event) => {
-          console.log('Received transcript update:', event.payload);
-          const newTranscript = {
-            id: `${Date.now()}-${transcriptCounter++}`,  // Combine timestamp with counter for uniqueness
+          const now = Date.now();
+          console.log('🎯 MAIN LISTENER: Received transcript update:', {
+            sequence_id: event.payload.sequence_id,
+            text: event.payload.text.substring(0, 50) + '...',
+            timestamp: event.payload.timestamp,
+            is_partial: event.payload.is_partial,
+            received_at: new Date(now).toISOString(),
+            buffer_size_before: transcriptBuffer.size
+          });
+          
+          // Check for duplicate sequence_id before processing
+          if (transcriptBuffer.has(event.payload.sequence_id)) {
+            console.log('🚫 MAIN LISTENER: Duplicate sequence_id, skipping buffer:', event.payload.sequence_id);
+            return;
+          }
+
+          // Create transcript for buffer
+          const newTranscript: Transcript = {
+            id: `${Date.now()}-${transcriptCounter++}`,
             text: event.payload.text,
             timestamp: event.payload.timestamp,
+            sequence_id: event.payload.sequence_id,
+            chunk_start_time: event.payload.chunk_start_time,
+            is_partial: event.payload.is_partial,
           };
-          setTranscripts(prev => {
-            // Check if this transcript already exists
-            const exists = prev.some(
-              t => t.text === event.payload.text && t.timestamp === event.payload.timestamp
-            );
-            if (exists) {
-              console.log('Duplicate transcript, skipping:', newTranscript);
-              return prev;
-            }
-            console.log('Adding new transcript:', newTranscript);
-            return [...prev, newTranscript];
-          });
+
+          // Add to buffer
+          transcriptBuffer.set(event.payload.sequence_id, newTranscript);
+          console.log(`✅ MAIN LISTENER: Buffered transcript with sequence_id ${event.payload.sequence_id}. Buffer size: ${transcriptBuffer.size}, Last processed: ${lastProcessedSequence}`);
+
+          // Clear any existing timer and set a new one
+          if (processingTimer) {
+            clearTimeout(processingTimer);
+          }
+          
+          // Process buffer after a short delay to allow for batching
+          processingTimer = setTimeout(processBufferedTranscripts, 100);
         });
-        console.log('Transcript listener setup complete');
+        console.log('✅ MAIN transcript listener setup complete');
       } catch (error) {
-        console.error('Failed to setup transcript listener:', error);
+        console.error('❌ Failed to setup MAIN transcript listener:', error);
         alert('Failed to setup transcript listener. Check console for details.');
       }
     };
 
     setupListener();
-    console.log('Started listener setup');
+    console.log('Started enhanced listener setup');
 
     return () => {
-      console.log('Cleaning up transcript listener...');
+      console.log('🧹 CLEANUP: Cleaning up MAIN transcript listener...');
+      if (processingTimer) {
+        clearTimeout(processingTimer);
+        console.log('🧹 CLEANUP: Cleared processing timer');
+      }
       if (unlistenFn) {
         unlistenFn();
-        console.log('Transcript listener cleaned up');
+        console.log('🧹 CLEANUP: MAIN transcript listener cleaned up');
+      }
+    };
+  }, []);
+
+  // Set up chunk drop warning listener
+  useEffect(() => {
+    let unlistenFn: (() => void) | undefined;
+
+    const setupChunkDropListener = async () => {
+      try {
+        console.log('Setting up chunk-drop-warning listener...');
+        unlistenFn = await listen<string>('chunk-drop-warning', (event) => {
+          console.log('Chunk drop warning received:', event.payload);
+          setChunkDropMessage(event.payload);
+          setShowChunkDropWarning(true);
+          
+          // // Auto-dismiss after 8 seconds
+          // setTimeout(() => {
+          //   setShowChunkDropWarning(false);
+          // }, 8000);
+        });
+        console.log('Chunk drop warning listener setup complete');
+      } catch (error) {
+        console.error('Failed to setup chunk drop warning listener:', error);
+      }
+    };
+
+    setupChunkDropListener();
+
+    return () => {
+      console.log('Cleaning up chunk drop warning listener...');
+      if (unlistenFn) {
+        unlistenFn();
       }
     };
   }, []);
@@ -273,15 +458,33 @@ export default function Home() {
         }
       });
       console.log('Recording started successfully');
-      setIsRecording(true);
+      setIsRecordingState(true); // This will also update the sidebar via the useEffect
       setTranscripts([]); // Clear previous transcripts when starting new recording
       setIsMeetingActive(true);
+      Analytics.trackButtonClick('start_recording', 'home_page');
     } catch (error) {
       console.error('Failed to start recording:', error);
       alert('Failed to start recording. Check console for details.');
-      setIsRecording(false); // Reset state on error
+      setIsRecordingState(false); // Reset state on error
+      Analytics.trackButtonClick('start_recording_error', 'home_page');
     }
   };
+  
+  // Check for autoStartRecording flag and start recording automatically
+  useEffect(() => {
+    const checkAutoStartRecording = async () => {
+      if (typeof window !== 'undefined') {
+        const shouldAutoStart = sessionStorage.getItem('autoStartRecording');
+        if (shouldAutoStart === 'true' && !isRecording && !isMeetingActive) {
+          console.log('Auto-starting recording from navigation...');
+          sessionStorage.removeItem('autoStartRecording'); // Clear the flag
+          await handleRecordingStart();
+        }
+      }
+    };
+    
+    checkAutoStartRecording();
+  }, [isRecording, isMeetingActive]);
 
   const handleRecordingStop = async () => {
     try {
@@ -317,7 +520,7 @@ export default function Home() {
       // });
       // console.log('Transcript saved to:', transcriptPath);
 
-      setIsRecording(false);
+      setIsRecordingState(false);
       
       // Show summary button if we have transcript content
       if (formattedTranscript.trim()) {
@@ -335,15 +538,21 @@ export default function Home() {
         });
       }
       alert('Failed to stop recording. Check console for details.');
-      setIsRecording(false); // Reset state on error
+      setIsRecordingState(false); // Reset state on error
     }
   };
 
   const handleRecordingStop2 = async (isCallApi: boolean) => {
+    setIsRecordingDisabled(true);
+    const stopStartTime = Date.now();
     try {
-      console.log('Stopping recording (new implementation)...');
+      console.log('Stopping recording (new implementation)...', {
+        stop_initiated_at: new Date(stopStartTime).toISOString(),
+        current_transcript_count: transcripts.length
+      });
       const { invoke } = await import('@tauri-apps/api/core');
       const { appDataDir } = await import('@tauri-apps/api/path');
+      const { listen } = await import('@tauri-apps/api/event');
       
       const dataDir = await appDataDir();
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -358,38 +567,152 @@ export default function Home() {
         }
       });
       console.log('Recording stopped successfully');
+      
+      // Wait for transcription to complete
+      setSummaryStatus('processing');
+      console.log('Waiting for transcription to complete...');
+      
+      const MAX_WAIT_TIME = 60000; // 60 seconds maximum wait (increased for longer processing)
+      const POLL_INTERVAL = 500; // Check every 500ms
+      let elapsedTime = 0;
+      let transcriptionComplete = false;
+      
+      // Listen for transcription-complete event
+      const unlistenComplete = await listen('transcription-complete', () => {
+        console.log('Received transcription-complete event');
+        transcriptionComplete = true;
+      });
+      
+      // Removed LATE transcript listener - relying on main buffered transcript system instead
+      
+      // Poll for transcription status
+      while (elapsedTime < MAX_WAIT_TIME && !transcriptionComplete) {
+        try {
+          const status = await invoke<{chunks_in_queue: number, is_processing: boolean, last_activity_ms: number}>('get_transcription_status');
+          console.log('Transcription status:', status);
+          
+          // Check if transcription is complete
+          if (!status.is_processing && status.chunks_in_queue === 0) {
+            console.log('Transcription complete - no active processing and no chunks in queue');
+            transcriptionComplete = true;
+            break;
+          }
+          
+          // If no activity for more than 8 seconds and no chunks in queue, consider it done (increased from 5s to 8s)
+          if (status.last_activity_ms > 8000 && status.chunks_in_queue === 0) {
+            console.log('Transcription likely complete - no recent activity and empty queue');
+            transcriptionComplete = true;
+            break;
+          }
+          
+          // Update user with current status
+          if (status.chunks_in_queue > 0) {
+            console.log(`Processing ${status.chunks_in_queue} remaining audio chunks...`);
+            setSummaryStatus('processing');
+          }
+          
+          // Wait before next check
+          await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
+          elapsedTime += POLL_INTERVAL;
+        } catch (error) {
+          console.error('Error checking transcription status:', error);
+          break;
+        }
+      }
+      
+      // Clean up listener
+      console.log('🧹 CLEANUP: Cleaning up transcription-complete listener');
+      unlistenComplete();
+      
+      if (!transcriptionComplete && elapsedTime >= MAX_WAIT_TIME) {
+        console.warn('⏰ Transcription wait timeout reached after', elapsedTime, 'ms');
+      } else {
+        console.log('✅ Transcription completed after', elapsedTime, 'ms');
+        // Wait longer for any late transcript segments (increased from 1s to 4s)
+        console.log('⏳ Waiting for late transcript segments...');
+        await new Promise(resolve => setTimeout(resolve, 4000));
+      }
+      
+      // LATE transcript listener removed - no cleanup needed
+      
+      // Final buffer flush: process ALL remaining transcripts regardless of timing
+      const flushStartTime = Date.now();
+      console.log('🔄 Final buffer flush: forcing processing of any remaining transcripts...', {
+        flush_started_at: new Date(flushStartTime).toISOString(),
+        time_since_stop: flushStartTime - stopStartTime,
+        current_transcript_count: transcripts.length
+      });
+      if (finalFlushRef.current) {
+        finalFlushRef.current();
+        const flushEndTime = Date.now();
+        console.log('✅ Final buffer flush completed', {
+          flush_duration: flushEndTime - flushStartTime,
+          total_time_since_stop: flushEndTime - stopStartTime,
+          final_transcript_count: transcripts.length
+        });
+      } else {
+        console.log('⚠️ Final flush function not available');
+      }
+      
+      setSummaryStatus('idle');
+
+      // Wait a bit more to ensure all transcript state updates have been processed
+      console.log('Waiting for transcript state updates to complete...');
+      await new Promise(resolve => setTimeout(resolve, 500));
 
       // Save to SQLite
-      if (isCallApi) {
-        console.log('Saving transcript to database...', transcripts);
-        const response = await fetch('http://localhost:5167/save-transcript', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            meeting_title: meetingTitle,
-            transcripts: transcripts
-          })
+      if (isCallApi && transcriptionComplete == true) {
+
+        // await new Promise(resolve => setTimeout(resolve, 5000));
+        setIsSavingTranscript(true);
+
+        // Fix stale closure issue: Use ref to get fresh transcript state
+        console.log('🔄 Solving stale closure - getting fresh transcript state at save time...');
+        
+        // // Force final buffer flush to capture any remaining transcripts
+        // if (finalFlushRef.current) {
+        //   finalFlushRef.current();
+        // }
+        
+        // // Wait a moment for any final state updates to propagate
+        // await new Promise(resolve => setTimeout(resolve, 300));
+        
+        // Get fresh transcript state using ref (avoids stale closure)
+        const freshTranscripts = [...transcriptsRef.current];
+        
+        console.log('💾 Saving transcript to database with fresh state...', {
+          fresh_transcript_count: freshTranscripts.length,
+          sample_text: freshTranscripts.length > 0 ? freshTranscripts[0].text.substring(0, 50) + '...' : 'none',
+          last_transcript: freshTranscripts.length > 0 ? freshTranscripts[freshTranscripts.length - 1].text.substring(0, 30) + '...' : 'none'
         });
+        
+        const responseData = await invoke('api_save_transcript', {
+          meetingTitle: meetingTitle,
+          transcripts: freshTranscripts, // Use fresh state, not stale closure
+        }) as any;
 
-        if (!response.ok) {
-          setIsRecording(false);
-          throw new Error('Failed to save transcript to database');
-        }
-
-        const responseData = await response.json();
         const meetingId = responseData.meeting_id;
-        setMeetings((prev: CurrentMeeting[]) => [{ id: meetingId, title: meetingTitle }, ...prev]);
+        if (!meetingId) {
+          console.error('No meeting_id in response:', responseData);
+          throw new Error('No meeting ID received from save operation');
+        }
+        
+        console.log('Successfully saved transcript with meeting ID:', meetingId);
+        setMeetings([{ id: meetingId, title: meetingTitle }, ...meetings]);
+        
+        // Wait a moment to ensure backend has fully processed the save
+        console.log('Waiting for backend processing to complete...');
+        await new Promise(resolve => setTimeout(resolve, 1000));
         
         // Set current meeting and navigate
+        console.log('Setting current meeting and navigating to details page');
         setCurrentMeeting({ id: meetingId, title: meetingTitle });
         setIsMeetingActive(false);
         router.push('/meeting-details');
       }
-
-      setIsRecording(false);
-      
+      setIsMeetingActive(false);
+      setIsRecordingState(false);
+      setIsRecordingDisabled(false);
       // Show summary button if we have transcript content
       if (transcripts.length > 0) {
         setShowSummary(true);
@@ -398,30 +721,56 @@ export default function Home() {
       }
     } catch (error) {
       console.error('Error in handleRecordingStop2:', error);
-      setIsRecording(false);
+      setIsRecordingState(false);
+      setSummaryStatus('idle');
+      setIsSavingTranscript(false);
+      setIsRecordingDisabled(false);
     }
   };
 
   const handleTranscriptUpdate = (update: any) => {
-    console.log('Handling transcript update:', update);
+    console.log('🎯 handleTranscriptUpdate called with:', {
+      sequence_id: update.sequence_id,
+      text: update.text.substring(0, 50) + '...',
+      timestamp: update.timestamp,
+      is_partial: update.is_partial
+    });
+    
     const newTranscript = {
-      id: Date.now().toString(),
+      id: update.sequence_id ? update.sequence_id.toString() : Date.now().toString(),
       text: update.text,
       timestamp: update.timestamp,
+      sequence_id: update.sequence_id || 0,
     };
+    
     setTranscripts(prev => {
+      console.log('📊 Current transcripts count before update:', prev.length);
+      
       // Check if this transcript already exists
       const exists = prev.some(
         t => t.text === update.text && t.timestamp === update.timestamp
       );
       if (exists) {
+        console.log('🚫 Duplicate transcript detected, skipping:', update.text.substring(0, 30) + '...');
         return prev;
       }
-      return [...prev, newTranscript];
+      
+      // Add new transcript and sort by sequence_id to maintain order
+      const updated = [...prev, newTranscript];
+      const sorted = updated.sort((a, b) => (a.sequence_id || 0) - (b.sequence_id || 0));
+      
+      console.log('✅ Added new transcript. New count:', sorted.length);
+      console.log('📝 Latest transcript:', {
+        id: newTranscript.id,
+        text: newTranscript.text.substring(0, 30) + '...',
+        sequence_id: newTranscript.sequence_id
+      });
+      
+      return sorted;
     });
   };
 
-  const generateAISummary = useCallback(async () => {
+  const generateAISummary = useCallback(async (prompt: string = '') => {
     setSummaryStatus('processing');
     setSummaryError(null);
 
@@ -438,45 +787,25 @@ export default function Home() {
       
       // Process transcript and get process_id
       console.log('Processing transcript...');
-      const response = await fetch('http://localhost:5167/process-transcript', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: fullTranscript,
-          model: modelConfig.provider,
-          model_name: modelConfig.model,
-          chunk_size: 40000,
-          overlap: 1000
-        })
-      });
+      const result = await invoke('api_process_transcript', {
+        text: fullTranscript,
+        model: modelConfig.provider,
+        modelName: modelConfig.model,
+        chunkSize: 40000,
+        overlap: 1000,
+        customPrompt: prompt,
+      }) as any;
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Process transcript failed:', errorData);
-        setSummaryError(errorData.error || 'Failed to process transcript');
-        setSummaryStatus('error');
-        return;
-      }
-
-      const { process_id } = await response.json();
+      const process_id = result.process_id;
       console.log('Process ID:', process_id);
    
 
       // Poll for summary status
       const pollInterval = setInterval(async () => {
         try {
-          const statusResponse = await fetch(`http://localhost:5167/get-summary/${process_id}`);
-          
-          if (!statusResponse.ok) {
-            const errorData = await statusResponse.json();
-            console.error('Get summary failed:', errorData);
-            setSummaryError(errorData.error || 'Unknown error');
-            setSummaryStatus('error');
-            clearInterval(pollInterval);
-            return;
-          }
-
-          const result = await statusResponse.json();
+          const result = await invoke('api_get_summary', {
+            meetingId: process_id,
+          }) as any;
           console.log('Summary status:', result);
 
           if (result.status === 'error') {
@@ -503,7 +832,7 @@ export default function Home() {
                 title: section.title,
                 blocks: section.blocks.map((block: any) => ({
                   ...block,
-                  type: 'bullet',
+                  // type: 'bullet',
                   color: 'default',
                   content: block.content.trim() // Remove trailing newlines
                 }))
@@ -524,7 +853,7 @@ export default function Home() {
           setSummaryStatus('error');
           clearInterval(pollInterval);
         }
-      }, 5000); // Poll every 30 seconds
+      }, 3000); // Poll every 3 seconds
 
       // Cleanup interval on component unmount
       return () => clearInterval(pollInterval);
@@ -559,7 +888,7 @@ export default function Home() {
       case 'idle':
         return 'Ready to generate summary';
       case 'processing':
-        return 'Processing transcript...';
+        return isRecording ? 'Processing transcript...' : 'Finalizing transcription...';
       case 'summarizing':
         return 'Generating AI summary...';
       case 'regenerating':
@@ -639,39 +968,23 @@ export default function Home() {
       
       // Process transcript and get process_id
       console.log('Processing transcript...');
-      const response = await fetch('http://localhost:5167/process-transcript', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: originalTranscript,
-          model: modelConfig.provider,
-          model_name: modelConfig.model,
-          chunk_size: 40000,
-          overlap: 1000
-        })
-      });
+      const result = await invoke('api_process_transcript', {
+        text: originalTranscript,
+        model: modelConfig.provider,
+        modelName: modelConfig.model,
+        chunkSize: 40000,
+        overlap: 1000,
+      }) as any;
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        console.error('Process transcript failed:', errorData);
-        throw new Error(errorData.error || 'Failed to process transcript');
-      }
-
-      const { process_id } = await response.json();
+      const process_id = result.process_id;
       console.log('Process ID:', process_id);
 
       // Poll for summary status
       const pollInterval = setInterval(async () => {
         try {
-          const statusResponse = await fetch(`http://localhost:5167/get-summary/${process_id}`);
-          
-          if (!statusResponse.ok) {
-            const errorData = await statusResponse.json();
-            console.error('Get summary failed:', errorData);
-            throw new Error(errorData.error || 'Failed to get summary status');
-          }
-
-          const result = await statusResponse.json();
+          const result = await invoke('api_get_summary', {
+            meetingId: process_id,
+          }) as any;
           console.log('Summary status:', result);
 
           if (result.status === 'error') {
@@ -698,7 +1011,7 @@ export default function Home() {
                 title: section.title,
                 blocks: section.blocks.map((block: any) => ({
                   ...block,
-                  type: 'bullet',
+                  // type: 'bullet',
                   color: 'default',
                   content: block.content.trim()
                 }))
@@ -723,7 +1036,7 @@ export default function Home() {
           setSummaryStatus('error');
           setAiSummary(null);
         }
-      }, 10000);
+      }, 1000);
 
       return () => clearInterval(pollInterval);
     } catch (error) {
@@ -752,7 +1065,7 @@ export default function Home() {
     }
     
     try {
-      await generateAISummary();
+      await generateAISummary(customPrompt);
     } catch (error) {
       console.error('Failed to generate summary:', error);
       if (error instanceof Error) {
@@ -767,39 +1080,114 @@ export default function Home() {
 
   return (
     <div className="flex flex-col h-screen bg-gray-50">
+      {showErrorAlert && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <Alert className="max-w-md mx-4 border-red-200 bg-white shadow-xl">
+            <AlertTitle className="text-red-800">Recording Stopped</AlertTitle>
+            <AlertDescription className="text-red-700">
+              {errorMessage}
+              <button
+                onClick={() => setShowErrorAlert(false)}
+                className="ml-2 text-red-600 hover:text-red-800 underline"
+              >
+                Dismiss
+              </button>
+            </AlertDescription>
+          </Alert>
+        </div>
+      )}
+      {showChunkDropWarning && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <Alert className="max-w-lg mx-4 border-yellow-200 bg-white shadow-xl">
+            <AlertTitle className="text-yellow-800">Transcription Performance Warning</AlertTitle>
+            <AlertDescription className="text-yellow-700">
+              {chunkDropMessage}
+              <button
+                onClick={() => setShowChunkDropWarning(false)}
+                className="ml-2 text-yellow-600 hover:text-yellow-800 underline"
+              >
+                Dismiss
+              </button>
+            </AlertDescription>
+          </Alert>
+        </div>
+      )}
       <div className="flex flex-1 overflow-hidden">
         {/* Left side - Transcript */}
         <div className="w-1/3 min-w-[300px] border-r border-gray-200 bg-white flex flex-col relative">
           {/* Title area */}
           <div className="p-4 border-b border-gray-200">
             <div className="flex flex-col space-y-3">
-              <div className="flex items-center">
-                <EditableTitle
-                  title={meetingTitle}
-                  isEditing={isEditingTitle}
-                  onStartEditing={() => setIsEditingTitle(true)}
-                  onFinishEditing={() => setIsEditingTitle(false)}
-                  onChange={handleTitleChange}
-                />
-              </div>
-              <div className="flex items-center space-x-2">
-                <button
-                  onClick={handleCopyTranscript}
-                  disabled={transcripts.length === 0}
-                  className={`px-3 py-2 border rounded-md transition-all duration-200 inline-flex items-center gap-2 shadow-sm ${
-                    transcripts.length === 0
-                      ? 'bg-gray-50 border-gray-200 text-gray-400 cursor-not-allowed'
-                      : 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 hover:border-blue-300 active:bg-blue-200'
-                  }`}
-                  title={transcripts.length === 0 ? 'No transcript available' : 'Copy Transcript'}
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" fill="none">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V7.5l-3.75-3.612z" />
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M15 3v3.75a.75.75 0 0 0 .75.75H18" />
-                  </svg>
-                  <span className="text-sm">Copy Transcript</span>
-                </button>
-                {showSummary && !isRecording && (
+              <div className="flex flex-col space-y-2">
+                <div className="flex items-center space-x-2">
+                  <button
+                    onClick={handleCopyTranscript}
+                    disabled={transcripts.length === 0}
+                    className={`px-3 py-2 border rounded-md transition-all duration-200 inline-flex items-center gap-2 shadow-sm ${
+                      transcripts.length === 0
+                        ? 'bg-gray-50 border-gray-200 text-gray-400 cursor-not-allowed'
+                        : 'bg-blue-50 border-blue-200 text-blue-700 hover:bg-blue-100 hover:border-blue-300 active:bg-blue-200'
+                    }`}
+                    title={transcripts.length === 0 ? 'No transcript available' : 'Copy Transcript'}
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" strokeWidth="2" stroke="currentColor" fill="none">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15.666 3.888A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V7.5l-3.75-3.612z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 3v3.75a.75.75 0 0 0 .75.75H18" />
+                    </svg>
+                    <span className="text-sm">Copy Transcript</span>
+                  </button>
+                  {/* {showSummary && !isRecording && (
+                    <>
+                      <button
+                        onClick={handleGenerateSummary}
+                        disabled={summaryStatus === 'processing'}
+                        className={`px-3 py-2 border rounded-md transition-all duration-200 inline-flex items-center gap-2 shadow-sm ${
+                          summaryStatus === 'processing'
+                            ? 'bg-yellow-50 border-yellow-200 text-yellow-700'
+                            : transcripts.length === 0
+                            ? 'bg-gray-50 border-gray-200 text-gray-400 cursor-not-allowed'
+                            : 'bg-green-50 border-green-200 text-green-700 hover:bg-green-100 hover:border-green-300 active:bg-green-200'
+                        }`}
+                        title={
+                          summaryStatus === 'processing'
+                            ? 'Generating summary...'
+                            : transcripts.length === 0
+                            ? 'No transcript available'
+                            : 'Generate AI Summary'
+                        }
+                      >
+                        {summaryStatus === 'processing' ? (
+                          <>
+                            <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            <span className="text-sm">Processing...</span>
+                          </>
+                        ) : (
+                          <>
+                            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                              <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                            </svg>
+                            <span className="text-sm">Generate Note</span>
+                          </>
+                        )}
+                      </button>
+                      <button
+                        onClick={() => setShowModelSettings(true)}
+                        className="px-3 py-2 border rounded-md transition-all duration-200 inline-flex items-center gap-2 shadow-sm bg-gray-50 border-gray-200 text-gray-700 hover:bg-gray-100 hover:border-gray-300 active:bg-gray-200"
+                        title="Model Settings"
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                        </svg>
+                      </button>
+                    </>
+                  )} */}
+                </div>
+
+                {/* {showSummary && !isRecording && (
                   <>
                     <button
                       onClick={handleGenerateSummary}
@@ -847,7 +1235,7 @@ export default function Home() {
                       </svg>
                     </button>
                   </>
-                )}
+                )} */}
               </div>
             </div>
           </div>
@@ -856,19 +1244,51 @@ export default function Home() {
           <div className="flex-1 overflow-y-auto pb-32">
             <TranscriptView transcripts={transcripts} />
           </div>
+          
+          {/* Custom prompt input at bottom of transcript section */}
+          {/* {!isRecording && transcripts.length > 0 && !isMeetingActive && (
+            <div className="p-4 border-t border-gray-200">
+              <textarea
+                placeholder="Add context for AI summary. For example people involved, meeting overview, objective etc..."
+                className="w-full px-3 py-2 border border-gray-200 rounded-md text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 bg-white shadow-sm min-h-[80px] resize-y"
+                value={customPrompt}
+                onChange={(e) => setCustomPrompt(e.target.value)}
+                disabled={summaryStatus === 'processing'}
+              />
+            </div>
+          )} */}
 
           {/* Recording controls */}
           <div className="absolute bottom-16 left-1/2 transform -translate-x-1/2 z-10">
             <div className="bg-white rounded-full shadow-lg flex items-center">
               <RecordingControls
                 isRecording={isRecording}
-                onRecordingStop={() => handleRecordingStop2(true)}
+                onRecordingStop={(callApi = true) => handleRecordingStop2(callApi)}
                 onRecordingStart={handleRecordingStart}
                 onTranscriptReceived={handleTranscriptUpdate}
                 barHeights={barHeights}
+                onTranscriptionError={(message) => {
+                  setErrorMessage(message);
+                  setShowErrorAlert(true);
+                }}
+                isRecordingDisabled={isRecordingDisabled}
               />
             </div>
           </div>
+
+          {/* Processing status overlay */}
+          {summaryStatus === 'processing' && !isRecording && (
+            <div className="absolute bottom-32 left-1/2 transform -translate-x-1/2 z-10 bg-white rounded-lg shadow-lg px-4 py-2 flex items-center space-x-2">
+              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-900"></div>
+              <span className="text-sm text-gray-700">Finalizing transcription...</span>
+            </div>
+          )}
+          {isSavingTranscript && (
+            <div className="absolute bottom-32 left-1/2 transform -translate-x-1/2 z-10 bg-white rounded-lg shadow-lg px-4 py-2 flex items-center space-x-2">
+              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-900"></div>
+              <span className="text-sm text-gray-700">Saving transcript...</span>
+            </div>
+          )}
 
           {/* Model Settings Modal */}
           {showModelSettings && (
@@ -964,7 +1384,18 @@ export default function Home() {
 
         {/* Right side - AI Summary */}
         <div className="flex-1 overflow-y-auto bg-white">
-          {isSummaryLoading ? (
+          <div className="p-4 border-b border-gray-200">
+            <div className="flex items-center">
+              <EditableTitle
+                title={meetingTitle}
+                isEditing={isEditingTitle}
+                onStartEditing={() => setIsEditingTitle(true)}
+                onFinishEditing={() => setIsEditingTitle(false)}
+                onChange={handleTitleChange}
+              />
+            </div>
+          </div>
+          {/* {isSummaryLoading ? (
             <div className="flex items-center justify-center h-full">
               <div className="text-center">
                 <div className="inline-block animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mb-4"></div>
@@ -1037,7 +1468,7 @@ export default function Home() {
                 </div>
               )}
             </div>
-          )}
+          )} */}
         </div>
       </div>
     </div>

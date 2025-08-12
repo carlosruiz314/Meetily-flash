@@ -1,6 +1,6 @@
 'use client';
 
-import { useRef } from 'react';
+import { useRef, useEffect } from 'react';
 
 interface EditableTitleProps {
   title: string;
@@ -19,7 +19,7 @@ export const EditableTitle: React.FC<EditableTitleProps> = ({
   onChange,
   onDelete,
 }) => {
-  const titleInputRef = useRef<HTMLInputElement>(null);
+  const titleInputRef = useRef<HTMLTextAreaElement>(null);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter') {
@@ -27,21 +27,38 @@ export const EditableTitle: React.FC<EditableTitleProps> = ({
     }
   };
 
+  // Auto-resize textarea height based on content
+  useEffect(() => {
+    if (titleInputRef.current && isEditing) {
+      titleInputRef.current.style.height = 'auto';
+      titleInputRef.current.style.height = `${titleInputRef.current.scrollHeight}px`;
+    }
+  }, [title, isEditing]);
+
   return isEditing ? (
-    <input
-      ref={titleInputRef}
-      type="text"
-      value={title}
-      onChange={(e) => onChange(e.target.value)}
-      onBlur={onFinishEditing}
-      onKeyDown={handleKeyDown}
-      className="text-2xl font-bold bg-transparent border-none focus:outline-none focus:ring-2 focus:ring-blue-500 rounded px-1"
-      autoFocus
-    />
+    <div className="flex-1">
+      <textarea
+        ref={titleInputRef}
+        value={title}
+        onChange={(e) => onChange(e.target.value)}
+        onBlur={onFinishEditing}
+        onKeyDown={(e) => {
+          // Allow Enter for new line only with Shift key
+          if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            onFinishEditing();
+          }
+        }}
+        className="text-2xl font-bold bg-gray-50 border border-gray-200 focus:outline-none focus:ring-2 focus:ring-blue-500 rounded px-3 py-1 w-full resize-none overflow-hidden"
+        style={{ minWidth: '300px', minHeight: '40px' }}
+        autoFocus
+        rows={1}
+      />
+    </div>
   ) : (
-    <div className="group flex items-center space-x-2">
+    <div className="group flex items-center space-x-2 flex-1">
       <h1
-        className="text-2xl font-bold cursor-pointer hover:bg-gray-50 rounded px-1"
+        className="text-2xl font-bold cursor-pointer hover:bg-gray-50 rounded px-1 flex-1 whitespace-pre-wrap"
         onClick={onStartEditing}
       >
         {title}

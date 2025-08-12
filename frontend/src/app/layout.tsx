@@ -3,6 +3,7 @@ import { Source_Sans_3 } from 'next/font/google'
 import Sidebar from '@/components/Sidebar'
 import { SidebarProvider } from '@/components/Sidebar/SidebarProvider'
 import MainContent from '@/components/MainContent'
+import AnalyticsProvider from '@/components/AnalyticsProvider'
 
 const sourceSans3 = Source_Sans_3({ 
   subsets: ['latin'],
@@ -20,13 +21,15 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${sourceSans3.variable} font-sans`}>
-        <SidebarProvider>
-          <div className="titlebar h-8 w-full fixed top-0 left-0 bg-transparent" />
-          <div className="flex">
-            <Sidebar />
-            <MainContent>{children}</MainContent>
-          </div>
-        </SidebarProvider>
+        <AnalyticsProvider>
+          <SidebarProvider>
+            <div className="titlebar h-8 w-full fixed top-0 left-0 bg-transparent" />
+            <div className="flex">
+              <Sidebar />
+              <MainContent>{children}</MainContent>
+            </div>
+          </SidebarProvider>
+        </AnalyticsProvider>
       </body>
     </html>
   )

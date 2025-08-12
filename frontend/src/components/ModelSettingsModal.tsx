@@ -1,4 +1,6 @@
 import { useState, useEffect } from 'react';
+import { useSidebar } from './Sidebar/SidebarProvider';
+import { invoke } from '@tauri-apps/api/core';
 
 export interface ModelConfig {
   provider: 'ollama' | 'groq' | 'claude' | 'openai';
@@ -15,65 +17,50 @@ interface OllamaModel {
 }
 
 interface ModelSettingsModalProps {
-  showModelSettings: boolean;
-  setShowModelSettings: (show: boolean) => void;
   modelConfig: ModelConfig;
   setModelConfig: (config: ModelConfig | ((prev: ModelConfig) => ModelConfig)) => void;
   onSave: (config: ModelConfig) => void;
 }
 
 export function ModelSettingsModal({
-  showModelSettings,
-  setShowModelSettings,
   modelConfig,
   setModelConfig,
   onSave
 }: ModelSettingsModalProps) {
   const [models, setModels] = useState<OllamaModel[]>([]);
   const [error, setError] = useState<string>('');
-  const [apiKey, setApiKey] = useState<string>(modelConfig.apiKey || '');
+  const [apiKey, setApiKey] = useState<string | null>(modelConfig.apiKey || null);
   const [showApiKey, setShowApiKey] = useState<boolean>(false);
   const [isApiKeyLocked, setIsApiKeyLocked] = useState<boolean>(true);
   const [isLockButtonVibrating, setIsLockButtonVibrating] = useState<boolean>(false);
-
+  const { serverAddress } = useSidebar();
   useEffect(() => {
-    if (showModelSettings) {
+    // if (showModelSettings) {
       const fetchModelConfig = async () => {
         try {
-          const response = await fetch('http://localhost:5167/get-model-config');
-          const data = await response.json();
-          if (data.provider !== null) {
-            setModelConfig(data);
-            setApiKey(data.apiKey || '');
-          }
-        } catch (error) {
-          console.error('Failed to fetch model config:', error);
+        const data = await invoke('api_get_model_config') as any;
+        if (data && data.provider !== null) {
+
+          setModelConfig(data);
         }
+      } catch (error) {
+        console.error('Failed to fetch model config:', error);
+      }
       };
 
       fetchModelConfig();
-    }
-  }, [showModelSettings]);
+    // }
+  }, []);
 
   const fetchApiKey = async (provider: string) => {
     try {
-      const response = await fetch('http://localhost:5167/get-api-key', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ provider }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const data = await response.json();
+      const data = await invoke('api_get_api_key', {
+        provider,
+      }) as string;
       setApiKey(data || '');
     } catch (err) {
       console.error('Error fetching API key:', err);
-      setApiKey('');
+      setApiKey(null);
     }
   };
 
@@ -83,6 +70,8 @@ export function ModelSettingsModal({
     claude: ['claude-3-5-sonnet-latest','claude-3-5-sonnet-20241022', 'claude-3-5-sonnet-20240620'],
     groq: ['llama-3.3-70b-versatile'],
     openai: [
+      'gpt-5',
+      'gpt-5-mini',
       'gpt-4o',
       'gpt-4.1',
       'gpt-4-turbo',
@@ -108,29 +97,12 @@ export function ModelSettingsModal({
   };
 
   const requiresApiKey = modelConfig.provider === 'claude' || modelConfig.provider === 'groq' || modelConfig.provider === 'openai';
-  const isDoneDisabled = requiresApiKey && !apiKey.trim();
+  const isDoneDisabled = requiresApiKey && (!apiKey || (typeof apiKey === 'string' && !apiKey.trim()));
 
   useEffect(() => {
     const loadModels = async () => {
       try {
-        const response = await fetch('http://localhost:11434/api/tags', {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-        });
-
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const data = await response.json();
-        const modelList = data.models.map((model: any) => ({
-          name: model.name,
-          id: model.model,
-          size: formatSize(model.size),
-          modified: model.modified_at
-        }));
+        const modelList = await invoke('get_ollama_models') as OllamaModel[];
         setModels(modelList);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Failed to load Ollama models');
@@ -154,10 +126,10 @@ export function ModelSettingsModal({
   };
 
   const handleSave = () => {
-    const updatedConfig = { ...modelConfig, apiKey: apiKey.trim() };
+    const updatedConfig = { ...modelConfig, apiKey: typeof apiKey === 'string' ? apiKey.trim() || null : null };
     setModelConfig(updatedConfig);
     console.log('ModelSettingsModal - handleSave - Updated ModelConfig:', updatedConfig);
-    setShowModelSettings(false);
+    // setShowModelSettings(false);
     onSave(updatedConfig);
   };
 
@@ -168,21 +140,21 @@ export function ModelSettingsModal({
     }
   };
 
-  if (!showModelSettings) return null;
+    // if (!showModelSettings) return null;
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4 shadow-xl">
+    // <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+      <div>
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-lg font-semibold text-gray-900">Model Settings</h3>
-          <button
-            onClick={() => setShowModelSettings(false)}
+          {/* <button
+            // onClick={() => setShowModelSettings(false)}
             className="text-gray-500 hover:text-gray-700"
           >
             <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
             </svg>
-          </button>
+          </button> */}
         </div>
 
         <div className="space-y-4">
@@ -232,7 +204,7 @@ export function ModelSettingsModal({
               <div className="relative">
                 <input
                   type={showApiKey ? "text" : "password"}
-                  value={apiKey}
+                  value={apiKey || ''}
                   onChange={(e) => setApiKey(e.target.value)}
                   disabled={isApiKeyLocked}
                   className={`w-full px-3 py-2 text-sm bg-white border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 pr-24 ${
@@ -329,6 +301,5 @@ export function ModelSettingsModal({
           </button>
         </div>
       </div>
-    </div>
   );
 } 

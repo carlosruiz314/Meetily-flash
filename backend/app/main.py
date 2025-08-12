@@ -87,6 +87,11 @@ class SaveModelConfigRequest(BaseModel):
     whisperModel: str
     apiKey: Optional[str] = None
 
+class SaveTranscriptConfigRequest(BaseModel):
+    provider: str
+    model: str
+    apiKey: Optional[str] = None
+
 class TranscriptRequest(BaseModel):
     """Request model for transcript text, updated with meeting_id"""
     text: str
@@ -95,6 +100,7 @@ class TranscriptRequest(BaseModel):
     meeting_id: str
     chunk_size: Optional[int] = 5000
     overlap: Optional[int] = 1000
+    custom_prompt: Optional[str] = "Generate a summary of the meeting transcript."
 
 class SummaryProcessor:
     """Handles the processing of summaries in a thread-safe way"""
@@ -109,7 +115,7 @@ class SummaryProcessor:
             logger.error(f"Failed to initialize SummaryProcessor: {str(e)}", exc_info=True)
             raise
 
-    async def process_transcript(self, text: str, model: str, model_name: str, chunk_size: int = 5000, overlap: int = 1000) -> tuple:
+    async def process_transcript(self, text: str, model: str, model_name: str, chunk_size: int = 5000, overlap: int = 1000, custom_prompt: str = "Generate a summary of the meeting transcript.") -> tuple:
         """Process a transcript text"""
         try:
             if not text:
@@ -134,7 +140,8 @@ class SummaryProcessor:
                 model=model,
                 model_name=model_name,
                 chunk_size=chunk_size,
-                overlap=overlap
+                overlap=overlap,
+                custom_prompt=custom_prompt
             )
             logger.info(f"Successfully processed transcript into {num_chunks} chunks")
 
@@ -204,29 +211,46 @@ async def delete_meeting(data: DeleteMeetingRequest):
         logger.error(f"Error deleting meeting: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-async def process_transcript_background(process_id: str, transcript: TranscriptRequest):
+async def process_transcript_background(process_id: str, transcript: TranscriptRequest, custom_prompt: str):
     """Background task to process transcript"""
     try:
         logger.info(f"Starting background processing for process_id: {process_id}")
+        
+        # Early validation for common issues
+        if not transcript.text or not transcript.text.strip():
+            raise ValueError("Empty transcript text provided")
+        
+        if transcript.model in ["claude", "groq", "openai"]:
+            # Check if API key is available for cloud providers
+            api_key = await processor.db.get_api_key(transcript.model)
+            if not api_key:
+                provider_names = {"claude": "Anthropic", "groq": "Groq", "openai": "OpenAI"}
+                raise ValueError(f"{provider_names.get(transcript.model, transcript.model)} API key not configured. Please set your API key in the model settings.")
 
-        num_chunks, all_json_data = await processor.process_transcript(
+        _, all_json_data = await processor.process_transcript(
             text=transcript.text,
             model=transcript.model,
             model_name=transcript.model_name,
             chunk_size=transcript.chunk_size,
-            overlap=transcript.overlap
+            overlap=transcript.overlap,
+            custom_prompt=custom_prompt
         )
 
         # Create final summary structure by aggregating chunk results
         final_summary = {
             "MeetingName": "",
-            "SectionSummary": {"title": "Section Summary", "blocks": []},
+            "People": {"title": "People", "blocks": []},
+            "SessionSummary": {"title": "Session Summary", "blocks": []},
             "CriticalDeadlines": {"title": "Critical Deadlines", "blocks": []},
             "KeyItemsDecisions": {"title": "Key Items & Decisions", "blocks": []},
             "ImmediateActionItems": {"title": "Immediate Action Items", "blocks": []},
             "NextSteps": {"title": "Next Steps", "blocks": []},
-            "OtherImportantPoints": {"title": "Other Important Points", "blocks": []},
-            "ClosingRemarks": {"title": "Closing Remarks", "blocks": []}
+            # "OtherImportantPoints": {"title": "Other Important Points", "blocks": []},
+            # "ClosingRemarks": {"title": "Closing Remarks", "blocks": []},
+            "MeetingNotes": {
+                "meeting_name": "",
+                "sections": []
+            }
         }
 
         # Process each chunk's data
@@ -236,9 +260,32 @@ async def process_transcript_background(process_id: str, transcript: TranscriptR
                 if "MeetingName" in json_dict and json_dict["MeetingName"]:
                     final_summary["MeetingName"] = json_dict["MeetingName"]
                 for key in final_summary:
-                    if key != "MeetingName" and key in json_dict and isinstance(json_dict[key], dict) and "blocks" in json_dict[key]:
+                    if key == "MeetingNotes" and key in json_dict:
+                        # Handle MeetingNotes sections
+                        if isinstance(json_dict[key].get("sections"), list):
+                            # Ensure each section has blocks array
+                            for section in json_dict[key]["sections"]:
+                                if not section.get("blocks"):
+                                    section["blocks"] = []
+                            final_summary[key]["sections"].extend(json_dict[key]["sections"])
+                        if json_dict[key].get("meeting_name"):
+                            final_summary[key]["meeting_name"] = json_dict[key]["meeting_name"]
+                    elif key != "MeetingName" and key in json_dict and isinstance(json_dict[key], dict) and "blocks" in json_dict[key]:
                         if isinstance(json_dict[key]["blocks"], list):
                             final_summary[key]["blocks"].extend(json_dict[key]["blocks"])
+                            # Also add as a new section in MeetingNotes if not already present
+                            section_exists = False
+                            for section in final_summary["MeetingNotes"]["sections"]:
+                                if section["title"] == json_dict[key]["title"]:
+                                    section["blocks"].extend(json_dict[key]["blocks"])
+                                    section_exists = True
+                                    break
+                            
+                            if not section_exists:
+                                final_summary["MeetingNotes"]["sections"].append({
+                                    "title": json_dict[key]["title"],
+                                    "blocks": json_dict[key]["blocks"].copy() if json_dict[key]["blocks"] else []
+                                })
             except json.JSONDecodeError as e:
                 logger.error(f"Failed to parse JSON chunk for {process_id}: {e}. Chunk: {json_str[:100]}...")
             except Exception as e:
@@ -253,12 +300,21 @@ async def process_transcript_background(process_id: str, transcript: TranscriptR
             await processor.db.update_process(process_id, status="completed", result=json.dumps(final_summary))
             logger.info(f"Background processing completed for process_id: {process_id}")
         else:
-            error_msg = "Summary generation failed: No summary could be generated. Please check your model/API key settings."
+            error_msg = "Summary generation failed: No chunks were processed successfully. Check logs for specific errors."
             await processor.db.update_process(process_id, status="failed", error=error_msg)
             logger.error(f"Background processing failed for process_id: {process_id} - {error_msg}")
 
-    except Exception as e:
+    except ValueError as e:
+        # Handle specific value errors (like API key issues)
         error_msg = str(e)
+        logger.error(f"Configuration error in background processing for {process_id}: {error_msg}", exc_info=True)
+        try:
+            await processor.db.update_process(process_id, status="failed", error=error_msg)
+        except Exception as db_e:
+            logger.error(f"Failed to update DB status to failed for {process_id}: {db_e}", exc_info=True)
+    except Exception as e:
+        # Handle all other exceptions
+        error_msg = f"Processing error: {str(e)}"
         logger.error(f"Error in background processing for {process_id}: {error_msg}", exc_info=True)
         try:
             await processor.db.update_process(process_id, status="failed", error=error_msg)
@@ -285,11 +341,14 @@ async def process_transcript_api(
             transcript.overlap
         )
 
+        custom_prompt = transcript.custom_prompt
+
         # Start background processing
         background_tasks.add_task(
             process_transcript_background,
             process_id,
-            transcript
+            transcript,
+            custom_prompt
         )
 
         return JSONResponse({
@@ -321,6 +380,7 @@ async def get_summary(meeting_id: str):
             )
 
         status = result.get("status", "unknown").lower()
+        logger.debug(f"Summary status for meeting {meeting_id}: {status}, error: {result.get('error')}")
 
         # Parse result data if available
         summary_data = None
@@ -343,13 +403,61 @@ async def get_summary(meeting_id: str):
                 status = "failed"
                 result["error"] = f"Error processing summary data: {str(e)}"
 
+        # Transform summary data into frontend format if available - PRESERVE ORDER
+        transformed_data = {}
+        if isinstance(summary_data, dict) and status == "completed":
+            # Add MeetingName to transformed data
+            transformed_data["MeetingName"] = summary_data.get("MeetingName", "")
+
+            # Map backend sections to frontend sections
+            section_mapping = {
+                # "SessionSummary": "key_points",
+                # "ImmediateActionItems": "action_items",
+                # "KeyItemsDecisions": "decisions",
+                # "NextSteps": "next_steps",
+                # "CriticalDeadlines": "critical_deadlines",
+                # "People": "people"
+            }
+
+            # Add each section to transformed data
+            for backend_key, frontend_key in section_mapping.items():
+                if backend_key in summary_data and isinstance(summary_data[backend_key], dict):
+                    transformed_data[frontend_key] = summary_data[backend_key]
+            
+            # Add meeting notes sections if available - PRESERVE ORDER AND HANDLE DUPLICATES
+            if "MeetingNotes" in summary_data and isinstance(summary_data["MeetingNotes"], dict):
+                meeting_notes = summary_data["MeetingNotes"]
+                if isinstance(meeting_notes.get("sections"), list):
+                    # Add section order array to maintain order
+                    transformed_data["_section_order"] = []
+                    used_keys = set()
+                    
+                    for index, section in enumerate(meeting_notes["sections"]):
+                        if isinstance(section, dict) and "title" in section and "blocks" in section:
+                            # Ensure blocks is a list to prevent frontend errors
+                            if not isinstance(section.get("blocks"), list):
+                                section["blocks"] = []
+                                
+                            # Convert title to snake_case key
+                            base_key = section["title"].lower().replace(" & ", "_").replace(" ", "_")
+                            
+                            # Handle duplicate section names by adding index
+                            key = base_key
+                            if key in used_keys:
+                                key = f"{base_key}_{index}"
+                            
+                            used_keys.add(key)
+                            transformed_data[key] = section
+                            # Only add to _section_order if the section was successfully added
+                            transformed_data["_section_order"].append(key)
+
         response = {
             "status": "processing" if status in ["processing", "pending", "started"] else status,
             "meetingName": summary_data.get("MeetingName") if isinstance(summary_data, dict) else None,
             "meeting_id": meeting_id,
             "start": result.get("start_time"),
             "end": result.get("end_time"),
-            "data": summary_data if status == "completed" else None
+            "data": transformed_data if status == "completed" else None
         }
 
         if status == "failed":
@@ -357,6 +465,7 @@ async def get_summary(meeting_id: str):
             response["error"] = result.get("error", "Unknown processing error")
             response["data"] = None
             response["meetingName"] = None
+            logger.info(f"Returning failed status with error: {response['error']}")
             return JSONResponse(status_code=400, content=response)
 
         elif status in ["processing", "pending", "started"]:
@@ -428,9 +537,10 @@ async def save_transcript(request: SaveTranscriptRequest):
 async def get_model_config():
     """Get the current model configuration"""
     model_config = await db.get_model_config()
-    api_key = await db.get_api_key(model_config["provider"])
-    if api_key != None:
-        model_config["apiKey"] = api_key
+    if model_config:
+        api_key = await db.get_api_key(model_config["provider"])
+        if api_key != None:
+            model_config["apiKey"] = api_key
     return model_config
 
 @app.post("/save-model-config")
@@ -441,16 +551,70 @@ async def save_model_config(request: SaveModelConfigRequest):
         await db.save_api_key(request.apiKey, request.provider)
     return {"status": "success", "message": "Model configuration saved successfully"}  
 
+@app.get("/get-transcript-config")
+async def get_transcript_config():
+    """Get the current transcript configuration"""
+    transcript_config = await db.get_transcript_config()
+    if transcript_config:
+        transcript_api_key = await db.get_transcript_api_key(transcript_config["provider"])
+        if transcript_api_key != None:
+            transcript_config["apiKey"] = transcript_api_key
+    return transcript_config
+
+@app.post("/save-transcript-config")
+async def save_transcript_config(request: SaveTranscriptConfigRequest):
+    """Save the transcript configuration"""
+    await db.save_transcript_config(request.provider, request.model)
+    if request.apiKey != None:
+        await db.save_transcript_api_key(request.apiKey, request.provider)
+    return {"status": "success", "message": "Transcript configuration saved successfully"}
+
 class GetApiKeyRequest(BaseModel):
     provider: str
 
 @app.post("/get-api-key")
 async def get_api_key(request: GetApiKeyRequest):
-    """Get the API key for a given provider"""
-    return await db.get_api_key(request.provider)
+    try:
+        return await db.get_api_key(request.provider)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/get-transcript-api-key")
+async def get_transcript_api_key(request: GetApiKeyRequest):
+    try:
+        return await db.get_transcript_api_key(request.provider)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
+class MeetingSummaryUpdate(BaseModel):
+    meeting_id: str
+    summary: dict
 
+@app.post("/save-meeting-summary")
+async def save_meeting_summary(data: MeetingSummaryUpdate):
+    """Save a meeting summary"""
+    try:
+        await db.update_meeting_summary(data.meeting_id, data.summary)
+        return {"message": "Meeting summary saved successfully"}
+    except ValueError as ve:
+        logger.error(f"Value error saving meeting summary: {str(ve)}")
+        raise HTTPException(status_code=404, detail=str(ve))
+    except Exception as e:
+        logger.error(f"Error saving meeting summary: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+class SearchRequest(BaseModel):
+    query: str
+
+@app.post("/search-transcripts")
+async def search_transcripts(request: SearchRequest):
+    """Search through meeting transcripts for the given query"""
+    try:
+        results = await db.search_transcripts(request.query)
+        return JSONResponse(content=results)
+    except Exception as e:
+        logger.error(f"Error searching transcripts: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -465,4 +629,4 @@ async def shutdown_event():
 if __name__ == "__main__":
     import multiprocessing
     multiprocessing.freeze_support()
-    uvicorn.run(app, host="0.0.0.0", port=5167)
+    uvicorn.run("main:app", host="0.0.0.0", port=5167, reload=True)

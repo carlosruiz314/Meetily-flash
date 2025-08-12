@@ -8,6 +8,18 @@ export interface Transcript {
   id: string;
   text: string;
   timestamp: string;
+  sequence_id?: number;
+  chunk_start_time?: number;
+  is_partial?: boolean;
+}
+
+export interface TranscriptUpdate {
+  text: string;
+  timestamp: string;
+  source: string;
+  sequence_id: number;
+  chunk_start_time: number;
+  is_partial: boolean;
 }
 
 export interface Block {
