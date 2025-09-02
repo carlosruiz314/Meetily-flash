@@ -1,13 +1,13 @@
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
-    tray::TrayIconBuilder,AppHandle, Manager, Runtime,
+    tray::TrayIconBuilder,
+    AppHandle, Manager, Runtime,
 };
-
 
 pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let menu = build_menu(app, crate::is_recording())?;
 
-    TrayIconBuilder::new()
+    TrayIconBuilder::with_id("main-tray")
         .menu(&menu)
         .tooltip("Meetily")
         .icon(app.default_window_icon().unwrap().clone())
@@ -41,24 +41,45 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
             };
 
             if let Some(window) = app_clone.get_webview_window("main") {
-                let _ = window.eval("(window.handleRecordingStop && window.handleRecordingStop(true))");
+                let _ =
+                    window.eval("(window.handleRecordingStop && window.handleRecordingStop(true))");
             }
 
-            if let Err(e) = crate::stop_recording(app_clone.clone(),args).await {
+            if let Err(e) = crate::stop_recording(app_clone.clone(), args).await {
                 log::error!("Failed to stop recording: {}", e);
+            } else {
+                update_tray_menu(&app_clone);
             }
         } else {
             log::info!("Starting recording from tray");
             if let Err(e) = crate::start_recording(app_clone.clone()).await {
                 log::error!("Failed to start recording: {}", e);
+            } else {
+                update_tray_menu(&app_clone);
             }
         }
     });
 }
 
-fn build_menu<R: Runtime>(app: &AppHandle<R>, _is_recording: bool) -> tauri::Result<tauri::menu::Menu<R>> {
+fn update_tray_menu<R: Runtime>(app: &AppHandle<R>) {
+    if let Ok(menu) = build_menu(app, crate::is_recording()) {
+        if let Some(tray) = app.tray_by_id("main-tray") {
+            let _ = tray.set_menu(Some(menu));
+        }
+    }
+}
+
+fn build_menu<R: Runtime>(
+    app: &AppHandle<R>,
+    is_recording: bool,
+) -> tauri::Result<tauri::menu::Menu<R>> {
+    let label = if is_recording {
+        "Stop Recording"
+    } else {
+        "Start Recording"
+    };
     MenuBuilder::new(app)
-        .item(&MenuItemBuilder::with_id("toggle_recording", "Toggle Recording").build(app)?)
+        .item(&MenuItemBuilder::with_id("toggle_recording", label).build(app)?)
         .item(&PredefinedMenuItem::separator(app)?)
         .item(&MenuItemBuilder::with_id("open_window", "Open Main Window").build(app)?)
         .item(&MenuItemBuilder::with_id("settings", "Settings").build(app)?)
