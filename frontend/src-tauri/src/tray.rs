@@ -1,7 +1,7 @@
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
     tray::TrayIconBuilder,
-    AppHandle, Manager, Runtime,
+    AppHandle, Emitter, Manager, Runtime,
 };
 
 pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
@@ -35,33 +35,26 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
         if crate::is_recording() {
-            log::info!("Stopping recording from tray");
-            let args = crate::RecordingArgs {
-                save_path: String::new(),
-            };
+            log::info!("Emitting stop recording event from tray");
 
-            if let Some(window) = app_clone.get_webview_window("main") {
-                let _ =
-                    window.eval("(window.handleRecordingStop && window.handleRecordingStop(true))");
-            }
-
-            if let Err(e) = crate::stop_recording(app_clone.clone(), args).await {
-                log::error!("Failed to stop recording: {}", e);
-            } else {
-                update_tray_menu(&app_clone);
+            let _ = app_clone
+                .get_webview_window("main")
+                .unwrap()
+                .eval("window.handleRecordingStop()");
+            if let Err(e) = app_clone.emit("tray:stop-recording", ()) {
+                log::error!("Failed to emit stop recording event: {}", e);
             }
         } else {
-            log::info!("Starting recording from tray");
-            if let Err(e) = crate::start_recording(app_clone.clone()).await {
-                log::error!("Failed to start recording: {}", e);
-            } else {
-                update_tray_menu(&app_clone);
+            log::info!("Emitting start recording event from tray");
+            if let Some(window) = app_clone.get_webview_window("main") {
+                let _ = window.eval("sessionStorage.setItem('autoStartRecording', 'true')"); // Set the flag to start recording automatically
+                let _ = window.eval("window.location.assign('/')");
             }
         }
     });
 }
 
-fn update_tray_menu<R: Runtime>(app: &AppHandle<R>) {
+pub fn update_tray_menu<R: Runtime>(app: &AppHandle<R>) {
     if let Ok(menu) = build_menu(app, crate::is_recording()) {
         if let Some(tray) = app.tray_by_id("main-tray") {
             let _ = tray.set_menu(Some(menu));
