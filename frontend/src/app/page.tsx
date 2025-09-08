@@ -575,7 +575,7 @@ export default function Home() {
         }
       });
       console.log('Recording stopped successfully');
-      
+   
       // Wait for transcription to complete
       setSummaryStatus('processing');
       console.log('Waiting for transcription to complete...');
@@ -1086,6 +1086,7 @@ export default function Home() {
 
   const isSummaryLoading = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
 
+  const isProcessingStop = summaryStatus === 'processing'
   const handleRecordingStop2Ref = useRef(handleRecordingStop2);
   const handleRecordingStartRef = useRef(handleRecordingStart);
   useEffect(() => {
@@ -1299,6 +1300,7 @@ export default function Home() {
                   setShowErrorAlert(true);
                 }}
                 isRecordingDisabled={isRecordingDisabled}
+                isParentProcessing={isProcessingStop}
               />
             </div>
           </div>
