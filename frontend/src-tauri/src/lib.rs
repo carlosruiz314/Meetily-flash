@@ -726,6 +726,8 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         RECORDING_START_TIME = Some(std::time::Instant::now());
     }
 
+    tray::update_tray_menu(&app);
+    
     // Initialize audio buffers and queue
     unsafe {
         MIC_BUFFER = Some(Arc::new(Mutex::new(Vec::new())));
@@ -877,6 +879,8 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
     // First set the recording flag to false to prevent new data from being processed
     RECORDING_FLAG.store(false, Ordering::SeqCst);
     log_info!("Recording flag set to false");
+    
+    tray::update_tray_menu(&app);
     
     unsafe {
         // Stop the running flag for audio streams first
@@ -1108,7 +1112,7 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
 
     // Send a system notification indicating recording has stopped
     let _ = app.notification().builder().title("Meetily").body("Recording stopped").show();
-
+    
     Ok(())
 }
 

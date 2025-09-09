@@ -441,7 +441,15 @@ export default function Home() {
     try {
       console.log('Starting recording...');
       const { invoke } = await import('@tauri-apps/api/core');
-      const randomTitle = `Meeting ${Math.random().toString(36).substring(2, 8)}`;
+      
+      const now = new Date();
+      const day = String(now.getDate()).padStart(2, '0');
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const year = String(now.getFullYear()).slice(-2);
+      const hours = String(now.getHours()).padStart(2, '0');
+      const minutes = String(now.getMinutes()).padStart(2, '0');
+      const seconds = String(now.getSeconds()).padStart(2, '0');
+      const randomTitle = `Meeting_${day}_${month}_${year}_${hours}_${minutes}_${seconds}`;
       setMeetingTitle(randomTitle);
       
       // Only check if we're already recording, but don't try to stop it first
@@ -567,7 +575,7 @@ export default function Home() {
         }
       });
       console.log('Recording stopped successfully');
-      
+   
       // Wait for transcription to complete
       setSummaryStatus('processing');
       console.log('Waiting for transcription to complete...');
@@ -1078,10 +1086,18 @@ export default function Home() {
 
   const isSummaryLoading = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
 
-  // Expose recordingStop2 function to rust 
+  const isProcessingStop = summaryStatus === 'processing'
+  const handleRecordingStop2Ref = useRef(handleRecordingStop2);
+  const handleRecordingStartRef = useRef(handleRecordingStart);
+  useEffect(() => {
+    handleRecordingStop2Ref.current = handleRecordingStop2;
+    handleRecordingStartRef.current = handleRecordingStart;
+  });
+  
+  // Expose handleRecordingStop and handleRecordingStart functions to rust using refs for stale closure issues
   useEffect(() => {
     (window as any).handleRecordingStop = (callApi: boolean = true) => {
-      handleRecordingStop2(callApi);
+      handleRecordingStop2Ref.current(callApi);
     };
 
     // Cleanup on unmount
@@ -1284,6 +1300,7 @@ export default function Home() {
                   setShowErrorAlert(true);
                 }}
                 isRecordingDisabled={isRecordingDisabled}
+                isParentProcessing={isProcessingStop}
               />
             </div>
           </div>
