@@ -13,19 +13,22 @@ pub mod api;
 pub mod utils;
 pub mod console_utils;
 pub mod tray;
+pub mod whisper_engine;
 
 use audio::{
-    default_input_device, default_output_device, AudioStream,
-    encode_single_audio,
+    default_input_device, default_output_device, AudioStream, list_audio_devices, parse_audio_device,
+    encode_single_audio,AudioDevice, DeviceType
 };
+use audio::vad::extract_speech_16k;
 use ollama::{OllamaModel};
 use analytics::{AnalyticsClient, AnalyticsConfig};
 use utils::format_timestamp;
 use tauri::{Runtime, AppHandle, Emitter};
 use tauri_plugin_store::StoreExt;
-use log::{info as log_info, error as log_error, debug as log_debug};
+use log::{info as log_info, error as log_error, debug as log_debug,warn as log_warn};
 use reqwest::multipart::{Form, Part};
 use tokio::sync::mpsc;
+use whisper_engine::{WhisperEngine, ModelInfo, ModelStatus};
 
 static RECORDING_FLAG: AtomicBool = AtomicBool::new(false);
 static SEQUENCE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -42,6 +45,7 @@ static mut TRANSCRIPTION_TASK: Option<tokio::task::JoinHandle<()>> = None;
 static mut AUDIO_COLLECTION_TASK: Option<tokio::task::JoinHandle<()>> = None;
 static mut ANALYTICS_CLIENT: Option<Arc<AnalyticsClient>> = None;
 static mut ERROR_EVENT_EMITTED: bool = false;
+static mut WHISPER_ENGINE: Option<Arc<WhisperEngine>> = None;
 static LAST_TRANSCRIPTION_ACTIVITY: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_WORKERS: AtomicU64 = AtomicU64::new(0);
 
@@ -55,6 +59,13 @@ const SENTENCE_TIMEOUT_MS: u64 = 1000; // Emit incomplete sentence after 1 secon
 const MIN_CHUNK_DURATION_MS: u32 = 2000; // Minimum duration before sending chunk
 const MIN_RECORDING_DURATION_MS: u64 = 2000; // 2 seconds minimum
 const MAX_AUDIO_QUEUE_SIZE: usize = 10; // Maximum number of chunks in queue
+
+
+// VAD and silence detection thresholds - BALANCED for better speech preservation
+const VAD_SILENCE_THRESHOLD: f32 = 0.003; // Reduced threshold for detecting silence in individual audio samples
+const VAD_RMS_SILENCE_THRESHOLD: f32 = 0.002; // Reduced RMS energy threshold for silence detection
+const CHUNK_SILENCE_THRESHOLD: f32 = 0.002; // Reduced RMS threshold for chunk-level silence detection
+const CHUNK_AVG_SILENCE_THRESHOLD: f32 = 0.003; // Reduced average level threshold for chunk-level silence detection
 
 // Server configuration constants
 const TRANSCRIPT_SERVER_URL: &str = "http://127.0.0.1:8178";
@@ -254,9 +265,10 @@ impl TranscriptAccumulator {
     }
 }
 
+
 async fn audio_collection_task<R: Runtime>(
     mic_stream: Arc<AudioStream>,
-    system_stream: Arc<AudioStream>,
+    system_stream: Option<Arc<AudioStream>>,
     is_running: Arc<AtomicBool>,
     sample_rate: u32,
     recording_start_time: std::time::Instant,
@@ -264,42 +276,331 @@ async fn audio_collection_task<R: Runtime>(
 ) -> Result<(), String> {
     log_info!("Audio collection task started");
     
-    let mut mic_receiver = mic_stream.subscribe().await;
-    let mut system_receiver = system_stream.subscribe().await;
+    // let mut mic_receiver = mic_stream.subscribe().await
+    //     .map_err(|e| format!("Failed to subscribe to mic stream: {}", e))?;
+    // log_info!("🎤 Microphone receiver created successfully");
+    let mut mic_receiver = mic_stream.subscribe().await;   
+    let mut system_receiver = match &system_stream {
+        Some(stream) => Some(stream.subscribe().await),
+        None => {
+            log_info!("No system audio stream available, using mic only");
+            None
+        }
+    };
     
-    let chunk_samples = (WHISPER_SAMPLE_RATE as f32 * (CHUNK_DURATION_MS as f32 / 1000.0)) as usize;
-    let min_samples = (WHISPER_SAMPLE_RATE as f32 * (MIN_CHUNK_DURATION_MS as f32 / 1000.0)) as usize;
+    if system_receiver.is_some() {
+        log_info!("🔊 System audio receiver created successfully");
+    }
+    
+    // Calculate samples based on the actual input sample rate, not Whisper's target rate
+    let chunk_samples = (sample_rate as f32 * (CHUNK_DURATION_MS as f32 / 1000.0)) as usize;
+    let min_samples = (sample_rate as f32 * (MIN_CHUNK_DURATION_MS as f32 / 1000.0)) as usize;
+    log_info!("Audio chunking: target {}ms chunk = {} samples, min {}ms = {} samples @ {}Hz", 
+              CHUNK_DURATION_MS, chunk_samples, MIN_CHUNK_DURATION_MS, min_samples, sample_rate);
     let mut current_chunk: Vec<f32> = Vec::with_capacity(chunk_samples);
     let mut last_chunk_time = std::time::Instant::now();
     let chunk_start_time = std::time::Instant::now();
     
+    let mut iteration_count = 0;
+    let mut last_reconnection_attempt = std::time::Instant::now();
+    let mut system_audio_failure_count = 0;
+    
+    // Ensure audio chunk queue is initialized before starting processing
+    while unsafe { AUDIO_CHUNK_QUEUE.is_none() } {
+        log_info!("Waiting for audio chunk queue initialization...");
+        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+    }
+    
     while is_running.load(Ordering::SeqCst) {
+        iteration_count += 1;
+        if iteration_count % 5000 == 0 {
+            log_info!("🔄 Audio collection task iteration {} (still running)", iteration_count);
+        }
+        
+        if system_receiver.is_none() && system_stream.is_some() {
+            let now = std::time::Instant::now();
+            if now.duration_since(last_reconnection_attempt).as_secs() >= 5 {
+                log_info!("🔄 Attempting to reconnect system audio stream...");
+                last_reconnection_attempt = now;
+
+                let new_receiver = system_stream.as_ref().unwrap().subscribe().await;
+                system_receiver = Some(new_receiver);
+                system_audio_failure_count = 0;
+                log_info!("✅ System audio reconnected successfully");
+
+                if let Err(e) = app_handle.emit(
+                    "system-audio-reconnected",
+                    serde_json::json!({
+                        "message": "System audio capture restored",
+                        "timestamp": now.elapsed().as_secs_f64()
+                    }),
+                ) {
+                    log_warn!("Failed to emit system audio reconnected event: {}", e);
+                }
+            }
+        }
+        
         // Collect audio samples
         let mut new_samples = Vec::new();
         let mut mic_samples = Vec::new();
         let mut system_samples = Vec::new();
         
         // Get microphone samples
+        let mut mic_chunks_received = 0;
         while let Ok(chunk) = mic_receiver.try_recv() {
-            log_debug!("Received {} mic samples", chunk.len());
             mic_samples.extend(chunk);
+            mic_chunks_received += 1;
         }
         
-        // Get system audio samples
-        while let Ok(chunk) = system_receiver.try_recv() {
-            log_debug!("Received {} system samples", chunk.len());
-            system_samples.extend(chunk);
+        // 🔧 Microphone Stream Recovery Logic
+        if mic_chunks_received == 0 {
+            // Simple static counter for microphone failures
+            static mut MIC_FAILURE_COUNT: u32 = 0;
+            static mut LAST_MIC_RECOVERY_ATTEMPT: u64 = 0;
+            
+            unsafe {
+                MIC_FAILURE_COUNT += 1;
+                
+                // Log warning every 100 iterations to avoid spam
+                if MIC_FAILURE_COUNT % 100 == 0 {
+                    log_warn!("⚠️ No microphone chunks received for {} consecutive iterations", MIC_FAILURE_COUNT);
+                }
+                
+                // Attempt microphone stream recovery every 10 seconds
+                let now = std::time::Instant::now();
+                let current_time = now.elapsed().as_secs();
+                
+                if current_time - LAST_MIC_RECOVERY_ATTEMPT >= 10 {
+                    LAST_MIC_RECOVERY_ATTEMPT = current_time;
+                    log_info!("🔄 Attempting microphone stream recovery...");
+
+                    let new_receiver = mic_stream.subscribe().await;
+                    mic_receiver = new_receiver;
+
+                    MIC_FAILURE_COUNT = 0;
+                    log_info!("✅ Microphone stream recovered successfully");
+
+                    // Emit recovery event
+                    if let Err(e) = app_handle.emit("microphone-recovered", serde_json::json!({
+                        "message": "Microphone stream restored",
+                        "timestamp": now.elapsed().as_secs_f64()
+                    })) {
+                        log_warn!("Failed to emit microphone recovery event: {}", e);
+                    }
+                }
+            }
+        } else {
+            // Reset failure count when we receive data
+            unsafe {
+                static mut MIC_FAILURE_COUNT: u32 = 0;
+                MIC_FAILURE_COUNT = 0;
+            }
         }
         
-        // Mix samples (80% mic, 20% system)
-        let max_len = mic_samples.len().max(system_samples.len());
-        for i in 0..max_len {
-            let mic_sample = if i < mic_samples.len() { mic_samples[i] } else { 0.0 };
-            let system_sample = if i < system_samples.len() { system_samples[i] } else { 0.0 };
-            new_samples.push((mic_sample * 0.8) + (system_sample * 0.2));
+        // Get system audio samples (if available)
+        if let Some(ref mut receiver) = system_receiver {
+            while let Ok(chunk) = receiver.try_recv() {
+                system_samples.extend(chunk);
+            }
+        } else {
+            log_debug!("No system audio receiver available");
         }
         
-        // Add samples to current chunk
+        // 💓 Heartbeat Monitoring for Audio Streams
+        if iteration_count % 10000 == 0 {
+            // Check microphone stream health (simple check based on recent activity)
+            // We can't clone the receiver, so we'll use the failure count as a proxy
+            unsafe {
+                static mut MIC_FAILURE_COUNT: u32 = 0;
+                if MIC_FAILURE_COUNT > 0 {
+                    log_warn!("⚠️ Microphone receiver appears inactive ({} failures), will attempt recovery", MIC_FAILURE_COUNT);
+                } else {
+                    log_debug!("💓 Microphone heartbeat: healthy");
+                }
+            }
+            
+            // Check system audio receiver health
+            if let Some(ref mut receiver) = system_receiver {
+                match receiver.try_recv() {
+                    Ok(_) => {
+                        // Receiver is working, reset failure count
+                        system_audio_failure_count = 0;
+                        log_debug!("💓 System audio heartbeat: healthy");
+                    }
+                    Err(_) => {
+                        // Receiver might be inactive, increment failure count
+                        system_audio_failure_count += 1;
+                        if system_audio_failure_count >= 5 {
+                            log_warn!("⚠️ System audio receiver appears inactive ({} failures), will attempt reconnection", system_audio_failure_count);
+                            // Force reconnection attempt on next iteration
+                            system_receiver = None;
+                        }
+                    }
+                }
+            }
+        }
+        
+        // 📊 Audio Stream Status Monitoring and Logging
+        if iteration_count % 5000 == 0 {
+            // Check microphone status
+            let mic_status = if mic_chunks_received > 0 {
+                "active"
+            } else {
+                "inactive"
+            };
+            
+            // Check system audio status
+            let system_audio_status = if system_receiver.is_some() {
+                "active"
+            } else if system_stream.is_some() {
+                "disconnected"
+            } else {
+                "unavailable"
+            };
+            
+            let status_data = serde_json::json!({
+                "microphone": {
+                    "status": mic_status,
+                    "chunks_received": mic_chunks_received
+                },
+                "system_audio": {
+                    "status": system_audio_status,
+                    "failure_count": system_audio_failure_count
+                },
+                "iteration": iteration_count,
+                "timestamp": std::time::Instant::now().elapsed().as_secs_f64()
+            });
+            
+            // Emit audio status event
+            if let Err(e) = app_handle.emit("audio-status", status_data) {
+                log_debug!("Failed to emit audio status event: {}", e);
+            }
+            
+            // Log detailed status
+            log_info!("📊 Audio Status - Mic: {} ({} chunks) | System: {} (failures: {}) | Iteration: {}", 
+                     mic_status, mic_chunks_received, system_audio_status, system_audio_failure_count, iteration_count);
+        }
+        
+        // Debug audio levels every 1000 iterations to avoid log spam
+        if iteration_count % 1000 == 0 && (!mic_samples.is_empty() || !system_samples.is_empty()) {
+            let mic_max = mic_samples.iter().fold(0.0f32, |acc, &x| acc.max(x.abs()));
+            let sys_max = system_samples.iter().fold(0.0f32, |acc, &x| acc.max(x.abs()));
+            log_info!("Audio levels - Mic: {} samples, max: {:.4} | System: {} samples, max: {:.4}", 
+                     mic_samples.len(), mic_max, system_samples.len(), sys_max);
+        }
+        
+        // 🎵 Smart Audio Processing: Separate handling for mic vs system audio
+        let mut processed_mic_samples = Vec::new();
+        let mut processed_system_samples = Vec::new();
+        
+        // Process microphone audio - use BALANCED VAD for better speech preservation
+        if !mic_samples.is_empty() {
+            // Log mic audio levels for debugging
+            let mic_max = mic_samples.iter().fold(0.0f32, |acc, &x| acc.max(x.abs()));
+            let mic_avg = mic_samples.iter().map(|&x| x.abs()).sum::<f32>() / mic_samples.len() as f32;
+            
+            if iteration_count % 1000 == 0 {
+                log_info!("🎤 Mic audio: {} samples, max: {:.6}, avg: {:.6}", mic_samples.len(), mic_max, mic_avg);
+            }
+            
+            // Apply balanced VAD to microphone audio
+            match extract_speech_16k(&mic_samples) {
+                Ok(speech_samples) if !speech_samples.is_empty() => {
+                    processed_mic_samples = speech_samples.clone();
+                    log_debug!("🎤 VAD: Mic {} -> {} speech samples", mic_samples.len(), speech_samples.len());
+                }
+                Ok(_) => {
+                    // VAD detected no speech, check if we have actual audio content with balanced threshold
+                    if mic_avg > VAD_SILENCE_THRESHOLD {
+                        // There's actual audio content, include it despite VAD
+                        log_debug!("🔇 VAD: No speech detected but audio present ({:.6}), including mic audio", mic_avg);
+                        processed_mic_samples = mic_samples.clone();
+                    } else {
+                        // Genuine silence, skip it
+                        log_debug!("🔇 VAD: Genuine silence detected ({:.6}), skipping mic audio", mic_avg);
+                    }
+                }
+                Err(e) => {
+                    log_warn!("⚠️ VAD error on mic audio: {}, using original mic samples", e);
+                    processed_mic_samples = mic_samples.clone();
+                }
+            }
+        }
+        
+        // Process system audio with BALANCED VAD filtering for better quality
+        if !system_samples.is_empty() {
+            // Log system audio levels for debugging
+            let sys_max = system_samples.iter().fold(0.0f32, |acc, &x| acc.max(x.abs()));
+            let sys_avg = system_samples.iter().map(|&x| x.abs()).sum::<f32>() / system_samples.len() as f32;
+            
+            if iteration_count % 1000 == 0 {
+                log_info!("🔊 System audio: {} samples, max: {:.6}, avg: {:.6}", system_samples.len(), sys_max, sys_avg);
+            }
+            
+            // Apply balanced VAD to system audio to filter out silence while preserving content
+            match extract_speech_16k(&system_samples) {
+                Ok(speech_samples) if !speech_samples.is_empty() => {
+                    processed_system_samples = speech_samples.clone();
+                    log_debug!("🔊 VAD: System {} -> {} speech samples", system_samples.len(), speech_samples.len());
+                }
+                Ok(_) => {
+                    // VAD detected no speech in system audio, check if we have actual content
+                    if sys_avg > VAD_SILENCE_THRESHOLD { // Same threshold as mic audio
+                        // There's actual system audio content, include it despite VAD
+                        log_debug!("🔇 VAD: No speech detected in system audio but content present ({:.6}), including system audio", sys_avg);
+                        processed_system_samples = system_samples.clone();
+                    } else {
+                        // Genuine silence in system audio, skip it
+                        log_debug!("🔇 VAD: Genuine silence detected in system audio ({:.6}), skipping system audio", sys_avg);
+                    }
+                }
+                Err(e) => {
+                    log_warn!("⚠️ VAD error on system audio: {}, using original system samples", e);
+                    processed_system_samples = system_samples.clone();
+                }
+            }
+        }
+        
+        // Smart mixing: prioritize system audio, mix with mic speech
+        if !processed_system_samples.is_empty() || !processed_mic_samples.is_empty() {
+            let max_len = processed_mic_samples.len().max(processed_system_samples.len());
+            
+            for i in 0..max_len {
+                let mic_sample = if i < processed_mic_samples.len() { processed_mic_samples[i] } else { 0.0 };
+                let system_sample = if i < processed_system_samples.len() { processed_system_samples[i] } else { 0.0 };
+                
+                // Smart mixing: system audio gets higher priority, mic speech is mixed in
+                let mixed = if system_sample.abs() > 0.01 {
+                    // System audio is active, mix with mic speech
+                    (mic_sample * 0.6 + system_sample * 0.9).clamp(-1.0, 1.0)
+                } else {
+                    // Only mic audio, use it as-is
+                    mic_sample
+                };
+                new_samples.push(mixed);
+            }
+            
+            // Log mixing details for debugging
+            if iteration_count % 1000 == 0 {
+                let mic_max = processed_mic_samples.iter().fold(0.0f32, |acc, &x| acc.max(x.abs()));
+                let sys_max = processed_system_samples.iter().fold(0.0f32, |acc, &x| acc.max(x.abs()));
+                let mixed_max = new_samples.iter().fold(0.0f32, |acc, &x| acc.max(x.abs()));
+                log_info!("🎵 Smart Audio Mixing - Mic: {} samples (max: {:.4}) | System: {} samples (max: {:.4}) | Mixed: {} samples (max: {:.4})", 
+                         processed_mic_samples.len(), mic_max, processed_system_samples.len(), sys_max, new_samples.len(), mixed_max);
+            }
+        } else {
+            // Fallback: if no processed samples, check if we have original samples
+            if !mic_samples.is_empty() {
+                log_warn!("⚠️ No processed mic samples, using original mic samples as fallback");
+                new_samples.extend(mic_samples.clone());
+            }
+            if !system_samples.is_empty() {
+                log_warn!("⚠️ No processed system samples, using original system samples as fallback");
+                new_samples.extend(system_samples.clone());
+            }
+        }
+        
+        // Add processed samples to current chunk
         for sample in new_samples {
             current_chunk.push(sample);
         }
@@ -309,18 +610,55 @@ async fn audio_collection_task<R: Runtime>(
                                 (current_chunk.len() >= min_samples && 
                                  last_chunk_time.elapsed() >= Duration::from_millis(CHUNK_DURATION_MS as u64));
         
+        // SMART: Quick silence detection for faster response
         if should_create_chunk && !current_chunk.is_empty() {
-            // Process chunk for Whisper API
+            // Calculate audio energy to determine if chunk contains actual speech
+            let chunk_rms_energy = current_chunk.iter().map(|&x| x * x).sum::<f32>() / current_chunk.len() as f32;
+            let chunk_rms = chunk_rms_energy.sqrt();
+            let chunk_avg_level = current_chunk.iter().map(|&x| x.abs()).sum::<f32>() / current_chunk.len() as f32;
+            
+            // QUICK SILENCE DETECTION: Skip chunks that are clearly silence for faster response
+            if chunk_rms < CHUNK_SILENCE_THRESHOLD * 0.3 && chunk_avg_level < CHUNK_AVG_SILENCE_THRESHOLD * 0.3 {
+                // Chunk is clearly silence, skip it immediately for faster response
+                log_debug!("🔇 Quick silence detection - skipping chunk: RMS: {:.6}, Avg: {:.6} (well below thresholds)", 
+                         chunk_rms, chunk_avg_level);
+                current_chunk.clear();
+                last_chunk_time = std::time::Instant::now();
+                continue; // Skip to next iteration
+            }
+            
+            let chunk_duration_ms = (current_chunk.len() as f32 / sample_rate as f32 * 1000.0) as u32;
+            log_info!("📦 Creating audio chunk with {} samples (~{}ms, target: {}ms) - RMS: {:.6}, Avg: {:.6}", 
+                     current_chunk.len(), chunk_duration_ms, CHUNK_DURATION_MS, chunk_rms, chunk_avg_level);
+            
+            // Process chunk for Whisper API (VAD already applied to both mic and system audio)
             let whisper_samples = if sample_rate != WHISPER_SAMPLE_RATE {
                 log_debug!("Resampling audio from {} to {}", sample_rate, WHISPER_SAMPLE_RATE);
                 resample_audio(&current_chunk, sample_rate, WHISPER_SAMPLE_RATE)
             } else {
                 current_chunk.clone()
             };
+
+            // ✅ VAD already applied during audio collection - no need to filter again
+            log_debug!("📊 Audio chunk ready: {} samples (VAD pre-processed, speech content confirmed)", whisper_samples.len());
             
             // Create audio chunk
             let chunk_id = CHUNK_ID_COUNTER.fetch_add(1, Ordering::SeqCst);
             let chunk_timestamp = chunk_start_time.elapsed().as_secs_f64();
+            
+            // Emit first audio detected event
+            static FIRST_AUDIO_EMITTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !FIRST_AUDIO_EMITTED.load(Ordering::SeqCst) {
+                FIRST_AUDIO_EMITTED.store(true, Ordering::SeqCst);
+                if let Err(e) = app_handle.emit("first-audio-detected", serde_json::json!({
+                    "message": "Audio detected - processing for transcription...",
+                    "chunk_size": current_chunk.len(),
+                    "timestamp": chunk_timestamp
+                })) {
+                    log_error!("Failed to emit first-audio-detected event: {}", e);
+                }
+                log_info!("🔊 First audio chunk detected and queued for transcription");
+            }
             let audio_chunk = AudioChunk {
                 samples: whisper_samples,
                 timestamp: chunk_timestamp,
@@ -425,6 +763,76 @@ async fn send_audio_chunk(chunk: Vec<f32>, client: &reqwest::Client, stream_url:
     }
 
     Err(format!("Failed after {} retries. Last error: {}", max_retries, last_error))
+}
+
+async fn transcribe_audio_chunk_whisper_rs(chunk: Vec<f32>) -> Result<TranscriptResponse, String> {
+    log_info!("Transcribing audio chunk of size: {} using whisper-rs", chunk.len());
+    
+    // Use whisper-rs directly for transcription
+    unsafe {
+        if let Some(engine) = &WHISPER_ENGINE {
+            // Ensure model is loaded
+            if !engine.is_model_loaded().await {
+                log_info!("No whisper model loaded - loading tiny model");
+                return Err("No whisper model loaded".to_string());
+            }
+            
+            log_debug!("Whisper model is loaded, resampling audio...");
+            
+            // The audio should already be resampled to 16kHz in audio_collection_task
+            // But let's verify and resample if needed
+        
+        // Check audio levels to help debug silence issues
+        let max_amplitude = chunk.iter().map(|&x| x.abs()).fold(0.0_f32, f32::max);
+        let avg_amplitude = chunk.iter().map(|&x| x.abs()).sum::<f32>() / chunk.len() as f32;
+        log_debug!("Audio levels - Max: {:.6}, Avg: {:.6}", max_amplitude, avg_amplitude);
+        
+        if max_amplitude < 0.001 {
+            log_info!("⚠️ Very low audio levels detected - check microphone input or speak louder");
+        }
+            
+            // For whisper, we need at least 1 second of audio (16000 samples at 16kHz)
+            let final_chunk = if chunk.len() < 16000 {
+                log_info!("Audio chunk too short ({} samples = {}ms), padding to 1 second", 
+                         chunk.len(), (chunk.len() as f32 / 16000.0 * 1000.0) as u32);
+                
+                // Pad with silence to reach minimum 1 second
+                let mut padded_chunk = chunk.clone();
+                padded_chunk.resize(16000, 0.0); // Pad with silence
+                padded_chunk
+            } else {
+                log_info!("Audio chunk has {} samples ({}ms) - sufficient for whisper", 
+                         chunk.len(), (chunk.len() as f32 / 16000.0 * 1000.0) as u32);
+                chunk
+            };
+            
+            // Transcribe using whisper-rs with final audio chunk
+            match engine.transcribe_audio(final_chunk).await {
+                Ok(text) => {
+                    log_info!("Whisper-rs transcription result: {}", text);
+                    
+                    // Convert to the expected TranscriptResponse format
+                    let transcript_response = TranscriptResponse {
+                        segments: vec![TranscriptSegment {
+                            text: text.clone(),
+                            t0: 0.0,
+                            t1: 1.0, // Set duration to 1 second to pass the filter
+                        }],
+                        buffer_size_ms: 1000, // Default buffer size
+                    };
+                    
+                    Ok(transcript_response)
+                },
+                Err(e) => {
+                    log_error!("Whisper-rs transcription failed: {}", e);
+                    Err(format!("Whisper transcription failed: {}", e))
+                }
+            }
+        } else {
+            log_error!("Whisper engine not initialized");
+            Err("Whisper engine not initialized".to_string())
+        }
+    }
 }
 
 async fn transcription_worker<R: Runtime>(
@@ -680,10 +1088,213 @@ async fn transcription_worker<R: Runtime>(
     log_info!("Transcription worker {} ended", worker_id);
 }
 
+async fn whisper_rs_transcription_worker<R: Runtime>(
+    app_handle: AppHandle<R>,
+    worker_id: usize,
+) {
+    log_info!("Whisper-rs transcription worker {} started", worker_id);
+    let mut accumulator = TranscriptAccumulator::new();
+    
+    // Increment active worker count
+    ACTIVE_WORKERS.fetch_add(1, Ordering::SeqCst);
+    
+    loop {
+        // Check if recording is still active
+        if !is_recording() {
+            log_info!("Worker {}: Recording stopped, checking for remaining chunks...", worker_id);
+            
+            // Process any remaining chunks in the queue
+            let chunks_in_queue = unsafe {
+                AUDIO_CHUNK_QUEUE.as_ref().map_or(0, |queue| {
+                    queue.lock().unwrap().len()
+                })
+            };
+            
+            if chunks_in_queue == 0 {
+                log_info!("Worker {}: No more chunks to process, shutting down", worker_id);
+                break;
+            }
+        }
+        
+        // Check for timeout on current sentence (this handles both timeout and partial emissions)
+        if let Some(update) = accumulator.check_timeout() {
+            log_info!("Whisper-rs Worker {}: Emitting timeout transcript-update event with sequence_id: {}", worker_id, update.sequence_id);
+            
+            if let Err(e) = app_handle.emit("transcript-update", &update) {
+                log_error!("Whisper-rs Worker {}: Failed to send timeout transcript update: {}", worker_id, e);
+            } else {
+                log_info!("Whisper-rs Worker {}: Successfully emitted timeout transcript-update event", worker_id);
+            }
+        }
+        
+        // Get chunk from queue
+        let chunk = unsafe {
+            AUDIO_CHUNK_QUEUE.as_ref().and_then(|queue| {
+                let mut queue_lock = queue.lock().unwrap();
+                queue_lock.pop_front()
+            })
+        };
+        
+        if let Some(chunk) = chunk {
+            log_info!("Worker {}: Processing audio chunk {} with {} samples", 
+                     worker_id, chunk.chunk_id, chunk.samples.len());
+            
+            // Emit first processing event
+            static FIRST_PROCESSING_EMITTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !FIRST_PROCESSING_EMITTED.load(Ordering::SeqCst) {
+                FIRST_PROCESSING_EMITTED.store(true, Ordering::SeqCst);
+                if let Err(e) = app_handle.emit("transcription-started", serde_json::json!({
+                    "message": "Transcription started - processing your first audio chunk...",
+                    "worker_id": worker_id,
+                    "chunk_id": chunk.chunk_id
+                })) {
+                    log_error!("Failed to emit transcription-started event: {}", e);
+                }
+                log_info!("🎯 First transcription started by worker {}", worker_id);
+            }
+            
+            // Update last activity timestamp
+            LAST_TRANSCRIPTION_ACTIVITY.store(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_millis() as u64,
+                Ordering::SeqCst
+            );
+            
+            // Set chunk context in accumulator
+            accumulator.set_chunk_context(chunk.chunk_id, chunk.timestamp, chunk.recording_start_time);
+            
+            // Send chunk for transcription using whisper-rs
+            match transcribe_audio_chunk_whisper_rs(chunk.samples).await {
+                Ok(response) => {
+                    log_info!("Worker {}: Received {} transcript segments for chunk {}", 
+                             worker_id, response.segments.len(), chunk.chunk_id);
+                    
+                    for segment in response.segments {
+                        log_info!("Worker {}: Processing segment: {} ({} - {})", 
+                                 worker_id, segment.text.trim(), format_timestamp(segment.t0 as f64), format_timestamp(segment.t1 as f64));
+                        
+                        // Add segment to accumulator and check for complete sentence
+                        if let Some(update) = accumulator.add_segment(&segment) {
+                            log_info!("Worker {}: Emitting transcript-update event with sequence_id: {}", worker_id, update.sequence_id);
+                            
+                            // Emit the update
+                            if let Err(e) = app_handle.emit("transcript-update", &update) {
+                                log_error!("Worker {}: Failed to emit transcript update: {}", worker_id, e);
+                            } else {
+                                log_info!("Worker {}: Successfully emitted transcript-update event", worker_id);
+                            }
+                        }
+                    }
+                }
+                Err(e) => {
+                    log_error!("Worker {}: Whisper-rs transcription error for chunk {}: {}", 
+                              worker_id, chunk.chunk_id, e);
+                    
+                    // Handle error similar to original logic but for whisper-rs
+                    static mut ERROR_COUNT: u32 = 0;
+                    static mut LAST_ERROR_TIME: Option<std::time::Instant> = None;
+                    
+                    unsafe {
+                        let now = std::time::Instant::now();
+                        if let Some(last_time) = LAST_ERROR_TIME {
+                            if now.duration_since(last_time).as_secs() < 30 {
+                                ERROR_COUNT += 1;
+                            } else {
+                                ERROR_COUNT = 1;
+                            }
+                        } else {
+                            ERROR_COUNT = 1;
+                        }
+                        LAST_ERROR_TIME = Some(now);
+                        
+                        if ERROR_COUNT >= 5 && !ERROR_EVENT_EMITTED {
+                            log_error!("Worker {}: Too many whisper-rs transcription errors, stopping recording", worker_id);
+                            
+                            let error_msg = "Local whisper transcription failed multiple times. Please check the model.".to_string();
+                            
+                            if let Err(e) = app_handle.emit("recording-error", error_msg) {
+                                log_error!("Worker {}: Failed to emit recording error: {}", worker_id, e);
+                            }
+                            ERROR_EVENT_EMITTED = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        } else {
+            // No chunks available, wait briefly
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+    
+    // Also flush any partial sentence that might not have been emitted
+    if !accumulator.current_sentence.is_empty() {
+        let sequence_id = SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let update = TranscriptUpdate {
+            text: accumulator.current_sentence.trim().to_string(),
+            timestamp: format!("{}", format_timestamp(accumulator.current_chunk_start_time + (accumulator.sentence_start_time as f64 / 1000.0))),
+            source: "Mixed Audio".to_string(),
+            sequence_id,
+            chunk_start_time: accumulator.current_chunk_start_time,
+            is_partial: true,
+        };
+        log_info!("Worker {}: Flushing final partial sentence: {} with sequence_id: {}", worker_id, update.text, update.sequence_id);
+        
+        if let Err(e) = app_handle.emit("transcript-update", &update) {
+            log_error!("Worker {}: Failed to send final partial transcript: {}", worker_id, e);
+        } else {
+            log_info!("Worker {}: Successfully emitted final partial transcript-update event", worker_id);
+        }
+    }
+    
+    // Decrement active worker count
+    ACTIVE_WORKERS.fetch_sub(1, Ordering::SeqCst);
+    
+    // Check if this was the last active worker and emit completion event
+    if ACTIVE_WORKERS.load(Ordering::SeqCst) == 0 {
+        let should_emit = unsafe {
+            if let Some(queue) = &AUDIO_CHUNK_QUEUE {
+                if let Ok(queue_guard) = queue.lock() {
+                    queue_guard.is_empty()
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        };
+        
+        if should_emit {
+            log_info!("All whisper-rs workers finished and queue is empty, waiting for pending segments...");
+            
+            // Wait a bit to ensure all pending segments are emitted
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            
+            log_info!("Emitting transcription-complete event");
+            if let Err(e) = app_handle.emit("transcription-complete", ()) {
+                log_error!("Failed to emit transcription-complete event: {}", e);
+            }
+        }
+    }
+    
+    log_info!("Whisper-rs transcription worker {} ended", worker_id);
+}
+
 #[tauri::command]
 async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     log_info!("Attempting to start recording...");
     
+    // Emit initial progress
+    if let Err(e) = app.emit("recording-startup-progress", serde_json::json!({
+        "stage": "initializing",
+        "message": "Starting recording setup...",
+        "progress": 0
+    })) {
+        log_error!("Failed to emit progress event: {}", e);
+    }
+
     if is_recording() {
         log_error!("Recording already in progress");
         return Err("Recording already in progress".to_string());
@@ -735,17 +1346,72 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         AUDIO_CHUNK_QUEUE = Some(Arc::new(Mutex::new(VecDeque::new())));
         log_info!("Initialized audio buffers and chunk queue");
     }
+
+    // Progress update: detecting devices
+    if let Err(e) = app.emit("recording-startup-progress", serde_json::json!({
+        "stage": "detecting-devices",
+        "message": "Detecting audio devices...",
+        "progress": 20
+    })) {
+        log_error!("Failed to emit progress event: {}", e);
+    }
     
     // Get default devices
     let mic_device = Arc::new(default_input_device().map_err(|e| {
         log_error!("Failed to get default input device: {}", e);
+        // Emit error event
+        if let Err(emit_err) = app.emit("recording-error", serde_json::json!({
+            "error": "microphone-unavailable",
+            "message": format!("Failed to access microphone: {}", e),
+            "recoverable": false
+        })) {
+            log_error!("Failed to emit error event: {}", emit_err);
+        }
         e.to_string()
     })?);
     
-    let system_device = Arc::new(default_output_device().map_err(|e| {
-        log_error!("Failed to get default output device: {}", e);
-        e.to_string()
-    })?);
+    log_info!("Attempting to detect system audio device...");
+    let system_device = match default_output_device() {
+        Ok(device) => {
+            log_info!("✅ System audio device found: {} (type: {:?})", device.name, device.device_type);
+            Arc::new(device)
+        }
+        Err(e) => {
+            let err_str = e.to_string();
+            log_error!("❌ Failed to get system audio device: {}", err_str);
+            if err_str.contains("CoreAudioTapPermissionDenied") {
+                // Specific guidance for macOS Screen Recording permission
+                if let Err(emit_err) = app.emit("recording-error", serde_json::json!({
+                    "error": "system-audio-permission-denied",
+                    "message": "System audio capture requires Screen Recording permission. Go to System Settings → Privacy & Security → Screen Recording and enable for this app, then restart it.",
+                    "recoverable": true,
+                    "action": "open-system-preferences"
+                })) {
+                    log_error!("Failed to emit permission error event: {}", emit_err);
+                }
+            } else {
+                log_info!("Continuing without system audio - only microphone will be used");
+                // Emit warning about system audio
+                if let Err(emit_err) = app.emit("recording-warning", serde_json::json!({
+                    "warning": "system-audio-unavailable",
+                    "message": format!("System audio unavailable: {}. Recording with microphone only.", err_str),
+                    "recoverable": true
+                })) {
+                    log_error!("Failed to emit warning event: {}", emit_err);
+                }
+            }
+            Arc::new(AudioDevice::new("No System Audio".to_string(), DeviceType::Output))
+        }
+    };
+
+    // Progress update: creating streams
+    if let Err(e) = app.emit("recording-startup-progress", serde_json::json!({
+        "stage": "creating-streams",
+        "message": "Setting up audio streams...",
+        "progress": 40
+    })) {
+        log_error!("Failed to emit progress event: {}", e);
+    }
     
     // Create audio streams
     let is_running = Arc::new(AtomicBool::new(true));
@@ -755,31 +1421,105 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         .await
         .map_err(|e| {
             log_error!("Failed to create microphone stream: {}", e);
+            // Emit error event for mic stream failure
+            if let Err(emit_err) = app.emit("recording-error", serde_json::json!({
+                "error": "microphone-stream-failed",
+                "message": format!("Failed to initialize microphone: {}", e),
+                "recoverable": false
+            })) {
+                log_error!("Failed to emit error event: {}", emit_err);
+            }
             e.to_string()
         })?;
     let mic_stream = Arc::new(mic_stream);
     
-    // Create system audio stream
-    let system_stream = AudioStream::from_device(system_device.clone(), is_running.clone())
-        .await
-        .map_err(|e| {
-            log_error!("Failed to create system stream: {}", e);
-            e.to_string()
-        })?;
-    let system_stream = Arc::new(system_stream);
+    // Create system audio stream (optional - don't fail if it's not available)
+    let system_stream = if system_device.name == "No System Audio" {
+        log_info!("Skipping system audio stream creation - no system audio device available");
+        None
+    } else {
+        log_info!("Attempting to create system audio stream for: {}", system_device.name);
+        match AudioStream::from_device(system_device.clone(), is_running.clone()).await {
+        Ok(stream) => {
+            log_info!("✅ System audio stream created successfully for device: {}", system_device.name);
+            Some(Arc::new(stream))
+        },
+        Err(e) => {
+            if e.to_string().contains("TCCs") || e.to_string().contains("declined") {
+                log_error!("❌ System audio requires Screen Recording permission. Go to System Settings → Privacy & Security → Screen Recording and enable for this app.");
+                if let Err(emit_err) = app.emit("recording-error", serde_json::json!({
+                    "error": "system-audio-permission-denied",
+                    "message": "System audio capture requires Screen Recording permission. Go to System Settings → Privacy & Security → Screen Recording and enable for this app.",
+                    "recoverable": true,
+                    "action": "open-system-preferences"
+                })) {
+                    log_error!("Failed to emit permission error event: {}", emit_err);
+                }
+            } else {
+                log_error!("❌ Failed to create system stream (continuing without it): {}", e);
+                if let Err(emit_err) = app.emit("recording-warning", serde_json::json!({
+                    "warning": "system-audio-stream-failed",
+                    "message": format!("Failed to create system audio stream: {}. Recording with microphone only.", e),
+                    "recoverable": true
+                })) {
+                    log_error!("Failed to emit warning event: {}", emit_err);
+                }
+            }
+            None
+        }
+        }
+    };
 
     unsafe {
         MIC_STREAM = Some(mic_stream.clone());
-        SYSTEM_STREAM = Some(system_stream.clone());
+        SYSTEM_STREAM = system_stream.clone();
         IS_RUNNING = Some(is_running.clone());
     }
+
+    // Progress update: checking configuration
+    if let Err(e) = app.emit("recording-startup-progress", serde_json::json!({
+        "stage": "loading-config",
+        "message": "Loading transcription configuration...",
+        "progress": 60
+    })) {
+        log_error!("Failed to emit progress event: {}", e);
+    }
+
+    
+    // Check transcription provider to determine routing
+    log_info!("Getting transcript config to determine provider...");
+    let transcript_config_result = api::api_get_transcript_config(app.clone(), None).await;
+    log_info!("Transcript config call completed, processing result...");
+    let (use_local_whisper, whisper_model) = match transcript_config_result {
+        Ok(Some(config)) => {
+            log_info!("✅ Transcript config retrieved: provider = {}", config.provider);
+            let is_local = config.provider == "localWhisper";
+            let model = if config.model.is_empty() { "small".to_string() } else { config.model };
+            log_info!("Using local whisper: {}, model: {}", is_local, model);
+            (is_local, model)
+        },
+        Ok(None) => {
+            log_info!("⚠️  No transcript config found, defaulting to HTTP");
+            (false, "small".to_string())
+        },
+        Err(e) => {
+            log_info!("❌ Could not get transcript config, defaulting to localWhisper: {}", e);
+            (true, "small".to_string())
+        }
+    };
+    
+    log_info!("🔧 Final decision - use_local_whisper: {}", use_local_whisper);
     
     // Create HTTP client for transcription
     let client = reqwest::Client::new();
     
     // Use hardcoded transcript server URL
     let stream_url = format!("{}/stream", TRANSCRIPT_SERVER_URL);
-    log_info!("Using hardcoded stream URL: {}", stream_url);
+    if use_local_whisper {
+        log_info!("Using local whisper-rs for transcription");
+    } else {
+        log_info!("Using HTTP transcription server: {}", stream_url);
+    }
 
     let device_config = mic_stream.device_config.clone();
     let sample_rate = device_config.sample_rate().0;
@@ -791,6 +1531,117 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let recording_start_time = unsafe { 
         RECORDING_START_TIME.unwrap_or_else(|| std::time::Instant::now()) 
     };
+    
+    // Initialize transcription workers BEFORE starting audio collection to prevent race conditions
+    const NUM_WORKERS: usize = 3;
+    let mut worker_handles = Vec::new();
+
+    if use_local_whisper {
+        // Progress update: setting up transcription
+        if let Err(e) = app.emit("recording-startup-progress", serde_json::json!({
+            "stage": "loading-model",
+            "message": format!("Loading {} model...", whisper_model),
+            "progress": 80
+        })) {
+            log_error!("Failed to emit progress event: {}", e);
+        }
+        
+        // Use whisper-rs transcription workers
+        log_info!("Starting {} whisper-rs transcription workers", NUM_WORKERS);
+        
+        // Ensure whisper model is loaded
+        unsafe {
+            if let Some(engine) = &WHISPER_ENGINE {
+                if !engine.is_model_loaded().await {
+                    log_info!("Loading {} model for whisper-rs transcription...", whisper_model);
+                    
+                    // First discover available models to debug
+                    log_info!("Discovering available models...");
+                    match engine.discover_models().await {
+                        Ok(models) => {
+                            log_info!("Found {} models:", models.len());
+                            for model in &models {
+                                log_info!("  - {}: {:?} at {:?}", model.name, model.status, model.path);
+                            }
+                        },
+                        Err(e) => {
+                            log_error!("Failed to discover models: {}", e);
+                        }
+                    }
+                    
+                    // Now try to load the requested model with fallback
+                    let models = match engine.discover_models().await {
+                        Ok(models) => models,
+                        Err(e) => {
+                            log_error!("Failed to discover models: {}", e);
+                            return Err(format!("Failed to discover models: {}", e));
+                        }
+                    };
+                    
+                    // Try requested model first
+                    match engine.load_model(&whisper_model).await {
+                        Ok(_) => {
+                            log_info!("Successfully loaded {} model", whisper_model);
+                        },
+                        Err(e) => {
+                            log_error!("Failed to load whisper model {}: {}", &whisper_model, e);
+                            
+                            // Find first available model for fallback
+                            let available_model = models.iter()
+                                .find(|model| matches!(model.status, ModelStatus::Available))
+                                .map(|model| model.name.as_str());
+                            
+                            if let Some(fallback) = available_model {
+                                log_info!("Falling back to available model: {}", fallback);
+                                if let Err(e) = engine.load_model(fallback).await {
+                                    log_error!("Failed to load fallback model {}: {}", fallback, e);
+                                    return Err(format!("Failed to load any whisper model: {}", e));
+                                } else {
+                                    log_info!("Successfully loaded fallback model: {}", fallback);
+                                }
+                            } else {
+                                log_error!("No available models found for fallback");
+                                return Err("No whisper models available".to_string());
+                            }
+                        }
+                    }
+                }
+            } else {
+                log_error!("Whisper engine not initialized");
+                return Err("Whisper engine not initialized".to_string());
+            }
+        }
+        
+        for worker_id in 0..NUM_WORKERS {
+            let app_handle_clone = app.clone();
+            
+            let worker_handle = tokio::spawn(async move {
+                whisper_rs_transcription_worker(app_handle_clone, worker_id).await;
+            });
+            
+            worker_handles.push(worker_handle);
+        }
+    } else {
+        // Use HTTP-based transcription workers
+        log_info!("Starting {} HTTP transcription workers", NUM_WORKERS);
+        
+        for worker_id in 0..NUM_WORKERS {
+            let client_clone = client.clone();
+            let stream_url_clone = stream_url.clone();
+            let app_handle_clone = app.clone();
+            
+            let worker_handle = tokio::spawn(async move {
+                transcription_worker(
+                    client_clone,
+                    stream_url_clone,
+                    app_handle_clone,
+                    worker_id,
+                ).await;
+            });
+            
+            worker_handles.push(worker_handle);
+        }
+    }
     
     // Start audio collection task
     let audio_collection_handle = {
@@ -812,27 +1663,6 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         })
     };
     
-    // Start multiple transcription workers
-    const NUM_WORKERS: usize = 3;
-    let mut worker_handles = Vec::new();
-    
-    for worker_id in 0..NUM_WORKERS {
-        let client_clone = client.clone();
-        let stream_url_clone = stream_url.clone();
-        let app_handle_clone = app.clone();
-        
-        let worker_handle = tokio::spawn(async move {
-            transcription_worker(
-                client_clone,
-                stream_url_clone,
-                app_handle_clone,
-                worker_id,
-            ).await;
-        });
-        
-        worker_handles.push(worker_handle);
-    }
-    
     // Store task handles globally
     unsafe {
         AUDIO_COLLECTION_TASK = Some(audio_collection_handle);
@@ -842,6 +1672,33 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         }
     }
 
+    // Final progress update: recording ready
+    if let Err(e) = app.emit("recording-startup-progress", serde_json::json!({
+        "stage": "ready",
+        "message": "Recording started successfully!",
+        "progress": 100
+    })) {
+        log_error!("Failed to emit final progress event: {}", e);
+    }
+
+    // Emit recording started event with summary
+    let mut devices = vec![format!("🎤 {}", mic_device.name)];
+    if let Some(system_stream) = &system_stream {
+        devices.push(format!("🔊 System Audio"));
+    }
+    
+    if let Err(e) = app.emit("recording-started", serde_json::json!({
+        "devices": devices,
+        "provider": if use_local_whisper { "local" } else { "http" },
+        "model": whisper_model,
+        "sample_rate": sample_rate,
+        "message": "Recording is now active. Speak to start transcription."
+    })) {
+        log_error!("Failed to emit recording-started event: {}", e);
+    }
+    
+    log_info!("🎯 Recording started successfully with {} devices", devices.len());
+    
     let _ = app
     .notification()
     .builder()
@@ -1463,6 +2320,13 @@ pub fn run() {
             if let Err(e) = audio::core::trigger_audio_permission() {
                 log::error!("Failed to trigger audio permission: {}", e);
             }
+            
+            // Initialize Whisper engine on startup
+            tauri::async_runtime::spawn(async {
+                if let Err(e) = whisper_init().await {
+                    log::error!("Failed to initialize Whisper engine on startup: {}", e);
+                }
+            });
 
             Ok(())
         })
@@ -1545,4 +2409,246 @@ fn resample_audio(samples: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
     }
     
     resampled
+}
+
+
+
+// Whisper model management commands
+#[tauri::command]
+async fn whisper_init() -> Result<(), String> {
+    unsafe {
+        if WHISPER_ENGINE.is_some() {
+            return Ok(());
+        }
+        
+        let engine = WhisperEngine::new()
+            .map_err(|e| format!("Failed to initialize whisper engine: {}", e))?;
+        WHISPER_ENGINE = Some(Arc::new(engine));
+        log_info!("Whisper engine initialized successfully");
+        Ok(())
+    }
+}
+
+#[tauri::command]
+async fn whisper_get_available_models() -> Result<Vec<ModelInfo>, String> {
+    unsafe {
+        if let Some(engine) = &WHISPER_ENGINE {
+            engine.discover_models().await
+                .map_err(|e| format!("Failed to discover models: {}", e))
+        } else {
+            Err("Whisper engine not initialized".to_string())
+        }
+    }
+}
+
+#[tauri::command]
+async fn whisper_load_model(model_name: String) -> Result<(), String> {
+    unsafe {
+        if let Some(engine) = &WHISPER_ENGINE {
+            engine.load_model(&model_name).await
+                .map_err(|e| format!("Failed to load model: {}", e))
+        } else {
+            Err("Whisper engine not initialized".to_string())
+        }
+    }
+}
+
+#[tauri::command]
+async fn whisper_get_current_model() -> Result<Option<String>, String> {
+    unsafe {
+        if let Some(engine) = &WHISPER_ENGINE {
+            Ok(engine.get_current_model().await)
+        } else {
+            Err("Whisper engine not initialized".to_string())
+        }
+    }
+}
+
+#[tauri::command]
+async fn whisper_is_model_loaded() -> Result<bool, String> {
+    unsafe {
+        if let Some(engine) = &WHISPER_ENGINE {
+            Ok(engine.is_model_loaded().await)
+        } else {
+            Err("Whisper engine not initialized".to_string())
+        }
+    }
+}
+
+#[tauri::command]
+async fn whisper_transcribe_audio(audio_data: Vec<f32>) -> Result<String, String> {
+    unsafe {
+        if let Some(engine) = &WHISPER_ENGINE {
+            engine.transcribe_audio(audio_data).await
+                .map_err(|e| format!("Transcription failed: {}", e))
+        } else {
+            Err("Whisper engine not initialized".to_string())
+        }
+    }
+}
+
+#[tauri::command] 
+async fn whisper_get_models_directory() -> Result<String, String> {
+    unsafe {
+        if let Some(engine) = &WHISPER_ENGINE {
+            let path = engine.get_models_directory().await;
+            Ok(path.to_string_lossy().to_string())
+        } else {
+            Err("Whisper engine not initialized".to_string())
+        }
+    }
+}
+
+#[tauri::command]
+async fn whisper_download_model(app_handle: tauri::AppHandle, model_name: String) -> Result<(), String> {
+    use tauri::Manager;
+    
+    unsafe {
+        if let Some(engine) = &WHISPER_ENGINE {
+            // Create progress callback that emits events
+            let app_handle_clone = app_handle.clone();
+            let model_name_clone = model_name.clone();
+            
+            let progress_callback = Box::new(move |progress: u8| {
+                log_info!("Download progress for {}: {}%", model_name_clone, progress);
+                
+                // Emit download progress event
+                if let Err(e) = app_handle_clone.emit("model-download-progress", serde_json::json!({
+                    "modelName": model_name_clone,
+                    "progress": progress
+                })) {
+                    log_error!("Failed to emit download progress event: {}", e);
+                }
+            });
+            
+            let result = engine.download_model(&model_name, Some(progress_callback)).await;
+            
+            match result {
+                Ok(()) => {
+                    // Emit completion event
+                    if let Err(e) = app_handle.emit("model-download-complete", serde_json::json!({
+                        "modelName": model_name
+                    })) {
+                        log_error!("Failed to emit download complete event: {}", e);
+                    }
+                    Ok(())
+                },
+                Err(e) => {
+                    // Emit error event
+                    if let Err(emit_e) = app_handle.emit("model-download-error", serde_json::json!({
+                        "modelName": model_name,
+                        "error": e.to_string()
+                    })) {
+                        log_error!("Failed to emit download error event: {}", emit_e);
+                    }
+                    Err(format!("Failed to download model: {}", e))
+                }
+            }
+        } else {
+            Err("Whisper engine not initialized".to_string())
+        }
+    }
+}
+
+#[tauri::command]
+async fn whisper_cancel_download(model_name: String) -> Result<(), String> {
+    unsafe {
+        if let Some(engine) = &WHISPER_ENGINE {
+            engine.cancel_download(&model_name).await
+                .map_err(|e| format!("Failed to cancel download: {}", e))
+        } else {
+            Err("Whisper engine not initialized".to_string())
+        }
+    }
+}
+
+#[tauri::command]
+async fn get_audio_devices() -> Result<Vec<AudioDevice>, String> {
+    list_audio_devices().await.map_err(|e| format!("Failed to list audio devices: {}", e))
+}
+
+#[tauri::command]
+async fn start_recording_with_devices(
+    mic_device_name: Option<String>, 
+    system_audio_enabled: bool,
+    save_path: String
+) -> Result<String, String> {
+    log_info!("Starting recording with custom devices - Mic: {:?}, System: {}", mic_device_name, system_audio_enabled);
+    
+    // Get devices based on user selection
+    let mic_device = if let Some(name) = mic_device_name {
+        log_info!("Using selected mic device: {}", name);
+        parse_audio_device(&name)
+            .map_err(|e| format!("Failed to get selected mic device '{}': {}", name, e))?
+    } else {
+        log_info!("Using default mic device");
+        default_input_device()
+            .map_err(|e| format!("Failed to get default mic device: {}", e))?
+    };
+    
+    let system_device = if system_audio_enabled {
+        match default_output_device() {
+            Ok(device) => {
+                log_info!("✅ System audio enabled: {} (type: {:?})", device.name, device.device_type);
+                Some(device)
+            }
+            Err(e) => {
+                log_error!("⚠️ System audio requested but failed to get device: {}", e);
+                None
+            }
+        }
+    } else {
+        log_info!("❌ System audio disabled by user");
+        None
+    };
+    
+    start_recording_with_custom_devices(mic_device, system_device, save_path).await
+}
+
+async fn start_recording_with_custom_devices(
+    mic_device: AudioDevice,
+    system_device: Option<AudioDevice>,
+    save_path: String
+) -> Result<String, String> {
+    use std::sync::atomic::Ordering;
+    use std::collections::VecDeque;
+    use std::sync::{Arc, Mutex, atomic::AtomicBool};
+    use std::time::Duration;
+    
+    // For now, set up recording with the selected devices
+    // This mirrors the logic from the main recording function but with custom devices
+    
+    let mic_device_arc = Arc::new(mic_device);
+    let system_device_arc = system_device.map(Arc::new);
+    
+    log_info!("🎙️ Starting custom recording with mic: {} | system: {:?}", 
+              mic_device_arc.name, 
+              system_device_arc.as_ref().map(|d| d.name.as_str()));
+              
+    // Set up the recording session similar to existing implementation
+    unsafe {
+        if RECORDING_FLAG.load(Ordering::SeqCst) {
+            return Err("Recording already in progress".to_string());
+        }
+        
+        RECORDING_FLAG.store(true, Ordering::SeqCst);
+        SEQUENCE_COUNTER.store(0, Ordering::SeqCst);
+        CHUNK_ID_COUNTER.store(0, Ordering::SeqCst);
+        RECORDING_START_TIME = Some(std::time::Instant::now());
+        
+        // Initialize buffers
+        MIC_BUFFER = Some(Arc::new(Mutex::new(Vec::new())));
+        SYSTEM_BUFFER = Some(Arc::new(Mutex::new(Vec::new())));
+        AUDIO_CHUNK_QUEUE = Some(Arc::new(Mutex::new(VecDeque::new())));
+        
+        // Create placeholder recording session
+        let session_id = format!("custom_{}", uuid::Uuid::new_v4());
+        
+        log_info!("✅ Custom recording session started: {}", session_id);
+        log_info!("📍 Mic: {} | System Audio: {}", 
+                 mic_device_arc.name,
+                 system_device_arc.as_ref().map(|d| d.name.as_str()).unwrap_or("Disabled"));
+                 
+        Ok(session_id)
+    }
 }

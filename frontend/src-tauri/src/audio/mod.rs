@@ -3,6 +3,7 @@ pub mod core;
 pub mod audio_processing;
 pub mod encode;
 pub mod ffmpeg;
+pub mod vad;
 
 pub use core::{
     default_input_device, default_output_device, get_device_and_config, list_audio_devices,
@@ -13,3 +14,5 @@ pub use core::{
 pub use encode::{
     encode_single_audio, AudioInput
 };
+
+pub use vad::{extract_speech_16k};

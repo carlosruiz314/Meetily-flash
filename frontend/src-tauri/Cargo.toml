@@ -48,6 +48,12 @@ which = "6.0.1"
 # Bytes
 bytemuck = "1.16.1"
 
+
+# Whisper-rs for speech recognition 
+whisper-rs = { git = "https://github.com/tazz4843/whisper-rs", rev = "e3d67d5", features = ["raw-api", "tracing_backend"] }
+futures-util = "0.3"
+silero_rs = { git = "https://github.com/emotechlab/silero-rs", rev = "26a6460", package = "silero" }
+
 # Async
 tokio = { version = "1.32.0", features = ["full", "tracing"] }
 
