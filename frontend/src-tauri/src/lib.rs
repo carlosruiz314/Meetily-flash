@@ -58,7 +58,7 @@ const WHISPER_CHANNELS: u16 = 1; // Mono for Whisper API
 const SENTENCE_TIMEOUT_MS: u64 = 1000; // Emit incomplete sentence after 1 second of silence
 const MIN_CHUNK_DURATION_MS: u32 = 2000; // Minimum duration before sending chunk
 const MIN_RECORDING_DURATION_MS: u64 = 2000; // 2 seconds minimum
-const MAX_AUDIO_QUEUE_SIZE: usize = 10; // Maximum number of chunks in queue
+const MAX_AUDIO_QUEUE_SIZE: usize = 50; // Maximum number of chunks in queue
 
 
 // VAD and silence detection thresholds - BALANCED for better speech preservation
@@ -702,6 +702,7 @@ async fn audio_collection_task<R: Runtime>(
         
         // Small sleep to prevent busy waiting
         tokio::time::sleep(Duration::from_millis(10)).await;
+
     }
     
     log_info!("Audio collection task ended");
@@ -2359,6 +2360,17 @@ pub fn run() {
             track_summary_regenerated,
             track_model_changed,
             track_custom_prompt_used,
+            
+            whisper_init,
+            whisper_get_available_models,
+            whisper_load_model,
+            whisper_get_current_model,
+            whisper_is_model_loaded,
+            whisper_transcribe_audio,
+            whisper_get_models_directory,
+            whisper_download_model,
+            whisper_cancel_download,
+            
             ollama::get_ollama_models,
             api::api_get_meetings,
             api::api_search_transcripts,

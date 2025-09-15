@@ -1,6 +1,6 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { ModelConfig, ModelSettingsModal } from "./ModelSettingsModal"
-import { TranscriptModelProps } from "./TranscriptSettings"
+import { TranscriptModelProps, TranscriptSettings } from "./TranscriptSettings"
 import { About } from "./About";
 
 interface SettingTabsProps {
@@ -19,7 +19,10 @@ export function SettingTabs({
     setModelConfig, 
     onSave, 
     setSaveSuccess,
-    defaultTab = "modelSettings"
+    defaultTab = "modelSettings",
+    transcriptModelConfig,
+    setTranscriptModelConfig,
+    onSaveTranscript,
 }: SettingTabsProps) {
 
     const handleTabChange = () => {
@@ -30,7 +33,7 @@ export function SettingTabs({
         <Tabs defaultValue={defaultTab} className="w-full" onValueChange={handleTabChange}>
   <TabsList>
     <TabsTrigger value="modelSettings">Model Settings</TabsTrigger>
-    {/* <TabsTrigger value="transcriptSettings">Transcript Settings</TabsTrigger> */}
+    <TabsTrigger value="transcriptSettings">Transcript Settings</TabsTrigger>
     <TabsTrigger value="about">About</TabsTrigger>
   </TabsList>
   <TabsContent value="modelSettings">
@@ -41,14 +44,13 @@ setModelConfig={setModelConfig}
 onSave={onSave}
 />
   </TabsContent>
-  {/* <TabsContent value="transcriptSettings">
+<TabsContent value="transcriptSettings">
     <TranscriptSettings
     transcriptModelConfig={transcriptModelConfig}
     setTranscriptModelConfig={setTranscriptModelConfig}
     onSave={onSaveTranscript}
   />
-  </TabsContent> */}
-  
+  </TabsContent>  
   <TabsContent value="about">
     <About />
   </TabsContent>
