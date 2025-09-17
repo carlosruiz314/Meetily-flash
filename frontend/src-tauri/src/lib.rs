@@ -566,6 +566,8 @@ async fn transcription_worker<R: Runtime>(
                             
                             ERROR_EVENT_EMITTED = true;
                             RECORDING_FLAG.store(false, Ordering::SeqCst);
+
+                            tray::update_tray_menu(&app_handle);
                             if let Some(is_running) = &IS_RUNNING {
                                 is_running.store(false, Ordering::SeqCst);
                             }
@@ -847,7 +849,6 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     .builder()
     .title("Meetily")
     .body("Recording has started. Please inform others in the meeting.")
-    .icon("icon.png")
     .show();
     
     Ok(())
