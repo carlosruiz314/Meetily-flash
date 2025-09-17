@@ -14,6 +14,19 @@ rust-version = "1.77"
 name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+
+# Hardware acceleration features for whisper-rs
+[features]
+default = []  # Disable hardware acceleration temporarily to fix build issues
+# Hardware acceleration - enable based on target platform
+coreml = ["whisper-rs/coreml"]  # Apple CoreML (macOS/iOS)
+metal = ["whisper-rs/metal"]    # Apple Metal GPU (macOS)
+cuda = ["whisper-rs/cuda"]      # NVIDIA CUDA
+vulkan = ["whisper-rs/vulkan"]  # Cross-platform Vulkan
+openblas = ["whisper-rs/openblas"] # Optimized BLAS
+hipblas = ["whisper-rs/hipblas"]   # AMD ROCm HIP
+openmp = ["whisper-rs/openmp"]     # OpenMP parallel processing
+
 [build-dependencies]
 tauri-build = { version = "2.3.0", features = [] }
 reqwest = { version = "0.11", features = ["blocking", "multipart", "json"] }

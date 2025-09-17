@@ -1550,68 +1550,59 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         // Use whisper-rs transcription workers
         log_info!("Starting {} whisper-rs transcription workers", NUM_WORKERS);
         
-        // Ensure whisper model is loaded
+        // Ensure Whisper model is loaded
         unsafe {
-            if let Some(engine) = &WHISPER_ENGINE {
-                if !engine.is_model_loaded().await {
-                    log_info!("Loading {} model for whisper-rs transcription...", whisper_model);
-                    
-                    // First discover available models to debug
-                    log_info!("Discovering available models...");
-                    match engine.discover_models().await {
-                        Ok(models) => {
-                            log_info!("Found {} models:", models.len());
-                            for model in &models {
-                                log_info!("  - {}: {:?} at {:?}", model.name, model.status, model.path);
-                            }
-                        },
-                        Err(e) => {
-                            log_error!("Failed to discover models: {}", e);
-                        }
-                    }
-                    
-                    // Now try to load the requested model with fallback
-                    let models = match engine.discover_models().await {
-                        Ok(models) => models,
-                        Err(e) => {
-                            log_error!("Failed to discover models: {}", e);
-                            return Err(format!("Failed to discover models: {}", e));
-                        }
-                    };
-                    
-                    // Try requested model first
-                    match engine.load_model(&whisper_model).await {
-                        Ok(_) => {
-                            log_info!("Successfully loaded {} model", whisper_model);
-                        },
-                        Err(e) => {
-                            log_error!("Failed to load whisper model {}: {}", &whisper_model, e);
-                            
-                            // Find first available model for fallback
-                            let available_model = models.iter()
-                                .find(|model| matches!(model.status, ModelStatus::Available))
-                                .map(|model| model.name.as_str());
-                            
-                            if let Some(fallback) = available_model {
-                                log_info!("Falling back to available model: {}", fallback);
-                                if let Err(e) = engine.load_model(fallback).await {
-                                    log_error!("Failed to load fallback model {}: {}", fallback, e);
-                                    return Err(format!("Failed to load any whisper model: {}", e));
-                                } else {
-                                    log_info!("Successfully loaded fallback model: {}", fallback);
-                                }
-                            } else {
-                                log_error!("No available models found for fallback");
-                                return Err("No whisper models available".to_string());
-                            }
-                        }
-                    }
-                }
-            } else {
+            let Some(engine) = &WHISPER_ENGINE else {
                 log_error!("Whisper engine not initialized");
                 return Err("Whisper engine not initialized".to_string());
+            };
+
+            if engine.is_model_loaded().await {
+                return Ok(());
             }
-        }
+            log_info!("Loading {} model for whisper-rs transcription...", whisper_model);
+
+            // Discover available models (once)
+            let models = match engine.discover_models().await {
+                Ok(models) => {
+                    log_info!("Discovered {} models:", models.len());
+                    for m in &models {
+                        log_info!("  - {}: {:?} at {:?}", m.name, m.status, m.path);
+                    }
+                    models
+                }
+                Err(e) => {
+                    log_error!("Failed to discover models: {}", e);
+                    return Err(format!("Failed to discover models: {}", e));
+                }
+            };
+
+            // Try to load requested model
+            match engine.load_model(&whisper_model).await {
+                Ok(_) => {
+                    log_info!("Successfully loaded {}", whisper_model);
+                }
+                Err(e) => {
+                    log_error!("Failed to load {}: {}", whisper_model, e);
+
+                    // Fallback to first available model
+                    if let Some(fallback) = models.iter()
+                        .find(|m| matches!(m.status, ModelStatus::Available))
+                        .map(|m| m.name.as_str())
+                    {
+                        log_info!("Falling back to model: {}", fallback);
+                        engine.load_model(fallback).await.map_err(|e| {
+                            log_error!("Failed to load fallback {}: {}", fallback, e);
+                            format!("Failed to load any whisper model: {}", e)
+                        })?;
+                        log_info!("Successfully loaded fallback model: {}", fallback);
+                    } else {
+                        log_error!("No available models found for fallback");
+                        return Err("No whisper models available".to_string());
+                    }
+                }
+            }
+        }    
         
         for worker_id in 0..NUM_WORKERS {
             let app_handle_clone = app.clone();

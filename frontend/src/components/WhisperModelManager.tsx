@@ -356,12 +356,6 @@ export function ModelManager({ selectedModel, onModelSelect, className = '' }: M
                 <ModelDownloadProgress
                   status={model.status}
                   modelName={model.name}
-                  onCancel={()  => {
-                    // TODO: Implement cancel functionality
-                    console.log('Cancel download:', model.name);
-                    WhisperAPI.cancelDownload(model.name)
-                    loadAvailableModels();
-                  }}
                 />
               )}
             </div>

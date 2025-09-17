@@ -25,15 +25,6 @@ export function ModelDownloadProgress({ status, modelName, onCancel }: ModelDown
             {isCompleted ? 'Finalizing...' : `Downloading ${modelName}`}
           </span>
         </div>
-        {onCancel && !isCompleted && (
-          <Button
-            onClick={onCancel}
-            className="text-blue-600 hover:text-blue-800 text-sm"
-            title="Cancel download"
-          >
-            ✕
-          </Button>
-        )}
       </div>
       
       <div className="relative">
