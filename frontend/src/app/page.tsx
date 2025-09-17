@@ -17,6 +17,7 @@ import { useRouter } from 'next/navigation';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import Analytics from '@/lib/analytics';
+import { ComplianceNotification } from '@/components/ComplianceNotification';
 
 
 
@@ -68,6 +69,8 @@ export default function Home() {
   const [chunkDropMessage, setChunkDropMessage] = useState('');
   const [isSavingTranscript, setIsSavingTranscript] = useState(false);
   const [isRecordingDisabled, setIsRecordingDisabled] = useState(false);
+  const [showComplianceNotification, setShowComplianceNotification] = useState(false);
+  const recordingControlsRef = useRef<HTMLDivElement>(null);
 
   const { setCurrentMeeting, setMeetings, meetings, isMeetingActive, setIsMeetingActive, setIsRecording: setSidebarIsRecording , serverAddress} = useSidebar();
   const handleNavigation = useNavigation('', ''); // Initialize with empty values
@@ -469,6 +472,7 @@ export default function Home() {
       setIsRecordingState(true); // This will also update the sidebar via the useEffect
       setTranscripts([]); // Clear previous transcripts when starting new recording
       setIsMeetingActive(true);
+      setShowComplianceNotification(true); // Show compliance notification
       Analytics.trackButtonClick('start_recording', 'home_page');
     } catch (error) {
       console.error('Failed to start recording:', error);
@@ -1287,7 +1291,7 @@ export default function Home() {
           )} */}
 
           {/* Recording controls */}
-          <div className="absolute bottom-16 left-1/2 transform -translate-x-1/2 z-10">
+          <div ref={recordingControlsRef} className="absolute bottom-16 left-1/2 transform -translate-x-1/2 z-10">
             <div className="bg-white rounded-full shadow-lg flex items-center">
               <RecordingControls
                 isRecording={isRecording}
@@ -1500,6 +1504,17 @@ export default function Home() {
           )} */}
         </div>
       </div>
+
+      {/* Compliance Notification */}
+      <ComplianceNotification
+        isOpen={showComplianceNotification}
+        onClose={() => setShowComplianceNotification(false)}
+        onAcknowledge={() => {
+          console.log('User acknowledged compliance notification');
+          Analytics.trackButtonClick('compliance_acknowledged', 'home_page');
+        }}
+        recordingButtonRef={recordingControlsRef}
+      />
     </div>
   );
 }

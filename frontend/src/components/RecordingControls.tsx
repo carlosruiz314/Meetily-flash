@@ -8,6 +8,7 @@ import { ProcessRequest, SummaryResponse } from '@/types/summary';
 import { listen } from '@tauri-apps/api/event';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import Analytics from '@/lib/analytics';
+import { ComplianceNotification } from './ComplianceNotification';
 
 interface RecordingControlsProps {
   isRecording: boolean;
@@ -38,6 +39,8 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   const [isStopping, setIsStopping] = useState(false);
   const MIN_RECORDING_DURATION = 2000; // 2 seconds minimum recording time
   const [transcriptionErrors, setTranscriptionErrors] = useState(0);
+  const [showComplianceNotification, setShowComplianceNotification] = useState(false);
+  const recordingButtonRef = useRef<HTMLButtonElement>(null);
 
 
   const currentTime = 0;
@@ -75,6 +78,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
       await invoke('start_recording');
       console.log('Recording started successfully');
       setIsProcessing(false);
+      setShowComplianceNotification(true); // Show compliance notification
       onRecordingStart();
     } catch (error) {
       console.error('Failed to start recording:', error);
@@ -239,6 +243,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             ) : (
               <>
                 <button
+                  ref={recordingButtonRef}
                   onClick={() => {
                     if (isRecording) {
                       Analytics.trackButtonClick('stop_recording', 'recording_controls');
@@ -289,6 +294,17 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           Recording saved to: {recordingPath}
         </div>
       )} */}
+
+      {/* Compliance Notification */}
+      <ComplianceNotification
+        isOpen={showComplianceNotification}
+        onClose={() => setShowComplianceNotification(false)}
+        onAcknowledge={() => {
+          console.log('User acknowledged compliance notification from RecordingControls');
+          Analytics.trackButtonClick('compliance_acknowledged', 'recording_controls');
+        }}
+        recordingButtonRef={recordingButtonRef}
+      />
     </div>
   );
 };
