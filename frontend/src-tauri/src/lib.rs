@@ -276,9 +276,6 @@ async fn audio_collection_task<R: Runtime>(
 ) -> Result<(), String> {
     log_info!("Audio collection task started");
     
-    // let mut mic_receiver = mic_stream.subscribe().await
-    //     .map_err(|e| format!("Failed to subscribe to mic stream: {}", e))?;
-    // log_info!("🎤 Microphone receiver created successfully");
     let mut mic_receiver = mic_stream.subscribe().await;   
     let mut system_receiver = match &system_stream {
         Some(stream) => Some(stream.subscribe().await),
@@ -1286,418 +1283,151 @@ async fn whisper_rs_transcription_worker<R: Runtime>(
 #[tauri::command]
 async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     log_info!("Attempting to start recording...");
-    
-    // Emit initial progress
-    if let Err(e) = app.emit("recording-startup-progress", serde_json::json!({
-        "stage": "initializing",
-        "message": "Starting recording setup...",
-        "progress": 0
-    })) {
+
+    if let Err(e) = app.emit("recording-startup-progress", serde_json::json!({ "stage": "initializing", "message": "Starting...", "progress": 0 })) {
         log_error!("Failed to emit progress event: {}", e);
     }
 
     if is_recording() {
-        log_error!("Recording already in progress");
         return Err("Recording already in progress".to_string());
     }
 
-    // Reset dropped chunk counter for new recording session
+    // INITIALIZE STATE AND BUFFERS (NON-BLOCKING)
     DROPPED_CHUNK_COUNTER.store(0, Ordering::SeqCst);
-    log_info!("Reset dropped chunk counter for new recording session");
-
-    // Stop any existing tasks first
-    unsafe {
-        if let Some(task) = AUDIO_COLLECTION_TASK.take() {
-            log_info!("Stopping existing audio collection task...");
-            task.abort();
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        if let Some(task) = TRANSCRIPTION_TASK.take() {
-            log_info!("Stopping existing transcription task...");
-            task.abort();
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-    }
-
-    // Initialize recording flag and buffers
     RECORDING_FLAG.store(true, Ordering::SeqCst);
-    log_info!("Recording flag set to true");
-    
-    // Reset error event flag and activity tracking for new recording session
     unsafe {
         ERROR_EVENT_EMITTED = false;
-    }
-    
-    // Reset transcription activity tracking
-    LAST_TRANSCRIPTION_ACTIVITY.store(0, Ordering::SeqCst);
-    ACTIVE_WORKERS.store(0, Ordering::SeqCst);
-
-
-    // Store recording start time
-    unsafe {
         RECORDING_START_TIME = Some(std::time::Instant::now());
-    }
-
-    tray::update_tray_menu(&app);
-    
-    // Initialize audio buffers and queue
-    unsafe {
         MIC_BUFFER = Some(Arc::new(Mutex::new(Vec::new())));
         SYSTEM_BUFFER = Some(Arc::new(Mutex::new(Vec::new())));
         AUDIO_CHUNK_QUEUE = Some(Arc::new(Mutex::new(VecDeque::new())));
-        log_info!("Initialized audio buffers and chunk queue");
     }
+    LAST_TRANSCRIPTION_ACTIVITY.store(0, Ordering::SeqCst);
+    ACTIVE_WORKERS.store(0, Ordering::SeqCst);
+    tray::update_tray_menu(&app);
+    log_info!("Initialized recording state and buffers.");
 
-    // Progress update: detecting devices
-    if let Err(e) = app.emit("recording-startup-progress", serde_json::json!({
-        "stage": "detecting-devices",
-        "message": "Detecting audio devices...",
-        "progress": 20
-    })) {
-        log_error!("Failed to emit progress event: {}", e);
-    }
+    // LOAD CONFIGURATION AND MODELS
+    app.emit("recording-startup-progress", serde_json::json!({ "stage": "loading-config", "message": "Loading configuration...", "progress": 20 })).ok();
     
-    // Get default devices
-    let mic_device = Arc::new(default_input_device().map_err(|e| {
-        log_error!("Failed to get default input device: {}", e);
-        // Emit error event
-        if let Err(emit_err) = app.emit("recording-error", serde_json::json!({
-            "error": "microphone-unavailable",
-            "message": format!("Failed to access microphone: {}", e),
-            "recoverable": false
-        })) {
-            log_error!("Failed to emit error event: {}", emit_err);
-        }
-        e.to_string()
-    })?);
-    
-    log_info!("Attempting to detect system audio device...");
-    let system_device = match default_output_device() {
-        Ok(device) => {
-            log_info!("✅ System audio device found: {} (type: {:?})", device.name, device.device_type);
-            Arc::new(device)
-        }
-        Err(e) => {
-            let err_str = e.to_string();
-            log_error!("❌ Failed to get system audio device: {}", err_str);
-            if err_str.contains("CoreAudioTapPermissionDenied") {
-                // Specific guidance for macOS Screen Recording permission
-                if let Err(emit_err) = app.emit("recording-error", serde_json::json!({
-                    "error": "system-audio-permission-denied",
-                    "message": "System audio capture requires Screen Recording permission. Go to System Settings → Privacy & Security → Screen Recording and enable for this app, then restart it.",
-                    "recoverable": true,
-                    "action": "open-system-preferences"
-                })) {
-                    log_error!("Failed to emit permission error event: {}", emit_err);
-                }
-            } else {
-                log_info!("Continuing without system audio - only microphone will be used");
-                // Emit warning about system audio
-                if let Err(emit_err) = app.emit("recording-warning", serde_json::json!({
-                    "warning": "system-audio-unavailable",
-                    "message": format!("System audio unavailable: {}. Recording with microphone only.", err_str),
-                    "recoverable": true
-                })) {
-                    log_error!("Failed to emit warning event: {}", emit_err);
-                }
-            }
-            Arc::new(AudioDevice::new("No System Audio".to_string(), DeviceType::Output))
-        }
-    };
-
-    // Progress update: creating streams
-    if let Err(e) = app.emit("recording-startup-progress", serde_json::json!({
-        "stage": "creating-streams",
-        "message": "Setting up audio streams...",
-        "progress": 40
-    })) {
-        log_error!("Failed to emit progress event: {}", e);
-    }
-    
-    // Create audio streams
-    let is_running = Arc::new(AtomicBool::new(true));
-    
-    // Create microphone stream
-    let mic_stream = AudioStream::from_device(mic_device.clone(), is_running.clone())
-        .await
-        .map_err(|e| {
-            log_error!("Failed to create microphone stream: {}", e);
-            // Emit error event for mic stream failure
-            if let Err(emit_err) = app.emit("recording-error", serde_json::json!({
-                "error": "microphone-stream-failed",
-                "message": format!("Failed to initialize microphone: {}", e),
-                "recoverable": false
-            })) {
-                log_error!("Failed to emit error event: {}", emit_err);
-            }
-            e.to_string()
-        })?;
-    let mic_stream = Arc::new(mic_stream);
-    
-    // Create system audio stream (optional - don't fail if it's not available)
-    let system_stream = if system_device.name == "No System Audio" {
-        log_info!("Skipping system audio stream creation - no system audio device available");
-        None
-    } else {
-        log_info!("Attempting to create system audio stream for: {}", system_device.name);
-        match AudioStream::from_device(system_device.clone(), is_running.clone()).await {
-        Ok(stream) => {
-            log_info!("✅ System audio stream created successfully for device: {}", system_device.name);
-            Some(Arc::new(stream))
-        },
-        Err(e) => {
-            if e.to_string().contains("TCCs") || e.to_string().contains("declined") {
-                log_error!("❌ System audio requires Screen Recording permission. Go to System Settings → Privacy & Security → Screen Recording and enable for this app.");
-                if let Err(emit_err) = app.emit("recording-error", serde_json::json!({
-                    "error": "system-audio-permission-denied",
-                    "message": "System audio capture requires Screen Recording permission. Go to System Settings → Privacy & Security → Screen Recording and enable for this app.",
-                    "recoverable": true,
-                    "action": "open-system-preferences"
-                })) {
-                    log_error!("Failed to emit permission error event: {}", emit_err);
-                }
-            } else {
-                log_error!("❌ Failed to create system stream (continuing without it): {}", e);
-                if let Err(emit_err) = app.emit("recording-warning", serde_json::json!({
-                    "warning": "system-audio-stream-failed",
-                    "message": format!("Failed to create system audio stream: {}. Recording with microphone only.", e),
-                    "recoverable": true
-                })) {
-                    log_error!("Failed to emit warning event: {}", emit_err);
-                }
-            }
-            None
-        }
-        }
-    };
-
-    unsafe {
-        MIC_STREAM = Some(mic_stream.clone());
-        SYSTEM_STREAM = system_stream.clone();
-        IS_RUNNING = Some(is_running.clone());
-    }
-
-    // Progress update: checking configuration
-    if let Err(e) = app.emit("recording-startup-progress", serde_json::json!({
-        "stage": "loading-config",
-        "message": "Loading transcription configuration...",
-        "progress": 60
-    })) {
-        log_error!("Failed to emit progress event: {}", e);
-    }
-
-    
-    // Check transcription provider to determine routing
-    log_info!("Getting transcript config to determine provider...");
     let transcript_config_result = api::api_get_transcript_config(app.clone(), None).await;
-    log_info!("Transcript config call completed, processing result...");
     let (use_local_whisper, whisper_model) = match transcript_config_result {
         Ok(Some(config)) => {
-            log_info!("✅ Transcript config retrieved: provider = {}", config.provider);
             let is_local = config.provider == "localWhisper";
             let model = if config.model.is_empty() { "small".to_string() } else { config.model };
-            log_info!("Using local whisper: {}, model: {}", is_local, model);
             (is_local, model)
         },
-        Ok(None) => {
-            log_info!("⚠️  No transcript config found, defaulting to HTTP");
-            (false, "small".to_string())
-        },
-        Err(e) => {
-            log_info!("❌ Could not get transcript config, defaulting to localWhisper: {}", e);
+        _ => {
+            log_info!("Could not get transcript config, defaulting to localWhisper");
             (true, "small".to_string())
         }
     };
-    
-    log_info!("🔧 Final decision - use_local_whisper: {}", use_local_whisper);
-    
-    // Create HTTP client for transcription
-    let client = reqwest::Client::new();
-    
-    // Use hardcoded transcript server URL
-    let stream_url = format!("{}/stream", TRANSCRIPT_SERVER_URL);
-    if use_local_whisper {
-        log_info!("Using local whisper-rs for transcription");
-    } else {
-        log_info!("Using HTTP transcription server: {}", stream_url);
-    }
-
-    let device_config = mic_stream.device_config.clone();
-    let sample_rate = device_config.sample_rate().0;
-    let channels = device_config.channels();
-    
-    log_info!("Mic config: {} Hz, {} channels", sample_rate, channels);
-    
-    // Get recording start time for proper elapsed time calculation
-    let recording_start_time = unsafe { 
-        RECORDING_START_TIME.unwrap_or_else(|| std::time::Instant::now()) 
-    };
-    
-    // Initialize transcription workers BEFORE starting audio collection to prevent race conditions
-    const NUM_WORKERS: usize = 3;
-    let mut worker_handles = Vec::new();
+    log_info!("🔧 Transcription provider decision - use_local_whisper: {}", use_local_whisper);
 
     if use_local_whisper {
-        // Progress update: setting up transcription
-        if let Err(e) = app.emit("recording-startup-progress", serde_json::json!({
-            "stage": "loading-model",
-            "message": format!("Loading {} model...", whisper_model),
-            "progress": 80
-        })) {
-            log_error!("Failed to emit progress event: {}", e);
-        }
+        app.emit("recording-startup-progress", serde_json::json!({ "stage": "loading-model", "message": format!("Loading {} model...", whisper_model), "progress": 40 })).ok();
         
-        // Use whisper-rs transcription workers
-        log_info!("Starting {} whisper-rs transcription workers", NUM_WORKERS);
-        
-        // Ensure Whisper model is loaded
         unsafe {
-            let Some(engine) = &WHISPER_ENGINE else {
-                log_error!("Whisper engine not initialized");
-                return Err("Whisper engine not initialized".to_string());
-            };
+            let engine = WHISPER_ENGINE.as_ref().ok_or("Whisper engine not initialized")?;
+            if !engine.is_model_loaded().await {
+                log_info!("Loading {} model for transcription...", whisper_model);
+                // TODO:Calling discover_models as workaround for updating the available_models, whihch is used in
+                // load_model;
+                engine.discover_models().await;
 
-            if engine.is_model_loaded().await {
-                return Ok(());
+                engine.load_model(&whisper_model).await.map_err(|e| {
+                    log_error!("Failed to load whisper model {}: {}", whisper_model, e);
+                    format!("Failed to load whisper model: {}", e)
+                })?;
             }
-            log_info!("Loading {} model for whisper-rs transcription...", whisper_model);
-
-            // Discover available models (once)
-            let models = match engine.discover_models().await {
-                Ok(models) => {
-                    log_info!("Discovered {} models:", models.len());
-                    for m in &models {
-                        log_info!("  - {}: {:?} at {:?}", m.name, m.status, m.path);
-                    }
-                    models
-                }
-                Err(e) => {
-                    log_error!("Failed to discover models: {}", e);
-                    return Err(format!("Failed to discover models: {}", e));
-                }
-            };
-
-            // Try to load requested model
-            match engine.load_model(&whisper_model).await {
-                Ok(_) => {
-                    log_info!("Successfully loaded {}", whisper_model);
-                }
-                Err(e) => {
-                    log_error!("Failed to load {}: {}", whisper_model, e);
-
-                    // Fallback to first available model
-                    if let Some(fallback) = models.iter()
-                        .find(|m| matches!(m.status, ModelStatus::Available))
-                        .map(|m| m.name.as_str())
-                    {
-                        log_info!("Falling back to model: {}", fallback);
-                        engine.load_model(fallback).await.map_err(|e| {
-                            log_error!("Failed to load fallback {}: {}", fallback, e);
-                            format!("Failed to load any whisper model: {}", e)
-                        })?;
-                        log_info!("Successfully loaded fallback model: {}", fallback);
-                    } else {
-                        log_error!("No available models found for fallback");
-                        return Err("No whisper models available".to_string());
-                    }
-                }
-            }
-        }    
-        
-        for worker_id in 0..NUM_WORKERS {
-            let app_handle_clone = app.clone();
-            
-            let worker_handle = tokio::spawn(async move {
-                whisper_rs_transcription_worker(app_handle_clone, worker_id).await;
-            });
-            
-            worker_handles.push(worker_handle);
-        }
-    } else {
-        // Use HTTP-based transcription workers
-        log_info!("Starting {} HTTP transcription workers", NUM_WORKERS);
-        
-        for worker_id in 0..NUM_WORKERS {
-            let client_clone = client.clone();
-            let stream_url_clone = stream_url.clone();
-            let app_handle_clone = app.clone();
-            
-            let worker_handle = tokio::spawn(async move {
-                transcription_worker(
-                    client_clone,
-                    stream_url_clone,
-                    app_handle_clone,
-                    worker_id,
-                ).await;
-            });
-            
-            worker_handles.push(worker_handle);
         }
     }
-    
-    // Start audio collection task
-    let audio_collection_handle = {
+
+    // Let the producers porduce first; due to failed to send audio data bug
+    // INITIALIZE REAL-TIME AUDIO STREAMS (PRODUCERS) 
+    app.emit("recording-startup-progress", serde_json::json!({ "stage": "detecting-devices", "message": "Detecting audio devices...", "progress": 80 })).ok();
+
+    let mic_device = Arc::new(default_input_device().map_err(|e| format!("Failed to get default input device: {}", e))?);
+    let system_device = default_output_device().ok(); // Treat system audio as optional
+
+    let is_running = Arc::new(AtomicBool::new(true));
+
+    let mic_stream = Arc::new(AudioStream::from_device(mic_device.clone(), is_running.clone()).await.map_err(|e| format!("Failed to create microphone stream: {}", e))?);
+    let system_stream = if let Some(dev) = system_device {
+        match AudioStream::from_device(Arc::new(dev), is_running.clone()).await {
+            Ok(stream) => Some(Arc::new(stream)),
+            Err(e) => {
+                log_warn!("Failed to create system audio stream, continuing without it: {}", e);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    log_info!("✅ Audio streams created successfully.");
+
+    // SPAWN CONSUMER AND WORKER TASKS
+    let sample_rate = mic_stream.device_config.sample_rate().0;
+    let recording_start_time = unsafe { RECORDING_START_TIME.unwrap_or_else(std::time::Instant::now) };
+
+    // Spawn audio collection task (THE CONSUMER)
+    let audio_collection_handle = tokio::spawn({
         let mic_stream_clone = mic_stream.clone();
         let system_stream_clone = system_stream.clone();
         let is_running_clone = is_running.clone();
         let app_handle_clone = app.clone();
-        tokio::spawn(async move {
-            if let Err(e) = audio_collection_task(
-                mic_stream_clone,
-                system_stream_clone,
-                is_running_clone,
-                sample_rate,
-                recording_start_time,
-                app_handle_clone,
-            ).await {
+        async move {
+            if let Err(e) = audio_collection_task(mic_stream_clone, system_stream_clone, is_running_clone, sample_rate, recording_start_time, app_handle_clone).await {
                 log_error!("Audio collection task error: {}", e);
             }
-        })
-    };
-    
-    // Store task handles globally
+        }
+    });
+
+    // Spawn transcription workers
+    const NUM_WORKERS: usize = 3;
+    let mut worker_handles = Vec::new();
+    if use_local_whisper {
+        for worker_id in 0..NUM_WORKERS {
+            worker_handles.push(tokio::spawn(whisper_rs_transcription_worker(app.clone(), worker_id)));
+        }
+    } else {
+        let client = reqwest::Client::new();
+        let stream_url = format!("{}/stream", TRANSCRIPT_SERVER_URL);
+        for worker_id in 0..NUM_WORKERS {
+            worker_handles.push(tokio::spawn(transcription_worker(client.clone(), stream_url.clone(), app.clone(), worker_id)));
+        }
+    }
+
+    // Store all handles and streams in the global state.
     unsafe {
+        MIC_STREAM = Some(mic_stream);
+        SYSTEM_STREAM = system_stream.clone(); // Keep a clone for the event payload
+        IS_RUNNING = Some(is_running);
         AUDIO_COLLECTION_TASK = Some(audio_collection_handle);
-        // Store the first worker as the main transcription task for compatibility
         if let Some(first_worker) = worker_handles.into_iter().next() {
             TRANSCRIPTION_TASK = Some(first_worker);
         }
     }
-
-    // Final progress update: recording ready
-    if let Err(e) = app.emit("recording-startup-progress", serde_json::json!({
-        "stage": "ready",
-        "message": "Recording started successfully!",
-        "progress": 100
-    })) {
-        log_error!("Failed to emit final progress event: {}", e);
-    }
-
-    // Emit recording started event with summary
-    let mut devices = vec![format!("🎤 {}", mic_device.name)];
-    if let Some(system_stream) = &system_stream {
-        devices.push(format!("🔊 System Audio"));
-    }
     
-    if let Err(e) = app.emit("recording-started", serde_json::json!({
+    app.emit("recording-startup-progress", serde_json::json!({ "stage": "ready", "message": "Recording started!", "progress": 100 })).ok();
+
+    let mut devices = vec![format!("🎤 {}", mic_device.name)];
+    if system_stream.is_some() {
+        devices.push("🔊 System Audio".to_string());
+    }
+    app.emit("recording-started", serde_json::json!({
         "devices": devices,
         "provider": if use_local_whisper { "local" } else { "http" },
         "model": whisper_model,
-        "sample_rate": sample_rate,
-        "message": "Recording is now active. Speak to start transcription."
-    })) {
-        log_error!("Failed to emit recording-started event: {}", e);
-    }
+        "message": "Recording is now active."
+    })).ok();
     
     log_info!("🎯 Recording started successfully with {} devices", devices.len());
     
-    let _ = app
-    .notification()
-    .builder()
-    .title("Meetily")
-    .body("Recording has started. Please inform others in the meeting.")
-    .icon("icon.png")
-    .show();
+    let _ = app.notification().builder()
+        .title("Meetily")
+        .body("Recording has started. Please inform others in the meeting.")
+        .show();
     
     Ok(())
 }
