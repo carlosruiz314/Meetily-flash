@@ -44,6 +44,7 @@ static mut ANALYTICS_CLIENT: Option<Arc<AnalyticsClient>> = None;
 static mut ERROR_EVENT_EMITTED: bool = false;
 static LAST_TRANSCRIPTION_ACTIVITY: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_WORKERS: AtomicU64 = AtomicU64::new(0);
+static mut NOTIFICATION_ENABLED: bool = true;
 
 // Audio configuration constants
 const CHUNK_DURATION_MS: u32 = 30000; // 30 seconds per chunk for better sentence processing
@@ -844,12 +845,14 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         }
     }
 
-    let _ = app
-    .notification()
-    .builder()
-    .title("Meetily")
-    .body("Recording has started. Please inform others in the meeting.")
-    .show();
+    if unsafe { NOTIFICATION_ENABLED } {
+        let _ = app
+            .notification()
+            .builder()
+            .title("Meetily")
+            .body("Recording has started. Please inform others in the meeting.")
+            .show();
+    }
     
     Ok(())
 }
@@ -1111,8 +1114,10 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
         AUDIO_CHUNK_QUEUE = None;
     }
 
-    // Send a system notification indicating recording has stopped
-    let _ = app.notification().builder().title("Meetily").body("Recording stopped").show();
+    if unsafe { NOTIFICATION_ENABLED } {
+        // Send a system notification indicating recording has stopped
+        let _ = app.notification().builder().title("Meetily").body("Recording stopped").show();
+    }
     
     Ok(())
 }
@@ -1120,6 +1125,15 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
 #[tauri::command]
 fn is_recording() -> bool {
     RECORDING_FLAG.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
+async fn set_notification_enabled(enabled: Option<bool>) -> Result<(), String> {
+    log_info!("Setting notifications enabled: {:?}", enabled);
+    unsafe {
+        NOTIFICATION_ENABLED = enabled.unwrap_or(!NOTIFICATION_ENABLED);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1496,6 +1510,7 @@ pub fn run() {
             track_summary_regenerated,
             track_model_changed,
             track_custom_prompt_used,
+            set_notification_enabled,
             ollama::get_ollama_models,
             api::api_get_meetings,
             api::api_search_transcripts,

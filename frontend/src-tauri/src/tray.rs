@@ -35,14 +35,21 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
         if crate::is_recording() {
-            log::info!("Emitting stop recording event from tray");
+            log::info!("Requesting stop recording from tray");
+            const STOP_PAYLOAD: &str = r#"
+                // This is a custom event that the UI can listen for.
+                // It's 'cancelable', so the UI can tell us if it handled the event.
+                const event = new CustomEvent('tray-stop-request', { cancelable: true });
+                const wasHandledByUI = !window.dispatchEvent(event);
 
-            let _ = app_clone
-                .get_webview_window("main")
-                .unwrap()
-                .eval("window.handleRecordingStop()");
-            if let Err(e) = app_clone.emit("tray:stop-recording", ()) {
-                log::error!("Failed to emit stop recording event: {}", e);
+                if (!wasHandledByUI) {
+                    console.warn('tray-stop-request was not handled by the UI. Falling back to global handler.');
+                    // The global handler is the fallback for when the main UI isn't mounted.
+                    window.handleRecordingStop && window.handleRecordingStop();
+                }
+            "#;
+            if let Some(window) = app_clone.get_webview_window("main") {
+                let _ = window.eval(STOP_PAYLOAD);
             }
         } else {
             log::info!("Emitting start recording event from tray");

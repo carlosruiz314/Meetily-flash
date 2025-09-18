@@ -147,6 +147,24 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   }, [isRecording, isStarting, isStopping, stopRecordingAction]);
 
   useEffect(() => {
+    const handleTrayStop = (event: Event) => {
+      // Prevent the fallback global handler from running
+      event.preventDefault();
+      
+      if (isRecording) {
+        console.log('tray-stop-request handled by RecordingControls');
+        handleStopRecording();
+      }
+    };
+
+    window.addEventListener('tray-stop-request', handleTrayStop);
+
+    return () => {
+      window.removeEventListener('tray-stop-request', handleTrayStop);
+    };
+  }, [isRecording, handleStopRecording]);
+
+  useEffect(() => {
     return () => {
       // Cleanup on unmount if needed
     };
