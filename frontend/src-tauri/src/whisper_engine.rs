@@ -162,7 +162,20 @@ impl WhisperEngine {
             }
         }
     }
-    
+
+    pub async fn unload_model(&self) -> bool  {
+        let mut ctx_guard = self.current_context.write().await;
+        let unloaded = ctx_guard.take().is_some();
+        if unloaded {
+            log::info!("📉Whisper model unloaded");
+        }
+
+        let mut model_name_guard = self.current_model.write().await;
+        model_name_guard.take();
+
+        unloaded
+    }
+
     pub async fn get_current_model(&self) -> Option<String> {
         self.current_model.read().await.clone()
     }

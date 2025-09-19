@@ -181,14 +181,6 @@ export function ModelManager({ selectedModel, onModelSelect, className = '' }: M
     if (onModelSelect) {
       onModelSelect(modelName);
     }
-
-    // Load model in whisper-rs backend
-    try {
-      await WhisperAPI.loadModel(modelName);
-      console.log(`Successfully loaded model: ${modelName}`);
-    } catch (err) {
-      console.error('Failed to switch model:', err);
-    }
   };
 
   const getStatusBadge = (status: ModelStatus) => {

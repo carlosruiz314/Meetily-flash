@@ -771,7 +771,7 @@ async fn transcribe_audio_chunk_whisper_rs(chunk: Vec<f32>) -> Result<Transcript
         if let Some(engine) = &WHISPER_ENGINE {
             // Ensure model is loaded
             if !engine.is_model_loaded().await {
-                log_info!("No whisper model loaded - loading tiny model");
+                log_info!("No whisper model loaded");
                 return Err("No whisper model loaded".to_string());
             }
             
@@ -1339,9 +1339,30 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
                     log_error!("Failed to load whisper model {}: {}", whisper_model, e);
                     format!("Failed to load whisper model: {}", e)
                 })?;
+                log_info!("✅ Loaded {} model for transcription...", whisper_model);
+            } else {
+                // If model is loaeded then ensure it is the model from the config 
+                if let Some(current_loaded_model) = engine.get_current_model().await {
+                    if current_loaded_model != whisper_model{
+                        engine.load_model(&whisper_model).await.map_err(|e| {
+                                log_error!("Failed to switch whisper model {}: {}", whisper_model, e);
+                                format!("Failed to switch whisper model: {}", e)
+                            })?;
+                        log_info!("Model switched to {}",whisper_model);
+                    }
+                }
             }
         }
     }
+// else {
+//         let mut server_url = match transcript_config_result {
+//             Ok(Some(config)) => {
+//                 config.
+//             }
+//         }
+//     }
+
+    
 
     // Let the producers porduce first; due to failed to send audio data bug
     // INITIALIZE REAL-TIME AUDIO STREAMS (PRODUCERS) 
@@ -1687,6 +1708,11 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
         TRANSCRIPTION_TASK = None;
         AUDIO_COLLECTION_TASK = None;
         AUDIO_CHUNK_QUEUE = None;
+        let engine = WHISPER_ENGINE.as_ref().ok_or("Whisper engine not initialized")?;
+        if  engine.unload_model().await {
+            log_info!("Model is unloaded successfully on Stop");
+        }
+        
     }
 
     // Send a system notification indicating recording has stopped
