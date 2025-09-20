@@ -278,7 +278,7 @@ export function ModelSettingsModal({
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             ) : (
-              <ScrollArea className="max-h-[calc(100vh-300px)] pr-4">
+              <ScrollArea className="max-h-[calc(100vh-200px)] overflow-y-auto h-auto pr-4">
                 <div className="grid gap-4">
                   {models.map((model) => (
                     <div
@@ -312,13 +312,13 @@ export function ModelSettingsModal({
                 <AlertDescription>{openRouterError}</AlertDescription>
               </Alert>
             ) : (
-              <ScrollArea className="pr-4">
+              <ScrollArea className="max-h-[calc(100vh-200px)] overflow-y-auto h-auto pr-4">
                 <div className="grid gap-4 max-h-[500px]">
                   {openRouterModels.map((m) => (
                     <div
                       key={m.id}
                       className={cn(
-                        'bg-card p-4 m-2 rounded-lg border cursor-pointer transition-colors',
+                        'bg-card p-4 my-1 rounded-lg border cursor-pointer transition-colors',
                         modelConfig.model === m.id
                           ? 'ring-1 ring-blue-500'
                           : 'hover:bg-muted/50'
