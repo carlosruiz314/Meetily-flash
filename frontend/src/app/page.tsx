@@ -21,7 +21,7 @@ import Analytics from '@/lib/analytics';
 
 
 interface ModelConfig {
-  provider: 'ollama' | 'groq' | 'claude';
+  provider: 'ollama' | 'groq' | 'claude' | 'openrouter';
   model: string;
   whisperModel: string;
 }
@@ -88,6 +88,7 @@ export default function Home() {
     ollama: models.map(model => model.name),
     claude: ['claude-3-5-sonnet-latest'],
     groq: ['llama-3.3-70b-versatile'],
+    openrouter: [],
   };
 
   useEffect(() => {
@@ -1106,6 +1107,26 @@ export default function Home() {
     };
   }, []);
   
+  useEffect(() => {
+    // Honor saved model settings from backend (including OpenRouter)
+    const fetchModelConfig = async () => {
+      try {
+        const data = await invoke('api_get_model_config') as any;
+        if (data && data.provider) {
+          setModelConfig(prev => ({
+            ...prev,
+            provider: data.provider,
+            model: data.model || prev.model,
+            whisperModel: data.whisperModel || prev.whisperModel,
+          }));
+        }
+      } catch (error) {
+        console.error('Failed to fetch saved model config in page.tsx:', error);
+      }
+    };
+    fetchModelConfig();
+  }, []);
+
   return (
     <div className="flex flex-col h-screen bg-gray-50">
       {showErrorAlert && (
@@ -1356,6 +1377,7 @@ export default function Home() {
                         <option value="claude">Claude</option>
                         <option value="groq">Groq</option>
                         <option value="ollama">Ollama</option>
+                        <option value="openrouter">OpenRouter</option>
                       </select>
 
                       <select

@@ -14,6 +14,7 @@ pub mod utils;
 pub mod console_utils;
 pub mod tray;
 pub mod whisper_engine;
+pub mod openrouter;
 
 use audio::{
     default_input_device, default_output_device, AudioStream, list_audio_devices, parse_audio_device,
@@ -2141,6 +2142,7 @@ pub fn run() {
             api::test_backend_connection,
             api::debug_backend_connection,
             api::open_external_url,
+            openrouter::get_openrouter_models,
             console_utils::show_console,
             console_utils::hide_console,
             console_utils::toggle_console,
