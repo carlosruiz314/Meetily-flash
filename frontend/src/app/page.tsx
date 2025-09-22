@@ -200,7 +200,39 @@ export default function Home() {
     let lastProcessedSequence = 0;
     let processingTimer: NodeJS.Timeout | undefined;
 
-    const processBufferedTranscripts = (forceFlush = false) => {
+    const processBufferedTranscripts = (forceFlush = false, isImmediate = false) => {
+      // If this is an immediate process (first transcript), skip the buffer and process directly
+      if (isImmediate && transcriptBuffer.size === 1) {
+        const firstKey = transcriptBuffer.keys().next().value;
+        if (firstKey === undefined) {
+          console.error('No key found in transcript buffer');
+          return;
+        }
+        const firstTranscript = transcriptBuffer.get(firstKey)!;
+        
+        console.log('🚀 Processing first transcript immediately:', {
+          sequence_id: firstTranscript.sequence_id,
+          text: firstTranscript.text.substring(0, 30) + '...'
+        });
+        
+        setTranscripts(prev => {
+          // Check for duplicates
+          if (prev.some(t => t.sequence_id === firstTranscript.sequence_id)) {
+            console.log('⚠️ First transcript already exists, skipping');
+            return prev;
+          }
+          return [...prev, firstTranscript];
+        });
+        
+        // Update last processed sequence
+        lastProcessedSequence = firstTranscript.sequence_id || 0;
+        
+        // Clear the buffer
+        transcriptBuffer.clear();
+        return;
+      }
+      
+      // Original buffered processing logic for subsequent updates
       const sortedTranscripts: Transcript[] = [];
       
       // Process all available sequential transcripts
@@ -337,7 +369,7 @@ export default function Home() {
           }
           
           // Process buffer after a short delay to allow for batching
-          processingTimer = setTimeout(processBufferedTranscripts, 100);
+          processingTimer = setTimeout(() => processBufferedTranscripts(false, transcriptBuffer.size === 1), 100);
         });
         console.log('✅ MAIN transcript listener setup complete');
       } catch (error) {

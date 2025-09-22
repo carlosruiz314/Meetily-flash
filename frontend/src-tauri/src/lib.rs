@@ -4,6 +4,7 @@ use std::time::Duration;
 use std::collections::VecDeque;
 use serde::{Deserialize, Serialize};
 use tauri_plugin_notification::NotificationExt;
+use tauri::Manager;
 
 // Declare audio module
 pub mod audio;
@@ -15,6 +16,11 @@ pub mod console_utils;
 pub mod tray;
 pub mod whisper_engine;
 pub mod openrouter;
+pub mod database;
+pub mod state;
+
+use crate::database::manager::DatabaseManager;
+use crate::state::AppState;
 
 use audio::{
     default_input_device, default_output_device, AudioStream, list_audio_devices, parse_audio_device,
@@ -1282,7 +1288,7 @@ async fn whisper_rs_transcription_worker<R: Runtime>(
 }
 
 #[tauri::command]
-async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+async fn start_recording<R: Runtime>(app: AppHandle<R>, state: tauri::State<'_, AppState>) -> Result<(), String> {
     log_info!("Attempting to start recording...");
 
     if let Err(e) = app.emit("recording-startup-progress", serde_json::json!({ "stage": "initializing", "message": "Starting...", "progress": 0 })) {
@@ -1311,7 +1317,7 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     // LOAD CONFIGURATION AND MODELS
     app.emit("recording-startup-progress", serde_json::json!({ "stage": "loading-config", "message": "Loading configuration...", "progress": 20 })).ok();
     
-    let transcript_config_result = api::api_get_transcript_config(app.clone(), None).await;
+    let transcript_config_result = api::api_get_transcript_config(app.clone(),state.clone(), None).await;
     let (use_local_whisper, whisper_model) = match transcript_config_result {
         Ok(Some(config)) => {
             let is_local = config.provider == "localWhisper";
@@ -1329,6 +1335,13 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
         app.emit("recording-startup-progress", serde_json::json!({ "stage": "loading-model", "message": format!("Loading {} model...", whisper_model), "progress": 40 })).ok();
         
         unsafe {
+            if WHISPER_ENGINE.is_none() {
+                log_info!("Initializing Whisper engine...");
+                let engine = WhisperEngine::new()
+                    .map_err(|e| format!("Failed to initialize whisper engine: {}", e))?;
+                WHISPER_ENGINE = Some(Arc::new(engine));
+                log_info!("✅ Whisper engine initialized successfully");
+            }
             let engine = WHISPER_ENGINE.as_ref().ok_or("Whisper engine not initialized")?;
             if !engine.is_model_loaded().await {
                 log_info!("Loading {} model for transcription...", whisper_model);
@@ -1355,15 +1368,6 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
             }
         }
     }
-// else {
-//         let mut server_url = match transcript_config_result {
-//             Ok(Some(config)) => {
-//                 config.
-//             }
-//         }
-//     }
-
-    
 
     // Let the producers porduce first; due to failed to send audio data bug
     // INITIALIZE REAL-TIME AUDIO STREAMS (PRODUCERS) 
@@ -1406,7 +1410,7 @@ async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     });
 
     // Spawn transcription workers
-    const NUM_WORKERS: usize = 3;
+    const NUM_WORKERS: usize = 2;
     let mut worker_handles = Vec::new();
     if use_local_whisper {
         for worker_id in 0..NUM_WORKERS {
@@ -1709,9 +1713,10 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
         TRANSCRIPTION_TASK = None;
         AUDIO_COLLECTION_TASK = None;
         AUDIO_CHUNK_QUEUE = None;
-        let engine = WHISPER_ENGINE.as_ref().ok_or("Whisper engine not initialized")?;
-        if  engine.unload_model().await {
-            log_info!("Model is unloaded successfully on Stop");
+        // This will drop the WhisperEngine and all its resources
+        unsafe {
+            WHISPER_ENGINE = None;
+            log_info!("Whisper engine has been uninitialized and all resources freed");
         }
         
     }
@@ -2057,11 +2062,41 @@ pub fn run() {
     
     tauri::Builder::default()
         .plugin(tauri_plugin_notification::init())
-        .setup(|_app| {
-            log::info!("Application setup complete");
+        .setup(|app| {
+
+            // Resolve the app's data directory
+            let app_data_dir = app
+                .path()
+                .app_data_dir()
+                .expect("failed to get app data dir");
+            if !app_data_dir.exists() {
+                fs::create_dir_all(&app_data_dir).expect("failed to create app data dir");
+            }
+
+            // Define database paths
+            let tauri_db_path = app_data_dir
+                .join("meeting_minutes.sqlite")
+                .to_string_lossy()
+                .to_string();
+            // TODO: There won't be any db so it would create a new db
+            let backend_db_path = app_data_dir
+                .join("meeting_minutes.db")
+                .to_string_lossy()
+                .to_string();
+            log::info!("Tauri DB path: {}", tauri_db_path);
+            log::info!("Legacy backend DB path: {}", backend_db_path);
+
+            // Initialize DatabaseManager and AppState
+            let db_manager = tauri::async_runtime::block_on(async {
+                DatabaseManager::new(&tauri_db_path, &backend_db_path).await
+            })
+            .expect("Failed to initialize database manager");
+
+            // Manage the state
+            app.manage(AppState { db_manager });
             
             // Initialize system tray
-            if let Err(e) = tray::create_tray(_app.handle()) {
+            if let Err(e) = tray::create_tray(app.handle()) {
                 log::error!("Failed to create system tray: {}", e);
             }
 
@@ -2069,13 +2104,6 @@ pub fn run() {
             if let Err(e) = audio::core::trigger_audio_permission() {
                 log::error!("Failed to trigger audio permission: {}", e);
             }
-            
-            // Initialize Whisper engine on startup
-            tauri::async_runtime::spawn(async {
-                if let Err(e) = whisper_init().await {
-                    log::error!("Failed to initialize Whisper engine on startup: {}", e);
-                }
-            });
 
             Ok(())
         })
