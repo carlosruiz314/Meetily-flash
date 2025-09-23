@@ -17,8 +17,10 @@ impl DatabaseManager {
 
         if !Path::new(tauri_db_path).exists() {
             if Path::new(backend_db_path).exists() {
+                log::info!("Copying database from {} to {}", backend_db_path, tauri_db_path);
                 fs::copy(backend_db_path, tauri_db_path).map_err(|e| sqlx::Error::Io(e))?;
             } else {
+                log::info!("Creating database at {}", tauri_db_path);
                 Sqlite::create_database(tauri_db_path).await?;
             }
         }

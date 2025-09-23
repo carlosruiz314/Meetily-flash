@@ -1,12 +1,24 @@
+use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
+
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
-pub struct Meeting {
+pub struct MeetingModel {
     pub id: String,
     pub title: String,
-    pub created_at: chrono::DateTime<chrono::Utc>,
-    pub updated_at: chrono::DateTime<chrono::Utc>,
+    pub created_at: DateTimeUtc,
+    pub updated_at: DateTimeUtc,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
+#[sqlx(transparent)]
+pub struct DateTimeUtc(pub DateTime<Utc>);
+
+impl From<NaiveDateTime> for DateTimeUtc {
+    fn from(naive: NaiveDateTime) -> Self {
+        DateTimeUtc(DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc))
+    }
 }
 
 // Renamed from TranscriptSegment to Transcript to match the table name
