@@ -83,8 +83,8 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
         }
     };
     return (
-        <div>
-            <div className='max-h-[calc(100vh-200px)] overflow-y-auto'>
+        <div className='max-h-[calc(100vh-200px)]'>
+            <div>
                 <div className="flex justify-between items-center mb-4">
                     <h3 className="text-lg font-semibold text-gray-900">Transcript Settings</h3>
                 </div>
@@ -148,22 +148,6 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                         </div>
                     )}
 
-                    {transcriptModelConfig.provider === 'localWhisper' && (
-                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-4 mt-4">
-                            <div className="flex items-start space-x-3">
-                                <span className="text-blue-600 mt-0.5">💡</span>
-                                <div>
-                                    <h4 className="font-medium text-blue-900">Why Local Whisper?</h4>
-                                    <ul className="text-sm text-blue-700 mt-1 space-y-1">
-                                        <li>• Complete privacy - audio never leaves your device</li>
-                                        <li>• No internet required for transcription</li>
-                                        <li>• No API costs or rate limits</li>
-                                        <li>• Consistent performance regardless of network</li>
-                                    </ul>
-                                </div>
-                            </div>
-                        </div>
-                    )}
 
                     {requiresApiKey && (
                         <div>
@@ -214,7 +198,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                 </div>
             </div>
 
-            <div className='mt-6 flex justify-end'>
+            <div className='flex justify-end'>
                 <Button
                     onClick={handleSave}
                     disabled={isDoneDisabled}

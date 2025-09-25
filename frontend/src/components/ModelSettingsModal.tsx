@@ -199,7 +199,7 @@ export function ModelSettingsModal({
               <SelectTrigger>
                 <SelectValue placeholder="Select provider" />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className="max-h-64 overflow-y-auto">
                 <SelectItem value="claude">Claude</SelectItem>
                 <SelectItem value="groq">Groq</SelectItem>
                 <SelectItem value="ollama">Ollama</SelectItem>
@@ -217,7 +217,7 @@ export function ModelSettingsModal({
               <SelectTrigger className="flex-1">
                 <SelectValue placeholder="Select model" />
               </SelectTrigger>
-              <SelectContent>
+              <SelectContent className="max-h-48 overflow-y-auto">
                 {modelOptions[modelConfig.provider].map((model) => (
                   <SelectItem key={model} value={model}>
                     {model}
@@ -278,7 +278,7 @@ export function ModelSettingsModal({
                 <AlertDescription>{error}</AlertDescription>
               </Alert>
             ) : (
-              <ScrollArea className="max-h-[calc(100vh-200px)] overflow-y-auto h-auto pr-4">
+              <ScrollArea className="max-h-[calc(100vh-450px)] overflow-y-auto pr-4">
                 <div className="grid gap-4">
                   {models.map((model) => (
                     <div
@@ -303,46 +303,10 @@ export function ModelSettingsModal({
             )}
           </div>
         )}
-
-        {modelConfig.provider === 'openrouter' && (
-          <div>
-            <h4 className="text-lg font-bold mb-4">Available OpenRouter Models</h4>
-            {openRouterError ? (
-              <Alert variant="destructive" className="mb-4">
-                <AlertDescription>{openRouterError}</AlertDescription>
-              </Alert>
-            ) : (
-              <ScrollArea className="max-h-[calc(100vh-200px)] overflow-y-auto h-auto pr-4">
-                <div className="grid gap-4 max-h-[500px]">
-                  {openRouterModels.map((m) => (
-                    <div
-                      key={m.id}
-                      className={cn(
-                        'bg-card p-4 my-1 rounded-lg border cursor-pointer transition-colors',
-                        modelConfig.model === m.id
-                          ? 'ring-1 ring-blue-500'
-                          : 'hover:bg-muted/50'
-                      )}
-                      onClick={() =>
-                        setModelConfig((prev: ModelConfig) => ({ ...prev, model: m.id }))
-                      }
-                    >
-                      <h3 className="font-bold">{m.name}</h3>
-                      <p className="text-muted-foreground">ID: {m.id}</p>
-                      {m.context_length && (
-                        <p className="text-muted-foreground">Context: {m.context_length}</p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </ScrollArea>
-            )}
-          </div>
-        )}
       </div>
 
       <div className="mt-6 flex justify-end">
-        <Button className={`px-4 py-2 text-sm font-medium text-white rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 ${isDoneDisabled
+        <Button className={`px-4 text-sm font-medium text-white rounded-md focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 ${isDoneDisabled
           ? 'bg-gray-400 cursor-not-allowed'
           : 'bg-blue-600 hover:bg-blue-700'
           }`} onClick={handleSave} disabled={isDoneDisabled}>

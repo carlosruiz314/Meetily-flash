@@ -249,22 +249,9 @@ export function ModelManager({ selectedModel, onModelSelect, className = '' }: M
 
   return (
     <div className={`space-y-4 ${className}`}>
-      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
-        <h3 className="font-semibold text-blue-900 mb-2 flex items-center">
-          <span className="mr-2">🏠</span>
-          Local Whisper Models
-        </h3>
-        <p className="text-sm text-blue-700 mb-3">
-          High-quality speech recognition that runs entirely on your device
-        </p>
-        <DownloadSummary 
-          totalModels={models.length}
-          downloadedModels={availableModels.length}
-          totalSizeMb={totalSizeMb}
-        />
-      </div>
+      
 
-      <div className="grid gap-4">
+      <div className="grid gap-4 max-h-[calc(100vh-450px)] overflow-y-auto">
         {models.map((model) => {
           const isSelected = selectedModel === model.name;
           const isDownloading = typeof model.status === 'object' && 'Downloading' in model.status;
@@ -272,7 +259,7 @@ export function ModelManager({ selectedModel, onModelSelect, className = '' }: M
           console.log(model.size_mb)
           
           return (
-            <div key={model.name} className="space-y-2">
+            <div key={model.name} className="space-y-2 ">
               <div 
                 className={`p-4 border rounded-lg transition-all cursor-pointer ${
                   isSelected 
