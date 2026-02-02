@@ -71,6 +71,8 @@ const TranscriptSegment = memo(function TranscriptSegment({
     confidence,
     isStreaming,
     showConfidence,
+    confirmed_text,
+    hypothesis_text,
 }: {
     id: string;
     timestamp: number;
@@ -78,7 +80,13 @@ const TranscriptSegment = memo(function TranscriptSegment({
     confidence?: number;
     isStreaming: boolean;
     showConfidence: boolean;
+    confirmed_text?: string;
+    hypothesis_text?: string;
 }) {
+    // Use EagerMode two-tier display if available, otherwise fall back to full text
+    const hasEagerMode = confirmed_text !== undefined || hypothesis_text !== undefined;
+    const confirmedDisplay = confirmed_text ? cleanStopWords(confirmed_text) : '';
+    const hypothesisDisplay = hypothesis_text ? cleanStopWords(hypothesis_text) : '';
     const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
 
     return (
@@ -99,10 +107,38 @@ const TranscriptSegment = memo(function TranscriptSegment({
                 <div className="flex-1">
                     {isStreaming ? (
                         <div className="bg-gray-100 border border-gray-200 rounded-lg px-3 py-2">
-                            <p className="text-base text-gray-800 leading-relaxed">{displayText}</p>
+                            {hasEagerMode ? (
+                                <p className="text-base leading-relaxed">
+                                    {confirmedDisplay && (
+                                        <span className="text-gray-800">{confirmedDisplay} </span>
+                                    )}
+                                    {hypothesisDisplay && (
+                                        <span className="text-gray-400 italic">{hypothesisDisplay}</span>
+                                    )}
+                                    {!confirmedDisplay && !hypothesisDisplay && (
+                                        <span className="text-gray-800">{displayText}</span>
+                                    )}
+                                </p>
+                            ) : (
+                                <p className="text-base text-gray-800 leading-relaxed">{displayText}</p>
+                            )}
                         </div>
                     ) : (
-                        <p className="text-base text-gray-800 leading-relaxed">{displayText}</p>
+                        hasEagerMode ? (
+                            <p className="text-base leading-relaxed">
+                                {confirmedDisplay && (
+                                    <span className="text-gray-800">{confirmedDisplay} </span>
+                                )}
+                                {hypothesisDisplay && (
+                                    <span className="text-gray-400 italic">{hypothesisDisplay}</span>
+                                )}
+                                {!confirmedDisplay && !hypothesisDisplay && (
+                                    <span className="text-gray-800">{displayText}</span>
+                                )}
+                            </p>
+                        ) : (
+                            <p className="text-base text-gray-800 leading-relaxed">{displayText}</p>
+                        )
                     )}
                 </div>
             </div>
@@ -296,6 +332,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         confidence={segment.confidence}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
+                                        confirmed_text={segment.confirmed_text}
+                                        hypothesis_text={segment.hypothesis_text}
                                     />
                                 </div>
                             );
@@ -352,6 +390,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         confidence={segment.confidence}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
+                                        confirmed_text={segment.confirmed_text}
+                                        hypothesis_text={segment.hypothesis_text}
                                     />
                                 </motion.div>
                             );

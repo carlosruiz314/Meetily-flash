@@ -546,6 +546,13 @@ pub fn run() {
             whisper_engine::commands::whisper_download_model,
             whisper_engine::commands::whisper_cancel_download,
             whisper_engine::commands::whisper_delete_corrupted_model,
+            // NutWhisper commands (Nutshell-style progressive transcription)
+            whisper_engine::commands::whisper_get_provider,
+            whisper_engine::commands::whisper_set_provider,
+            whisper_engine::commands::whisper_init_nut_whisper,
+            whisper_engine::commands::whisper_nut_load_model,
+            whisper_engine::commands::whisper_nut_send_audio,
+            whisper_engine::commands::whisper_nut_get_results,
             // Parakeet engine commands
             parakeet_engine::commands::parakeet_init,
             parakeet_engine::commands::parakeet_get_available_models,

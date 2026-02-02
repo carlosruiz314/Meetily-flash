@@ -4,6 +4,13 @@ export interface Message {
   timestamp: string;
 }
 
+export interface WordInfo {
+  word: string;
+  start: number;  // Start time in seconds
+  end: number;    // End time in seconds
+  probability: number;
+}
+
 export interface Transcript {
   id: string;
   text: string;
@@ -16,6 +23,15 @@ export interface Transcript {
   audio_start_time?: number; // Seconds from recording start (e.g., 125.3)
   audio_end_time?: number;   // Seconds from recording start (e.g., 128.6)
   duration?: number;          // Segment duration in seconds (e.g., 3.3)
+  // EagerMode: Two-tier transcription (confirmed vs hypothesis)
+  confirmed_text?: string;    // Stable text that won't change
+  hypothesis_text?: string;   // Text that may change with next update
+  has_new_confirmed?: boolean; // Whether this update includes newly confirmed words
+  words?: WordInfo[];         // Word-level timestamps
+  // Nutshell-style streaming: phrase_id tracks streaming phrases
+  // Same phrase_id = REPLACE existing entry (streaming update)
+  // New phrase_id = ADD new entry (new phrase started after silence)
+  phrase_id?: number;
 }
 
 export interface TranscriptUpdate {
@@ -30,6 +46,15 @@ export interface TranscriptUpdate {
   audio_start_time: number; // Seconds from recording start
   audio_end_time: number;   // Seconds from recording start
   duration: number;          // Segment duration in seconds
+  // EagerMode: Two-tier transcription (confirmed vs hypothesis)
+  confirmed_text?: string;    // Stable text that won't change
+  hypothesis_text?: string;   // Text that may change with next update
+  has_new_confirmed?: boolean; // Whether this update includes newly confirmed words
+  words?: WordInfo[];         // Word-level timestamps
+  // Nutshell-style streaming: phrase_id tracks streaming phrases
+  // Same phrase_id = REPLACE existing entry (streaming update)
+  // New phrase_id = ADD new entry (new phrase started after silence)
+  phrase_id?: number;
 }
 
 export interface Block {
@@ -107,4 +132,10 @@ export interface TranscriptSegmentData {
   endTime?: number; // audio_end_time in seconds
   text: string;
   confidence?: number;
+  // EagerMode: Two-tier transcription
+  confirmed_text?: string;    // Stable text that won't change
+  hypothesis_text?: string;   // Text that may change (display in gray/italic)
+  has_new_confirmed?: boolean;
+  // Nutshell-style streaming: phrase_id for in-place updates
+  phrase_id?: number;
 }

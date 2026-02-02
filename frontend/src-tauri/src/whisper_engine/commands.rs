@@ -1,10 +1,31 @@
 use crate::whisper_engine::{ModelInfo, WhisperEngine};
+use crate::whisper_engine::nut_whisper::{NutWhisper, NutWhisperConfig, NutWhisperPipeline, NutAudioChunk};
 use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
 use tauri::{command, Emitter, Manager, AppHandle, Runtime};
+use serde::{Serialize, Deserialize};
+
+/// Whisper provider type - choose between standard and NutWhisper (Nutshell-style)
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum WhisperProvider {
+    /// Standard WhisperEngine with VAD-based segmentation
+    #[default]
+    Standard,
+    /// NutWhisper with progressive transcription (Nutshell-style)
+    /// - No external VAD
+    /// - Time-based chunking with re-transcription
+    /// - Better accuracy through accumulated context
+    NutWhisper,
+}
 
 // Global whisper engine
 pub static WHISPER_ENGINE: Mutex<Option<Arc<WhisperEngine>>> = Mutex::new(None);
+
+// Global NutWhisper pipeline
+pub static NUT_WHISPER_PIPELINE: Mutex<Option<Arc<tokio::sync::RwLock<NutWhisperPipeline>>>> = Mutex::new(None);
+
+// Current provider selection
+static CURRENT_PROVIDER: Mutex<WhisperProvider> = Mutex::new(WhisperProvider::Standard);
 
 // Global models directory path (set during app initialization)
 static MODELS_DIR: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -48,6 +69,276 @@ pub async fn whisper_init() -> Result<(), String> {
         .map_err(|e| format!("Failed to initialize whisper engine: {}", e))?;
     *guard = Some(Arc::new(engine));
     Ok(())
+}
+
+/// Get the current whisper provider
+#[command]
+pub fn whisper_get_provider() -> WhisperProvider {
+    *CURRENT_PROVIDER.lock().unwrap()
+}
+
+// ============================================================================
+// Pipeline Integration Helpers (non-command functions for internal use)
+// ============================================================================
+
+/// Check if NutWhisper provider is active (for pipeline routing)
+pub fn is_nut_whisper_active() -> bool {
+    *CURRENT_PROVIDER.lock().unwrap() == WhisperProvider::NutWhisper
+}
+
+/// Get NutWhisper pipeline Arc if initialized (for pipeline use)
+pub fn get_nut_whisper_pipeline() -> Option<Arc<tokio::sync::RwLock<NutWhisperPipeline>>> {
+    NUT_WHISPER_PIPELINE.lock().unwrap().clone()
+}
+
+/// Send audio to NutWhisper pipeline for processing
+/// This is non-blocking - results are received via poll_nut_whisper_results
+pub async fn send_audio_to_nut_whisper(
+    audio_samples: Vec<f32>,
+    source: &str,
+    timestamp: f64,
+) -> Result<(), String> {
+    let pipeline = get_nut_whisper_pipeline()
+        .ok_or_else(|| "NutWhisper pipeline not initialized".to_string())?;
+
+    let pipeline_guard = pipeline.read().await;
+    pipeline_guard.send_audio(audio_samples, source, timestamp)
+        .map_err(|e| format!("Failed to send audio to NutWhisper: {}", e))
+}
+
+/// Poll for available NutWhisper results (non-blocking)
+/// Returns all available results without waiting
+pub async fn poll_nut_whisper_results() -> Vec<crate::whisper_engine::nut_whisper::TranscriptionResult> {
+    // TRACE: Log every poll attempt
+    static POLL_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let poll_id = POLL_COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+    if poll_id % 50 == 0 {
+        log::debug!("[NutWhisper] poll #{} - checking for results", poll_id);
+    }
+
+    let pipeline = match get_nut_whisper_pipeline() {
+        Some(p) => p,
+        None => {
+            if poll_id % 50 == 0 {
+                log::warn!("[NutWhisper] poll #{}: Pipeline not initialized", poll_id);
+            }
+            return Vec::new();
+        }
+    };
+
+    let pipeline_guard = pipeline.read().await;
+    let mut results = Vec::new();
+
+    // Collect all available results
+    loop {
+        match pipeline_guard.try_recv().await {
+            Some(result) => {
+                log::info!("[NutWhisper] 📥 poll #{} got result: '{}' (partial={}, final={})",
+                          poll_id, result.text, result.is_partial, result.is_final);
+                results.push(result);
+            }
+            None => break,
+        }
+    }
+
+    if !results.is_empty() {
+        log::info!("[NutWhisper] ✅ poll #{} returning {} results", poll_id, results.len());
+    }
+
+    results
+}
+
+/// Set the whisper provider (Standard or NutWhisper)
+#[command]
+pub async fn whisper_set_provider(provider: WhisperProvider) -> Result<(), String> {
+    log::info!("[Whisper] Switching provider to: {:?}", provider);
+
+    // If switching to NutWhisper, ensure it's initialized
+    if provider == WhisperProvider::NutWhisper {
+        let already_initialized = {
+            let guard = NUT_WHISPER_PIPELINE.lock().unwrap();
+            guard.is_some()
+        };
+
+        if !already_initialized {
+            // Initialize NutWhisper with default config
+            let config = NutWhisperConfig::default();
+            let pipeline = NutWhisperPipeline::new(config);
+
+            // Get the current model path from standard engine
+            // First, get the engine Arc without holding the lock
+            let engine = {
+                let guard = WHISPER_ENGINE.lock().unwrap();
+                guard.as_ref().cloned()
+            };
+
+            let model_path = if let Some(engine) = engine {
+                // Now we can safely await without holding the lock
+                let models_dir = engine.get_models_directory().await;
+                let current_model = engine.get_current_model().await;
+
+                log::info!("[NutWhisper] Standard engine models_dir: {}", models_dir.display());
+                log::info!("[NutWhisper] Standard engine current_model: {:?}", current_model);
+
+                if let Some(model_name) = current_model {
+                    let path = models_dir.join(format!("ggml-{}.bin", model_name));
+                    log::info!("[NutWhisper] Will try to load model from: {}", path.display());
+                    Some(path)
+                } else {
+                    // No model loaded in standard engine
+                    // Try to use the model from user's saved config
+                    log::warn!("[NutWhisper] No model loaded in standard engine, will use user's configured model");
+                    None  // Will be loaded via whisper_nut_load_model when recording starts
+                }
+            } else {
+                log::warn!("[NutWhisper] Standard Whisper engine not initialized");
+                None
+            };
+
+            // Store the pipeline first (so it can be used for loading)
+            {
+                let mut guard = NUT_WHISPER_PIPELINE.lock().unwrap();
+                *guard = Some(Arc::new(tokio::sync::RwLock::new(pipeline)));
+            }
+
+            // Load model if available
+            if let Some(path) = model_path {
+                if path.exists() {
+                    log::info!("[NutWhisper] Loading model from: {}", path.display());
+
+                    // Get the pipeline we just stored
+                    let pipeline = get_nut_whisper_pipeline()
+                        .ok_or_else(|| "NutWhisper pipeline not found after creation".to_string())?;
+
+                    let pipeline_guard = pipeline.read().await;
+                    pipeline_guard.load_model(path.to_str().unwrap()).await
+                        .map_err(|e| format!("Failed to load model in NutWhisper: {}", e))?;
+
+                    log::info!("[NutWhisper] Model loaded successfully");
+                } else {
+                    log::error!("[NutWhisper] Model file does not exist: {}", path.display());
+                }
+            } else {
+                log::warn!("[NutWhisper] No model path found - NutWhisper will not transcribe until model is loaded");
+            }
+        }
+    }
+
+    let mut guard = CURRENT_PROVIDER.lock().unwrap();
+    *guard = provider;
+
+    log::info!("[Whisper] Provider switched to: {:?}", provider);
+    Ok(())
+}
+
+/// Initialize NutWhisper pipeline with custom config
+#[command]
+pub async fn whisper_init_nut_whisper(
+    chunk_duration_secs: Option<f32>,
+    chunks_before_retranscribe: Option<usize>,
+    no_speech_threshold: Option<f32>,
+) -> Result<(), String> {
+    let config = NutWhisperConfig {
+        chunk_duration_secs: chunk_duration_secs.unwrap_or(2.0),
+        chunks_before_retranscribe: chunks_before_retranscribe.unwrap_or(3),
+        no_speech_threshold: no_speech_threshold.unwrap_or(0.65),
+        ..Default::default()
+    };
+
+    log::info!("[NutWhisper] Initializing with config: {:?}", config);
+
+    let pipeline = NutWhisperPipeline::new(config);
+
+    let mut guard = NUT_WHISPER_PIPELINE.lock().unwrap();
+    *guard = Some(Arc::new(tokio::sync::RwLock::new(pipeline)));
+
+    Ok(())
+}
+
+/// Load model into NutWhisper pipeline
+#[command]
+pub async fn whisper_nut_load_model(model_name: String) -> Result<(), String> {
+    let pipeline = {
+        let guard = NUT_WHISPER_PIPELINE.lock().unwrap();
+        guard.as_ref().cloned()
+    };
+
+    let pipeline = match pipeline {
+        Some(p) => p,
+        None => return Err("NutWhisper pipeline not initialized".to_string()),
+    };
+
+    // Get engine and models_dir without holding lock across await
+    let engine = {
+        let guard = WHISPER_ENGINE.lock().unwrap();
+        guard.as_ref().cloned()
+    };
+
+    let engine = match engine {
+        Some(e) => e,
+        None => return Err("Standard Whisper engine not initialized".to_string()),
+    };
+
+    // Now we can safely await
+    let models_dir = engine.get_models_directory().await;
+    let model_path = models_dir.join(format!("ggml-{}.bin", model_name));
+
+    if !model_path.exists() {
+        return Err(format!("Model file not found: {}", model_path.display()));
+    }
+
+    let pipeline_guard = pipeline.read().await;
+    pipeline_guard.load_model(model_path.to_str().unwrap()).await
+        .map_err(|e| format!("Failed to load model: {}", e))?;
+
+    log::info!("[NutWhisper] Model loaded: {}", model_name);
+    Ok(())
+}
+
+/// Send audio to NutWhisper for transcription
+/// This is for streaming - audio is processed progressively
+#[command]
+pub async fn whisper_nut_send_audio(
+    audio_data: Vec<f32>,
+    source: String,
+    timestamp: f64,
+) -> Result<(), String> {
+    let pipeline = {
+        let guard = NUT_WHISPER_PIPELINE.lock().unwrap();
+        guard.as_ref().cloned()
+    };
+
+    if let Some(pipeline) = pipeline {
+        let pipeline_guard = pipeline.read().await;
+        pipeline_guard.send_audio(audio_data, &source, timestamp)
+            .map_err(|e| format!("Failed to send audio: {}", e))
+    } else {
+        Err("NutWhisper pipeline not initialized".to_string())
+    }
+}
+
+/// Get transcription results from NutWhisper (non-blocking)
+#[command]
+pub async fn whisper_nut_get_results() -> Result<Vec<crate::whisper_engine::nut_whisper::TranscriptionResult>, String> {
+    let pipeline = {
+        let guard = NUT_WHISPER_PIPELINE.lock().unwrap();
+        guard.as_ref().cloned()
+    };
+
+    if let Some(pipeline) = pipeline {
+        let pipeline_guard = pipeline.read().await;
+        let mut results = Vec::new();
+
+        // Collect all available results
+        while let Some(result) = pipeline_guard.try_recv().await {
+            results.push(result);
+        }
+
+        Ok(results)
+    } else {
+        Err("NutWhisper pipeline not initialized".to_string())
+    }
 }
 
 #[command]

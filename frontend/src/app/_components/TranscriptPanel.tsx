@@ -45,6 +45,12 @@ export function TranscriptPanel({
       endTime: t.audio_end_time,
       text: t.text,
       confidence: t.confidence,
+      // EagerMode: Two-tier transcription
+      confirmed_text: t.confirmed_text,
+      hypothesis_text: t.hypothesis_text,
+      has_new_confirmed: t.has_new_confirmed,
+      // Nutshell-style streaming
+      phrase_id: t.phrase_id,
     })),
     [transcripts]
   );

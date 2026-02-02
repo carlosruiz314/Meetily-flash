@@ -4,15 +4,18 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Input } from './ui/input';
 import { Button } from './ui/button';
 import { Label } from './ui/label';
-import { Eye, EyeOff, Lock, Unlock } from 'lucide-react';
+import { Eye, EyeOff, Lock, Unlock, Sparkles, Zap } from 'lucide-react';
 import { ModelManager } from './WhisperModelManager';
 import { ParakeetModelManager } from './ParakeetModelManager';
 
+// Whisper provider type from Rust backend
+type WhisperProvider = 'Standard' | 'NutWhisper';
 
 export interface TranscriptModelProps {
     provider: 'localWhisper' | 'parakeet' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai';
     model: string;
     apiKey?: string | null;
+    whisperProvider?: WhisperProvider; // Optional: which Whisper engine to use
 }
 
 export interface TranscriptSettingsProps {
@@ -28,12 +31,46 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
     const [isLockButtonVibrating, setIsLockButtonVibrating] = useState<boolean>(false);
     const [selectedWhisperModel, setSelectedWhisperModel] = useState<string>(transcriptModelConfig.provider === 'localWhisper' ? transcriptModelConfig.model : 'small');
     const [selectedParakeetModel, setSelectedParakeetModel] = useState<string>(transcriptModelConfig.provider === 'parakeet' ? transcriptModelConfig.model : 'parakeet-tdt-0.6b-v3-int8');
+    const [whisperProvider, setWhisperProvider] = useState<WhisperProvider>(transcriptModelConfig.whisperProvider || 'Standard');
+    const [isSettingProvider, setIsSettingProvider] = useState<boolean>(false);
+
+    // Load current whisper provider on mount
+    useEffect(() => {
+        const loadWhisperProvider = async () => {
+            try {
+                const provider = await invoke<WhisperProvider>('whisper_get_provider');
+                setWhisperProvider(provider);
+            } catch (err) {
+                console.error('Error fetching whisper provider:', err);
+            }
+        };
+        if (transcriptModelConfig.provider === 'localWhisper') {
+            loadWhisperProvider();
+        }
+    }, [transcriptModelConfig.provider]);
 
     useEffect(() => {
         if (transcriptModelConfig.provider === 'localWhisper' || transcriptModelConfig.provider === 'parakeet') {
             setApiKey(null);
         }
     }, [transcriptModelConfig.provider]);
+
+    const handleWhisperProviderChange = async (newProvider: WhisperProvider) => {
+        setIsSettingProvider(true);
+        try {
+            await invoke('whisper_set_provider', { provider: newProvider });
+            setWhisperProvider(newProvider);
+            setTranscriptModelConfig({
+                ...transcriptModelConfig,
+                whisperProvider: newProvider
+            });
+            console.log(`Whisper provider changed to: ${newProvider}`);
+        } catch (err) {
+            console.error('Failed to set whisper provider:', err);
+        } finally {
+            setIsSettingProvider(false);
+        }
+    };
 
     const fetchApiKey = async (provider: string) => {
         try {
@@ -150,7 +187,85 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                     </div>
 
                     {transcriptModelConfig.provider === 'localWhisper' && (
-                        <div className="mt-6">
+                        <div className="mt-6 space-y-6">
+                            {/* Whisper Provider Selection */}
+                            <div className="space-y-3">
+                                <Label className="block text-sm font-medium text-gray-700">
+                                    Transcription Mode
+                                </Label>
+                                <div className="grid grid-cols-2 gap-3">
+                                    {/* Standard Mode */}
+                                    <button
+                                        type="button"
+                                        onClick={() => handleWhisperProviderChange('Standard')}
+                                        disabled={isSettingProvider}
+                                        className={`relative p-4 rounded-lg border-2 transition-all text-left ${
+                                            whisperProvider === 'Standard'
+                                                ? 'border-blue-500 bg-blue-50'
+                                                : 'border-gray-200 hover:border-gray-300 bg-white'
+                                        } ${isSettingProvider ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                                    >
+                                        <div className="flex items-start gap-3">
+                                            <div className={`p-2 rounded-lg ${whisperProvider === 'Standard' ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-500'}`}>
+                                                <Zap className="h-5 w-5" />
+                                            </div>
+                                            <div className="flex-1">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-medium text-gray-900">Standard</span>
+                                                    {whisperProvider === 'Standard' && (
+                                                        <span className="text-xs font-medium text-blue-600 bg-blue-100 px-2 py-0.5 rounded">Active</span>
+                                                    )}
+                                                </div>
+                                                <p className="text-xs text-gray-500 mt-1">
+                                                    VAD-based segmentation, processes speech segments
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </button>
+
+                                    {/* NutWhisper Mode */}
+                                    <button
+                                        type="button"
+                                        onClick={() => handleWhisperProviderChange('NutWhisper')}
+                                        disabled={isSettingProvider}
+                                        className={`relative p-4 rounded-lg border-2 transition-all text-left ${
+                                            whisperProvider === 'NutWhisper'
+                                                ? 'border-purple-500 bg-purple-50'
+                                                : 'border-gray-200 hover:border-gray-300 bg-white'
+                                        } ${isSettingProvider ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                                    >
+                                        <div className="flex items-start gap-3">
+                                            <div className={`p-2 rounded-lg ${whisperProvider === 'NutWhisper' ? 'bg-purple-100 text-purple-600' : 'bg-gray-100 text-gray-500'}`}>
+                                                <Sparkles className="h-5 w-5" />
+                                            </div>
+                                            <div className="flex-1">
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-medium text-gray-900">NutWhisper</span>
+                                                    <span className="text-xs font-medium text-orange-600 bg-orange-100 px-2 py-0.5 rounded">Beta</span>
+                                                    {whisperProvider === 'NutWhisper' && (
+                                                        <span className="text-xs font-medium text-purple-600 bg-purple-100 px-2 py-0.5 rounded">Active</span>
+                                                    )}
+                                                </div>
+                                                <p className="text-xs text-gray-500 mt-1">
+                                                    Progressive transcription with re-analysis for higher accuracy
+                                                </p>
+                                            </div>
+                                        </div>
+                                    </button>
+                                </div>
+
+                                {whisperProvider === 'NutWhisper' && (
+                                    <div className="p-3 bg-purple-50 border border-purple-200 rounded-lg">
+                                        <p className="text-xs text-purple-700">
+                                            <strong>NutWhisper Mode:</strong> Uses time-based chunking with periodic re-transcription
+                                            of accumulated audio for better accuracy. Words are transcribed progressively and refined
+                                            as more context becomes available.
+                                        </p>
+                                    </div>
+                                )}
+                            </div>
+
+                            {/* Model Manager */}
                             <ModelManager
                                 selectedModel={selectedWhisperModel}
                                 onModelSelect={handleWhisperModelSelect}

@@ -244,29 +244,56 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
       if (allNewTranscripts.length > 0) {
         setTranscripts(prev => {
-          // Create a set of existing sequence_ids for deduplication
-          const existingSequenceIds = new Set(prev.map(t => t.sequence_id).filter(id => id !== undefined));
+          // Nutshell-style streaming: REPLACE transcripts with same phrase_id
+          // This enables in-place text updates instead of adding new entries
+          const result = [...prev];
+          let replacedCount = 0;
+          let addedCount = 0;
 
-          // Filter out any new transcripts that already exist
-          const uniqueNewTranscripts = allNewTranscripts.filter(transcript =>
-            transcript.sequence_id !== undefined && !existingSequenceIds.has(transcript.sequence_id)
-          );
+          console.log(`📊 Processing ${allNewTranscripts.length} new transcripts. Existing: ${prev.length} (phrase_ids: ${prev.map(t => t.phrase_id).join(', ')})`);
 
-          // Only combine if we have unique new transcripts
-          if (uniqueNewTranscripts.length === 0) {
-            console.log('No unique transcripts to add - all were duplicates');
-            return prev; // No new unique transcripts to add
+          for (const newTranscript of allNewTranscripts) {
+            console.log(`🔍 Processing transcript: phrase_id=${newTranscript.phrase_id}, seq=${newTranscript.sequence_id}, text='${newTranscript.text.substring(0, 40)}...'`);
+
+            // Check if there's an existing transcript with the same phrase_id
+            const existingIndex = newTranscript.phrase_id !== undefined
+              ? result.findIndex(t => t.phrase_id === newTranscript.phrase_id)
+              : -1;
+
+            console.log(`🔍 phrase_id check: ${newTranscript.phrase_id} !== undefined = ${newTranscript.phrase_id !== undefined}, existingIndex = ${existingIndex}`);
+
+            if (existingIndex !== -1) {
+              // REPLACE existing transcript with same phrase_id (Nutshell-style streaming)
+              // Preserve original id to avoid React key changes and unnecessary re-renders
+              const originalId = result[existingIndex].id;
+              console.log(`🔄 REPLACING transcript with phrase_id=${newTranscript.phrase_id}: '${result[existingIndex].text.substring(0, 30)}...' -> '${newTranscript.text.substring(0, 30)}...'`);
+              result[existingIndex] = { ...newTranscript, id: originalId };
+              replacedCount++;
+            } else {
+              // Check for duplicate sequence_id before adding
+              const isDuplicate = newTranscript.sequence_id !== undefined &&
+                result.some(t => t.sequence_id === newTranscript.sequence_id);
+
+              if (!isDuplicate) {
+                // ADD as new entry (new phrase started)
+                console.log(`➕ ADDING new transcript with phrase_id=${newTranscript.phrase_id}: '${newTranscript.text.substring(0, 30)}...'`);
+                result.push(newTranscript);
+                addedCount++;
+              }
+            }
           }
 
-          console.log(`Adding ${uniqueNewTranscripts.length} unique transcripts out of ${allNewTranscripts.length} received`);
+          if (replacedCount === 0 && addedCount === 0) {
+            console.log('No changes - all transcripts were duplicates');
+            return prev;
+          }
 
-          // Merge with existing transcripts, maintaining chronological order
-          const combined = [...prev, ...uniqueNewTranscripts];
+          console.log(`Nutshell streaming: ${replacedCount} replaced, ${addedCount} added (total: ${result.length})`);
 
-          // Sort by chunk_start_time first, then by sequence_id
-          return combined.sort((a, b) => {
-            const chunkTimeDiff = (a.chunk_start_time || 0) - (b.chunk_start_time || 0);
-            if (chunkTimeDiff !== 0) return chunkTimeDiff;
+          // Sort by audio_start_time for chronological order
+          return result.sort((a, b) => {
+            const timeDiff = (a.audio_start_time || a.chunk_start_time || 0) - (b.audio_start_time || b.chunk_start_time || 0);
+            if (timeDiff !== 0) return timeDiff;
             return (a.sequence_id || 0) - (b.sequence_id || 0);
           });
         });
@@ -289,12 +316,14 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
           const now = Date.now();
           console.log('🎯 MAIN LISTENER: Received transcript update:', {
             sequence_id: update.sequence_id,
+            phrase_id: update.phrase_id,
             text: update.text.substring(0, 50) + '...',
             timestamp: update.timestamp,
             is_partial: update.is_partial,
             received_at: new Date(now).toISOString(),
             buffer_size_before: transcriptBuffer.size
           });
+          console.log(`🔍 phrase_id value: ${update.phrase_id}, type: ${typeof update.phrase_id}`);
 
           // Check for duplicate sequence_id before processing
           if (transcriptBuffer.has(update.sequence_id)) {
@@ -315,11 +344,18 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             audio_start_time: update.audio_start_time,
             audio_end_time: update.audio_end_time,
             duration: update.duration,
+            // EagerMode: Two-tier transcription
+            confirmed_text: update.confirmed_text,
+            hypothesis_text: update.hypothesis_text,
+            has_new_confirmed: update.has_new_confirmed,
+            words: update.words,
+            // Nutshell-style streaming: phrase_id for in-place updates
+            phrase_id: update.phrase_id,
           };
 
           // Add to buffer
           transcriptBuffer.set(update.sequence_id, newTranscript);
-          console.log(`✅ MAIN LISTENER: Buffered transcript with sequence_id ${update.sequence_id}. Buffer size: ${transcriptBuffer.size}, Last processed: ${lastProcessedSequence}`);
+          console.log(`✅ MAIN LISTENER: Buffered transcript with sequence_id ${update.sequence_id}, phrase_id=${update.phrase_id}. Buffer size: ${transcriptBuffer.size}, Last processed: ${lastProcessedSequence}`);
 
           // Save to IndexedDB (non-blocking)
           if (currentMeetingId) {
@@ -408,6 +444,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   const addTranscript = useCallback((update: TranscriptUpdate) => {
     console.log('🎯 addTranscript called with:', {
       sequence_id: update.sequence_id,
+      phrase_id: update.phrase_id,
       text: update.text.substring(0, 50) + '...',
       timestamp: update.timestamp,
       is_partial: update.is_partial
@@ -424,12 +461,32 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       audio_start_time: update.audio_start_time,
       audio_end_time: update.audio_end_time,
       duration: update.duration,
+      // EagerMode: Two-tier transcription
+      confirmed_text: update.confirmed_text,
+      hypothesis_text: update.hypothesis_text,
+      has_new_confirmed: update.has_new_confirmed,
+      words: update.words,
+      // Nutshell-style streaming
+      phrase_id: update.phrase_id,
     };
 
     setTranscripts(prev => {
       console.log('📊 Current transcripts count before update:', prev.length);
 
-      // Check if this transcript already exists
+      // Nutshell-style streaming: REPLACE if same phrase_id exists
+      if (newTranscript.phrase_id !== undefined) {
+        const existingIndex = prev.findIndex(t => t.phrase_id === newTranscript.phrase_id);
+        if (existingIndex !== -1) {
+          // Preserve original id to avoid React key changes
+          const originalId = prev[existingIndex].id;
+          console.log(`🔄 Replacing transcript with phrase_id=${newTranscript.phrase_id}`);
+          const updated = [...prev];
+          updated[existingIndex] = { ...newTranscript, id: originalId };
+          return updated.sort((a, b) => (a.audio_start_time || 0) - (b.audio_start_time || 0));
+        }
+      }
+
+      // Check if this transcript already exists by text and timestamp
       const exists = prev.some(
         t => t.text === update.text && t.timestamp === update.timestamp
       );
@@ -438,15 +495,15 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         return prev;
       }
 
-      // Add new transcript and sort by sequence_id to maintain order
+      // Add new transcript and sort by audio_start_time to maintain order
       const updated = [...prev, newTranscript];
-      const sorted = updated.sort((a, b) => (a.sequence_id || 0) - (b.sequence_id || 0));
+      const sorted = updated.sort((a, b) => (a.audio_start_time || 0) - (b.audio_start_time || 0));
 
       console.log('✅ Added new transcript. New count:', sorted.length);
       console.log('📝 Latest transcript:', {
         id: newTranscript.id,
         text: newTranscript.text.substring(0, 30) + '...',
-        sequence_id: newTranscript.sequence_id
+        phrase_id: newTranscript.phrase_id
       });
 
       return sorted;

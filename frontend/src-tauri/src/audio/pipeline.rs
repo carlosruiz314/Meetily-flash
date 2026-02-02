@@ -13,6 +13,9 @@ use super::recording_state::{AudioChunk, AudioError, RecordingState, DeviceType}
 use super::audio_processing::{audio_to_mono, LoudnessNormalizer, NoiseSuppressionProcessor, HighPassFilter};
 use super::vad::{ContinuousVadProcessor};
 
+// NutWhisper integration
+use crate::whisper_engine::commands::{is_nut_whisper_active, send_audio_to_nut_whisper};
+
 /// Ring buffer for synchronized audio mixing
 /// Accumulates samples from mic and system streams until we have aligned windows
 struct AudioMixerRingBuffer {
@@ -677,6 +680,7 @@ impl AudioCapture {
 
 /// VAD-driven audio processing pipeline
 /// Uses Voice Activity Detection to segment speech in real-time and send only speech to Whisper
+/// Also supports NutWhisper mode which bypasses VAD for time-based chunking
 pub struct AudioPipeline {
     receiver: mpsc::UnboundedReceiver<AudioChunk>,
     transcription_sender: mpsc::UnboundedSender<AudioChunk>,
@@ -694,6 +698,10 @@ pub struct AudioPipeline {
     mixer: ProfessionalAudioMixer,
     // Recording sender for pre-mixed audio
     recording_sender_for_mixed: Option<mpsc::UnboundedSender<AudioChunk>>,
+    // NutWhisper support
+    use_nut_whisper: bool,
+    nut_whisper_buffer: Vec<f32>,  // Buffer for 16kHz audio
+    nut_whisper_timestamp: f64,
 }
 
 impl AudioPipeline {
@@ -744,6 +752,14 @@ impl AudioPipeline {
         // Note: target_chunk_duration_ms is ignored - VAD controls segmentation now
         let _ = target_chunk_duration_ms;
 
+        // Check if NutWhisper provider is active
+        let use_nut_whisper = is_nut_whisper_active();
+        if use_nut_whisper {
+            info!("🥜 NutWhisper mode ACTIVE - bypassing VAD for time-based chunking");
+        } else {
+            info!("📊 Standard mode - using VAD-based segmentation");
+        }
+
         Self {
             receiver,
             transcription_sender,
@@ -760,12 +776,37 @@ impl AudioPipeline {
             ring_buffer,
             mixer,
             recording_sender_for_mixed: None,  // Will be set by manager
+            // NutWhisper support
+            use_nut_whisper,
+            nut_whisper_buffer: Vec::new(),
+            nut_whisper_timestamp: 0.0,
         }
+    }
+
+    /// Resample audio from 48kHz to 16kHz for NutWhisper
+    fn resample_48k_to_16k(samples: &[f32]) -> Vec<f32> {
+        // Simple linear interpolation resampling (48000 -> 16000 = 3:1 ratio)
+        let ratio = 3usize;
+        let output_len = samples.len() / ratio;
+        let mut resampled = Vec::with_capacity(output_len);
+
+        for i in 0..output_len {
+            let src_idx = i * ratio;
+            // Average of 3 samples for anti-aliasing
+            let sum: f32 = samples[src_idx..src_idx + ratio].iter().sum();
+            resampled.push(sum / ratio as f32);
+        }
+
+        resampled
     }
 
     /// Run the VAD-driven audio processing pipeline
     pub async fn run(mut self) -> Result<()> {
-        info!("VAD-driven audio pipeline started - segments sent in real-time based on speech detection");
+        if self.use_nut_whisper {
+            info!("🥜 NutWhisper audio pipeline started - time-based chunking (no VAD)");
+        } else {
+            info!("VAD-driven audio pipeline started - segments sent in real-time based on speech detection");
+        }
 
         // CRITICAL FIX: Continue processing until channel is closed, not based on recording state
         // This ensures ALL chunks are processed during shutdown, fixing premature meeting completion
@@ -831,37 +872,71 @@ impl AudioPipeline {
                             // Previous 2x gain was causing excessive limiting/distortion
                             let mixed_with_gain = mixed_clean;
 
-                            // STEP 3: Send mixed audio for transcription (VAD + Whisper)
-                            match self.vad_processor.process_audio(&mixed_with_gain) {
-                                Ok(speech_segments) => {
-                                    for segment in speech_segments {
-                                        let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
+                            // STEP 3: Send mixed audio for transcription
+                            if self.use_nut_whisper {
+                                // NutWhisper mode: bypass VAD, resample and send directly to NutWhisper
+                                let resampled = Self::resample_48k_to_16k(&mixed_with_gain);
+                                self.nut_whisper_buffer.extend_from_slice(&resampled);
 
-                                        if segment.samples.len() >= 800 {  // Minimum 50ms at 16kHz - matches Parakeet capability
-                                            info!("📤 Sending VAD segment: {:.1}ms, {} samples",
-                                                  duration_ms, segment.samples.len());
+                                // Track timestamp from first audio
+                                if self.nut_whisper_timestamp == 0.0 {
+                                    self.nut_whisper_timestamp = chunk.timestamp;
+                                }
 
-                                            let transcription_chunk = AudioChunk {
-                                                data: segment.samples,
-                                                sample_rate: 16000,
-                                                timestamp: segment.start_timestamp_ms / 1000.0,
-                                                chunk_id: self.chunk_id_counter,
-                                                device_type: DeviceType::Microphone,  // Mixed audio
-                                            };
+                                // Send to NutWhisper when we have enough samples (100ms batches)
+                                // NutWhisper handles its own 2-second chunking internally
+                                let samples_per_100ms = 1600; // 16kHz * 0.1s
+                                if self.nut_whisper_buffer.len() >= samples_per_100ms {
+                                    let audio_to_send = std::mem::take(&mut self.nut_whisper_buffer);
+                                    let timestamp = self.nut_whisper_timestamp;
 
-                                            if let Err(e) = self.transcription_sender.send(transcription_chunk) {
-                                                warn!("Failed to send VAD segment: {}", e);
+                                    // Send audio to NutWhisper asynchronously
+                                    if let Err(e) = send_audio_to_nut_whisper(
+                                        audio_to_send,
+                                        "mixed",
+                                        timestamp,
+                                    ).await {
+                                        warn!("🥜 Failed to send audio to NutWhisper: {}", e);
+                                    }
+
+                                    // Update timestamp for next batch
+                                    self.nut_whisper_timestamp = chunk.timestamp;
+                                }
+
+                                // Note: Results are polled by the transcription worker, not here
+                            } else {
+                                // Standard VAD mode
+                                match self.vad_processor.process_audio(&mixed_with_gain) {
+                                    Ok(speech_segments) => {
+                                        for segment in speech_segments {
+                                            let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
+
+                                            if segment.samples.len() >= 800 {  // Minimum 50ms at 16kHz - matches Parakeet capability
+                                                info!("📤 Sending VAD segment: {:.1}ms, {} samples",
+                                                      duration_ms, segment.samples.len());
+
+                                                let transcription_chunk = AudioChunk {
+                                                    data: segment.samples,
+                                                    sample_rate: 16000,
+                                                    timestamp: segment.start_timestamp_ms / 1000.0,
+                                                    chunk_id: self.chunk_id_counter,
+                                                    device_type: DeviceType::Microphone,  // Mixed audio
+                                                };
+
+                                                if let Err(e) = self.transcription_sender.send(transcription_chunk) {
+                                                    warn!("Failed to send VAD segment: {}", e);
+                                                } else {
+                                                    self.chunk_id_counter += 1;
+                                                }
                                             } else {
-                                                self.chunk_id_counter += 1;
+                                                debug!("⏭️ Dropping short VAD segment: {:.1}ms ({} samples < 800)",
+                                                       duration_ms, segment.samples.len());
                                             }
-                                        } else {
-                                            debug!("⏭️ Dropping short VAD segment: {:.1}ms ({} samples < 800)",
-                                                   duration_ms, segment.samples.len());
                                         }
                                     }
-                                }
-                                Err(e) => {
-                                    warn!("⚠️ VAD error: {}", e);
+                                    Err(e) => {
+                                        warn!("⚠️ VAD error: {}", e);
+                                    }
                                 }
                             }
 

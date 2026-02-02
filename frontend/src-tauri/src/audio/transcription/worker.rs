@@ -5,11 +5,12 @@
 use super::engine::TranscriptionEngine;
 use super::provider::TranscriptionError;
 use crate::audio::AudioChunk;
+use crate::whisper_engine::commands::{is_nut_whisper_active, poll_nut_whisper_results};
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 // Sequence counter for transcript updates
 static SEQUENCE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -36,10 +37,225 @@ pub struct TranscriptUpdate {
     pub audio_start_time: f64, // Seconds from recording start (e.g., 125.3)
     pub audio_end_time: f64,   // Seconds from recording start (e.g., 128.6)
     pub duration: f64,          // Segment duration in seconds (e.g., 3.3)
+    // EagerMode: Two-tier transcription (confirmed vs hypothesis)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmed_text: Option<String>,    // Stable text that won't change
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hypothesis_text: Option<String>,   // Text that may change with next update
+    #[serde(default)]
+    pub has_new_confirmed: bool,           // Whether this update includes newly confirmed words
+    // Nutshell-style streaming: phrase_id tracks streaming phrases
+    // Same phrase_id = REPLACE existing entry (streaming update)
+    // New phrase_id = ADD new entry (new phrase started after silence)
+    #[serde(default)]
+    pub phrase_id: u64,
 }
 
 // NOTE: get_transcript_history and get_recording_meeting_name functions
 // have been moved to recording_commands.rs where they have access to RECORDING_MANAGER
+
+/// NutWhisper transcription loop - polls for progressive results
+async fn run_nut_whisper_transcription_loop<R: Runtime>(
+    app: AppHandle<R>,
+    mut transcription_receiver: tokio::sync::mpsc::UnboundedReceiver<AudioChunk>,
+) {
+    let mut sequence_id: u64 = 0;
+    let mut speech_detected_emitted = false;
+    let recording_start = std::time::Instant::now();
+    let mut total_audio_sent: u64 = 0;
+
+    info!("🥜 NutWhisper transcription loop started");
+
+    // Load the user's configured model if not already loaded
+    if let Ok(Some(config)) = crate::api::api::api_get_transcript_config(
+        app.clone(),
+        app.clone().state(),
+        None,
+    ).await {
+        if config.provider == "localWhisper" && !config.model.is_empty() {
+            info!("🥜 Loading user's configured model: {}", config.model);
+
+            // Load the model into NutWhisper
+            if let Err(e) = crate::whisper_engine::commands::whisper_nut_load_model(config.model.clone()).await {
+                error!("🥜 Failed to load model '{}': {}", config.model, e);
+                let _ = app.emit("transcription-error", serde_json::json!({
+                    "error": format!("Failed to load model: {}", e),
+                    "userMessage": "Recording failed: Unable to load speech recognition model.",
+                    "actionable": true
+                }));
+                return;
+            }
+            info!("🥜 Model '{}' loaded successfully", config.model);
+        }
+    }
+
+    loop {
+        // Poll for results with a short timeout
+        tokio::select! {
+            // Receive audio chunks and send to NutWhisper
+            chunk = transcription_receiver.recv() => {
+                match chunk {
+                    Some(audio_chunk) => {
+                        // IMPORTANT: Send audio to NutWhisper for processing!
+                        // Convert to 16kHz mono if needed
+                        let samples = if audio_chunk.sample_rate != 16000 {
+                            crate::audio::audio_processing::resample_audio(
+                                &audio_chunk.data,
+                                audio_chunk.sample_rate,
+                                16000
+                            )
+                        } else {
+                            audio_chunk.data.clone()
+                        };
+
+                        let timestamp = audio_chunk.timestamp;
+                        total_audio_sent += samples.len() as u64;
+
+                        // Log every 10th chunk to avoid spam
+                        if audio_chunk.chunk_id % 10 == 0 {
+                            info!("🥜 Sending audio chunk {} to NutWhisper ({} samples, total sent: {})",
+                                  audio_chunk.chunk_id, samples.len(), total_audio_sent);
+                        }
+
+                        // Send to NutWhisper pipeline
+                        if let Err(e) = crate::whisper_engine::commands::send_audio_to_nut_whisper(
+                            samples,
+                            "microphone",
+                            timestamp,
+                        ).await {
+                            error!("🥜 Failed to send audio to NutWhisper: {}", e);
+                        }
+                    }
+                    None => {
+                        // Channel closed - recording stopped
+                        info!("🥜 NutWhisper: transcription channel closed, exiting loop");
+                        break;
+                    }
+                }
+            }
+
+            // Poll NutWhisper for results every 100ms
+            _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                let results = poll_nut_whisper_results().await;
+
+                if !results.is_empty() {
+                    info!("🥜 Worker received {} results from poll", results.len());
+                }
+
+                for result in results {
+                    if result.text.trim().is_empty() {
+                        info!("🥜 Skipping empty result");
+                        continue;
+                    }
+
+                    // Emit speech-detected on first result
+                    if !speech_detected_emitted {
+                        if let Err(e) = app.emit("speech-detected", serde_json::json!({})) {
+                            warn!("🥜 Failed to emit speech-detected: {}", e);
+                        } else {
+                            info!("🥜 First speech detected - emitted speech-detected event");
+                        }
+                        speech_detected_emitted = true;
+                    }
+
+                    // Create timestamp
+                    let now = chrono::Local::now();
+                    let timestamp_str = now.format("%H:%M:%S").to_string();
+
+                    // Calculate audio times from recording start
+                    let audio_start = result.start_time as f64;
+                    let audio_end = result.end_time as f64;
+                    let duration = audio_end - audio_start;
+
+                    let update = TranscriptUpdate {
+                        text: result.text.clone(),
+                        timestamp: timestamp_str,
+                        source: result.source.clone(),
+                        sequence_id,
+                        chunk_start_time: audio_start,
+                        is_partial: result.is_partial,
+                        confidence: result.confidence,
+                        audio_start_time: audio_start,
+                        audio_end_time: audio_end,
+                        duration: duration.max(0.1), // Minimum 100ms for display
+                        // EagerMode: Two-tier transcription
+                        confirmed_text: result.confirmed_text.clone(),
+                        hypothesis_text: result.hypothesis_text.clone(),
+                        has_new_confirmed: result.has_new_confirmed,
+                        // Nutshell-style streaming: same phrase_id = replace, new = add
+                        phrase_id: result.phrase_id,
+                    };
+
+                    // Log the result with EagerMode and phrase_id info
+                    let result_type = if result.is_final {
+                        "FINAL"
+                    } else if result.is_partial {
+                        "partial"
+                    } else {
+                        "refined"
+                    };
+                    let eager_info = if result.has_new_confirmed {
+                        format!(" [CONFIRMED: '{}']", result.confirmed_text.as_deref().unwrap_or(""))
+                    } else {
+                        String::new()
+                    };
+                    info!("🥜 NutWhisper {} [seq={}, phrase={}]: '{}' (conf: {:.2}){}",
+                          result_type, sequence_id, result.phrase_id, result.text, result.confidence, eager_info);
+
+                    // Emit the transcript update event
+                    info!("🥜 Emitting transcript-update event for sequence_id={}", sequence_id);
+                    match app.emit("transcript-update", &update) {
+                        Ok(_) => info!("🥜 ✅ transcript-update event emitted successfully"),
+                        Err(e) => error!("🥜 ❌ Failed to emit transcript-update: {}", e),
+                    }
+
+                    sequence_id += 1;
+                }
+            }
+        }
+    }
+
+    // Final poll to get any remaining results
+    let final_results = poll_nut_whisper_results().await;
+    for result in final_results {
+        if result.text.trim().is_empty() {
+            continue;
+        }
+
+        let now = chrono::Local::now();
+        let timestamp_str = now.format("%H:%M:%S").to_string();
+
+        let update = TranscriptUpdate {
+            text: result.text.clone(),
+            timestamp: timestamp_str,
+            source: result.source.clone(),
+            sequence_id,
+            chunk_start_time: result.start_time as f64,
+            is_partial: false,
+            confidence: result.confidence,
+            audio_start_time: result.start_time as f64,
+            audio_end_time: result.end_time as f64,
+            duration: (result.end_time - result.start_time) as f64,
+            // EagerMode: Final results have all text confirmed
+            confirmed_text: result.confirmed_text.clone(),
+            hypothesis_text: result.hypothesis_text.clone(),
+            has_new_confirmed: result.has_new_confirmed,
+            // Nutshell-style streaming
+            phrase_id: result.phrase_id,
+        };
+
+        info!("🥜 NutWhisper FINAL [{}]: '{}' (phrase_id={})", sequence_id, result.text, result.phrase_id);
+
+        if let Err(e) = app.emit("transcript-update", &update) {
+            error!("🥜 Failed to emit final transcript-update: {}", e);
+        }
+
+        sequence_id += 1;
+    }
+
+    info!("🥜 NutWhisper transcription loop ended - emitted {} transcripts, total audio sent: {} samples ({:.1}s)",
+          sequence_id, total_audio_sent, total_audio_sent as f64 / 16000.0);
+}
 
 /// Optimized parallel transcription task ensuring ZERO chunk loss
 pub fn start_transcription_task<R: Runtime>(
@@ -47,6 +263,15 @@ pub fn start_transcription_task<R: Runtime>(
     transcription_receiver: tokio::sync::mpsc::UnboundedReceiver<AudioChunk>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
+        // Check if NutWhisper mode is active
+        let use_nut_whisper = is_nut_whisper_active();
+
+        if use_nut_whisper {
+            info!("🥜 Starting NutWhisper transcription task - polling for progressive results");
+            run_nut_whisper_transcription_loop(app, transcription_receiver).await;
+            return;
+        }
+
         info!("🚀 Starting optimized parallel transcription task - guaranteeing zero chunk loss");
 
         // Initialize transcription engine (Whisper or Parakeet based on config)
@@ -217,6 +442,12 @@ pub fn start_transcription_task<R: Runtime>(
                                             audio_start_time,
                                             audio_end_time,
                                             duration: chunk_duration,
+                                            // EagerMode: Not used in regular transcription path
+                                            confirmed_text: None,
+                                            hypothesis_text: None,
+                                            has_new_confirmed: false,
+                                            // Non-streaming mode: each chunk is its own phrase
+                                            phrase_id: sequence_id,
                                         };
 
                                         if let Err(e) = app_clone.emit("transcript-update", &update)
