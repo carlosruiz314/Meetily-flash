@@ -8,13 +8,6 @@ rustflags = [
     "-C", "link-arg=-mmacosx-version-min=14.2",
 ]
 
-# Windows x64: Use baseline CPU features for maximum compatibility
-# This prevents ILLEGAL_INSTRUCTION crashes on CPUs without AVX-512
-# (e.g., Intel i7-1365U Raptor Lake, older AMD processors)
-[target.x86_64-pc-windows-msvc]
-rustflags = [
-    "-C", "target-cpu=x86-64-v2",
-]
 
 [env]
 MACOSX_DEPLOYMENT_TARGET = { value = "14.2", force = true }

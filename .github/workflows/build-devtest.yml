@@ -99,21 +99,6 @@ jobs:
           workspaces: ". -> target"
           key: ${{ matrix.platform }}-${{ matrix.target }}
 
-      # Windows: Set CPU-safe build flags to prevent AVX-512 crashes
-      # GitHub Actions runners have AVX-512, but many user CPUs don't
-      - name: Set CPU-safe build flags (Windows)
-        if: contains(matrix.platform, 'windows')
-        shell: bash
-        run: |
-          echo "Setting GGML/whisper.cpp flags to disable AVX-512..."
-          echo "GGML_NO_ACCELERATE=1" >> $GITHUB_ENV
-          echo "WHISPER_NO_AVX512=1" >> $GITHUB_ENV
-          echo "GGML_AVX512=OFF" >> $GITHUB_ENV
-          echo "GGML_AVX512_VBMI=OFF" >> $GITHUB_ENV
-          echo "GGML_AVX512_VNNI=OFF" >> $GITHUB_ENV
-          echo "RUSTFLAGS=-C target-cpu=x86-64-v2" >> $GITHUB_ENV
-          echo "CPU-safe build flags configured for maximum compatibility"
-
       # Platform-specific dependencies
       - name: Install dependencies (Ubuntu 24.04)
         if: matrix.platform == 'ubuntu-24.04'
