@@ -1,0 +1,41 @@
+{
+  "name": "LFM2 Meeting Summary",
+  "description": "Optimized template for Liquid AI LFM2-Transcript model with quality guardrails.",
+  "sections": [
+    {
+      "title": "Transcript Quality Assessment",
+      "instruction": "Rate the transcript quality (Good/Fair/Poor/Very Poor). List any speech recognition issues observed. If Poor or Very Poor, add a warning that manual review of the original recording is recommended.",
+      "format": "paragraph"
+    },
+    {
+      "title": "Topics Discussed",
+      "instruction": "List the main topics and subjects discussed. Require 2+ clear references per topic. Single-word or single-mention items go under a 'Brief Mentions' subsection. Add [confidence level] to each topic.",
+      "format": "list"
+    },
+    {
+      "title": "Executive Summary",
+      "instruction": "Provide a brief executive summary (2-3 sentences) of the key outcomes and decisions. Only state what is explicitly decided — do not infer outcomes from discussions. End with [confidence level].",
+      "format": "paragraph"
+    },
+    {
+      "title": "Action Items",
+      "instruction": "List the specific action items that were assigned. Include who is responsible ONLY when explicitly named in the transcript. If no owner is stated, mark as 'Unassigned.' Do not assign action items to fabricated roles.",
+      "format": "list"
+    },
+    {
+      "title": "Key Decisions",
+      "instruction": "List the key decisions made during this meeting. Only include decisions explicitly stated as decisions. 'Discussed X' does not equal 'Decided X.' End with [confidence level].",
+      "format": "list"
+    },
+    {
+      "title": "Participants",
+      "instruction": "List participants mentioned by name. Include their roles or titles only when explicitly stated. If no names are identified in the transcript, write 'No participants identified by name in this transcript.' Do NOT fabricate roles or descriptions.",
+      "format": "list"
+    },
+    {
+      "title": "Transcript Issues",
+      "instruction": "List garbled passages, unclear sections, or obvious speech recognition errors with their timestamps. Quote the problematic text as-is. If no issues detected, write 'No significant issues detected.'",
+      "format": "list"
+    }
+  ]
+}
