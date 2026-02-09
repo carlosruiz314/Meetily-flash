@@ -48,6 +48,7 @@ pub mod anthropic;
 pub mod groq;
 pub mod openrouter;
 pub mod parakeet_engine;
+pub mod lfm_engine;
 pub mod state;
 pub mod summary;
 pub mod tray;
@@ -412,6 +413,14 @@ pub fn run() {
         .manage(audio::init_system_audio_state())
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .setup(|_app| {
+            // Initialize LFM engine and setup manager with app data directory
+            if let Ok(app_data_dir) = _app.handle().path().app_data_dir() {
+                _app.manage(lfm_engine::commands::init_lfm_engine(Some(app_data_dir.clone())));
+                _app.manage(lfm_engine::commands::init_lfm_setup(app_data_dir));
+            } else {
+                // Fallback with None if path resolution fails
+                _app.manage(lfm_engine::commands::init_lfm_engine(None));
+            }
             log::info!("Application setup complete");
 
             // Initialize system tray
@@ -564,6 +573,22 @@ pub fn run() {
             parakeet_engine::commands::parakeet_cancel_download,
             parakeet_engine::commands::parakeet_delete_corrupted_model,
             parakeet_engine::commands::open_parakeet_models_folder,
+            // LFM Audio engine commands (Liquid AI)
+            lfm_engine::commands::lfm_check_dependencies,
+            lfm_engine::commands::lfm_get_status,
+            lfm_engine::commands::lfm_load_model,
+            lfm_engine::commands::lfm_unload_model,
+            lfm_engine::commands::lfm_transcribe_file,
+            lfm_engine::commands::lfm_transcribe_samples,
+            lfm_engine::commands::lfm_is_model_loaded,
+            lfm_engine::commands::lfm_get_current_model,
+            lfm_engine::commands::lfm_shutdown,
+            lfm_engine::commands::lfm_get_install_instructions,
+            // LFM setup commands (auto-setup venv + dependencies)
+            lfm_engine::commands::lfm_is_setup_complete,
+            lfm_engine::commands::lfm_is_model_downloaded,
+            lfm_engine::commands::lfm_get_setup_status,
+            lfm_engine::commands::lfm_run_setup,
             // Parallel processing commands
             whisper_engine::parallel_commands::initialize_parallel_processor,
             whisper_engine::parallel_commands::start_parallel_processing,

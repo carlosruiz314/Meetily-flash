@@ -282,7 +282,7 @@ impl AudioCapture {
                 }
             } else {
                 info!("ℹ️ RNNoise noise suppression DISABLED for microphone '{}' (flag: RNNOISE_APPLY_ENABLED=false)", device.name);
-                info!("   Whisper handles noise well internally - RNNoise is optional");
+                info!("   Transcription engines handle noise well internally - RNNoise is optional");
                 None
             };
 
@@ -676,7 +676,7 @@ impl AudioCapture {
 }
 
 /// VAD-driven audio processing pipeline
-/// Uses Voice Activity Detection to segment speech in real-time and send only speech to Whisper
+/// Uses Voice Activity Detection to segment speech in real-time and send only speech to transcription
 pub struct AudioPipeline {
     receiver: mpsc::UnboundedReceiver<AudioChunk>,
     transcription_sender: mpsc::UnboundedSender<AudioChunk>,
@@ -728,7 +728,7 @@ impl AudioPipeline {
 
         let vad_processor = match ContinuousVadProcessor::new(sample_rate, redemption_time) {
             Ok(processor) => {
-                info!("VAD-driven pipeline: VAD segments will be sent directly to Whisper (no time-based accumulation)");
+                info!("VAD-driven pipeline: VAD segments will be sent directly to transcription engine (no time-based accumulation)");
                 processor
             }
             Err(e) => {
@@ -831,7 +831,7 @@ impl AudioPipeline {
                             // Previous 2x gain was causing excessive limiting/distortion
                             let mixed_with_gain = mixed_clean;
 
-                            // STEP 3: Send mixed audio for transcription (VAD + Whisper)
+                            // STEP 3: Send mixed audio for transcription (VAD processing)
                             match self.vad_processor.process_audio(&mixed_with_gain) {
                                 Ok(speech_segments) => {
                                     for segment in speech_segments {
@@ -908,7 +908,7 @@ impl AudioPipeline {
 
                     // Send segments >= 50ms (800 samples at 16kHz) - matches main pipeline filter
                     if segment.samples.len() >= 800 {
-                        info!("📤 Sending final VAD segment to Whisper: {:.1}ms duration, {} samples",
+                        info!("📤 Sending final VAD segment to transcription: {:.1}ms duration, {} samples",
                               duration_ms, segment.samples.len());
 
                         let transcription_chunk = AudioChunk {

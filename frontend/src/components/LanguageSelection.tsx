@@ -118,7 +118,7 @@ interface LanguageSelectionProps {
   selectedLanguage: string;
   onLanguageChange: (language: string) => void;
   disabled?: boolean;
-  provider?: 'localWhisper' | 'parakeet' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai';
+  provider?: 'localWhisper' | 'parakeet' | 'lfm' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai';
 }
 
 export function LanguageSelection({
@@ -129,9 +129,9 @@ export function LanguageSelection({
 }: LanguageSelectionProps) {
   const [saving, setSaving] = useState(false);
 
-  // Parakeet only supports auto-detection (doesn't support manual language selection)
-  const isParakeet = provider === 'parakeet';
-  const availableLanguages = isParakeet
+  // Parakeet and LFM only support auto-detection (doesn't support manual language selection)
+  const isAutoDetectOnly = provider === 'parakeet' || provider === 'lfm';
+  const availableLanguages = isAutoDetectOnly
     ? LANGUAGES.filter(lang => lang.code === 'auto' || lang.code === 'auto-translate')
     : LANGUAGES;
 
@@ -196,11 +196,11 @@ export function LanguageSelection({
           ))}
         </select>
 
-        {/* Parakeet language limitation warning */}
-        {isParakeet && (
+        {/* Auto-detect only models language limitation warning */}
+        {isAutoDetectOnly && (
           <div className="p-2 bg-amber-50 border border-amber-200 rounded text-amber-800">
-            <p className="font-medium">ℹ️ Parakeet Language Support</p>
-            <p className="mt-1 text-xs">Parakeet currently only supports automatic language detection. Manual language selection is not available. Use Whisper if you need to specify a particular language.</p>
+            <p className="font-medium">ℹ️ {provider === 'lfm' ? 'LFM' : 'Parakeet'} Language Support</p>
+            <p className="mt-1 text-xs">{provider === 'lfm' ? 'LFM2.5-Audio' : 'Parakeet'} currently only supports automatic language detection. Manual language selection is not available. Use Whisper if you need to specify a particular language.</p>
           </div>
         )}
 

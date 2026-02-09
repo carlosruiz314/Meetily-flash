@@ -135,13 +135,64 @@ pub async fn validate_transcription_model_ready<R: Runtime>(app: &AppHandle<R>) 
                 }
             }
         }
+        "lfm" => {
+            info!("🌊 LFM2.5-Audio selected - checking setup status");
+            // LFM is experimental - check if setup is complete
+            // For now, we fall back to Parakeet for actual transcription
+            // Full LFM integration coming soon
+            match crate::lfm_engine::commands::lfm_check_dependencies(
+                app.state::<crate::lfm_engine::commands::LfmEngineState>()
+            ).await {
+                Ok(true) => {
+                    info!("✅ LFM dependencies available, but using Parakeet for transcription (LFM transcription coming soon)");
+                    // Fall through to Parakeet validation for now
+                    validate_transcription_model_ready_internal(app, "parakeet").await
+                }
+                Ok(false) => {
+                    warn!("⚠️ LFM not fully set up, falling back to Parakeet");
+                    validate_transcription_model_ready_internal(app, "parakeet").await
+                }
+                Err(e) => {
+                    warn!("⚠️ LFM check failed: {}, falling back to Parakeet", e);
+                    validate_transcription_model_ready_internal(app, "parakeet").await
+                }
+            }
+        }
         other => {
             warn!("❌ Unsupported transcription provider for local recording: {}", other);
             Err(format!(
-                "Provider '{}' is not supported for local transcription. Please select 'localWhisper' or 'parakeet'.",
+                "Provider '{}' is not supported for local transcription. Please select 'localWhisper', 'parakeet', or 'lfm'.",
                 other
             ))
         }
+    }
+}
+
+/// Internal validation helper for recursive calls
+#[allow(unused_variables)]
+async fn validate_transcription_model_ready_internal<R: Runtime>(app: &AppHandle<R>, provider: &str) -> Result<(), String> {
+    match provider {
+        "localWhisper" => {
+            // Validate Whisper (takes no arguments)
+            match crate::whisper_engine::commands::whisper_validate_model_ready().await {
+                Ok(_) => Ok(()),
+                Err(e) => Err(e)
+            }
+        }
+        "parakeet" => {
+            // Initialize Parakeet
+            if let Err(init_error) = crate::parakeet_engine::commands::parakeet_init().await {
+                return Err(format!("Failed to initialize Parakeet: {}", init_error));
+            }
+            match crate::parakeet_engine::commands::parakeet_validate_model_ready_with_config(app).await {
+                Ok(model_name) => {
+                    info!("✅ Parakeet model validation successful: {}", model_name);
+                    Ok(())
+                }
+                Err(e) => Err(e)
+            }
+        }
+        _ => Err(format!("Unknown provider: {}", provider))
     }
 }
 
@@ -210,6 +261,31 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
                 None => {
                     Err("Parakeet engine not initialized. This should not happen after validation.".to_string())
                 }
+            }
+        }
+        "lfm" => {
+            // LFM is experimental - fall back to Parakeet for actual transcription
+            info!("🌊 LFM selected but transcription not yet implemented - using Parakeet");
+            // Get Parakeet engine for actual transcription
+            let engine = {
+                let guard = crate::parakeet_engine::commands::PARAKEET_ENGINE
+                    .lock()
+                    .unwrap();
+                guard.as_ref().cloned()
+            };
+
+            match engine {
+                Some(engine) => {
+                    if engine.is_model_loaded().await {
+                        let model_name = engine.get_current_model().await
+                            .unwrap_or_else(|| "unknown".to_string());
+                        info!("✅ Using Parakeet model '{}' for LFM fallback", model_name);
+                        Ok(TranscriptionEngine::Parakeet(engine))
+                    } else {
+                        Err("Parakeet engine not ready for LFM fallback".to_string())
+                    }
+                }
+                None => Err("Parakeet engine not initialized for LFM fallback".to_string())
             }
         }
         "localWhisper" | _ => {
