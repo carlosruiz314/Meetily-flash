@@ -248,9 +248,7 @@ export default function RootLayout({
           </RecordingStateProvider>
         </AnalyticsProvider>
 
-        <Toaster position="bottom-center" richColors closeButton />
-        {/* Separate Toaster for top-right progress toasts (download, transcription queue) */}
-        <Toaster position="top-right" richColors />
+        <Toaster position="bottom-right" richColors closeButton />
       </body>
     </html>
   )

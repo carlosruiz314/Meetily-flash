@@ -17,7 +17,6 @@ import {
   SelectValue,
 } from '../ui/select';
 import { invoke } from '@tauri-apps/api/core';
-import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
 import { LANGUAGES } from '@/constants/languages';
 import { useTranscriptionModels, ModelOption } from '@/hooks/useTranscriptionModels';
@@ -99,7 +98,6 @@ export function RetranscribeDialog({
       });
 
       // Close dialog immediately — progress is shown via toast
-      toast.info('Retranscription queued', { description: 'Progress will appear in the top-right corner.' });
       onComplete?.();
       onOpenChange(false);
     } catch (err: any) {

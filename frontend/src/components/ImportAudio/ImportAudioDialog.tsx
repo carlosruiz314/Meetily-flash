@@ -27,7 +27,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../ui/select';
-import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useImportAudio, AudioFileInfo } from '@/hooks/useImportAudio';
 import { LANGUAGES } from '@/constants/languages';
@@ -153,7 +152,6 @@ export function ImportAudioDialog({
     );
 
     // Close dialog immediately — progress is shown via toast
-    toast.info('Import queued', { description: 'Progress will appear in the top-right corner.' });
     onComplete?.();
     onOpenChange(false);
   };
