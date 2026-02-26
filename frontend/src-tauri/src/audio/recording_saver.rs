@@ -189,10 +189,6 @@ impl RecordingSaver {
                         false
                     };
 
-                    if !should_continue {
-                        break;
-                    }
-
                     // Only process audio chunks if auto_save is enabled
                     if save_audio {
                         // Add chunk to incremental saver
@@ -204,9 +200,27 @@ impl RecordingSaver {
                         } else {
                             error!("Incremental saver not available while accumulating");
                         }
-                    } else {
-                        // auto_save is false: discard audio chunk (no-op)
-                        // Transcription already happened in the pipeline before this point
+                    }
+
+                    if !should_continue {
+                        // Drain any remaining chunks in the channel before exiting
+                        // so no audio is lost on stop
+                        if save_audio {
+                            let mut drained = 0u32;
+                            while let Ok(remaining_chunk) = receiver.try_recv() {
+                                if let Some(saver_arc) = &incremental_saver_arc {
+                                    let mut saver_guard = saver_arc.lock().await;
+                                    if let Err(e) = saver_guard.add_chunk(remaining_chunk) {
+                                        error!("Failed to add drained chunk to incremental saver: {}", e);
+                                    }
+                                    drained += 1;
+                                }
+                            }
+                            if drained > 0 {
+                                info!("Drained {} remaining audio chunks before stopping", drained);
+                            }
+                        }
+                        break;
                     }
                 }
 
