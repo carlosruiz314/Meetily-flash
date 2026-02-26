@@ -3,9 +3,6 @@ import {
   Upload,
   Globe,
   Loader2,
-  AlertCircle,
-  CheckCircle2,
-  X,
   Cpu,
   FileAudio,
   Clock,
@@ -32,9 +29,7 @@ import {
 } from '../ui/select';
 import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
-import { useImportAudio, AudioFileInfo, ImportResult } from '@/hooks/useImportAudio';
-import { useRouter } from 'next/navigation';
-import { useSidebar } from '../Sidebar/SidebarProvider';
+import { useImportAudio, AudioFileInfo } from '@/hooks/useImportAudio';
 import { LANGUAGES } from '@/constants/languages';
 import { useTranscriptionModels, ModelOption } from '@/hooks/useTranscriptionModels';
 
@@ -69,8 +64,6 @@ export function ImportAudioDialog({
   preselectedFile,
   onComplete,
 }: ImportAudioDialogProps) {
-  const router = useRouter();
-  const { refetchMeetings } = useSidebar();
   const { selectedLanguage, transcriptModelConfig, betaFeatures } = useConfig();
 
   const [title, setTitle] = useState('');
@@ -87,36 +80,15 @@ export function ImportAudioDialog({
     fetchModels,
   } = useTranscriptionModels(transcriptModelConfig);
 
-  const handleImportComplete = useCallback((result: ImportResult) => {
-    toast.success(`Import complete! ${result.segments_count} segments created.`);
-
-    // Refresh meetings list then navigate to the imported meeting
-    refetchMeetings();
-    onComplete?.();
-    onOpenChange(false);
-    router.push(`/meeting-details?id=${result.meeting_id}`);
-  }, [router, refetchMeetings, onComplete, onOpenChange]);
-
-  const handleImportError = useCallback((error: string) => {
-    toast.error('Import failed', { description: error });
-  }, []);
-
   const {
     status,
     fileInfo,
-    progress,
     error,
-    isProcessing,
-    isBusy,
     selectFile,
     validateFile,
     startImport,
-    cancelImport,
     reset,
-  } = useImportAudio({
-    onComplete: handleImportComplete,
-    onError: handleImportError,
-  });
+  } = useImportAudio();
 
   // Reset state when dialog opens
   useEffect(() => {
@@ -171,6 +143,7 @@ export function ImportAudioDialog({
   const handleStartImport = async () => {
     if (!fileInfo) return;
 
+    // Enqueue the import and close dialog immediately
     await startImport(
       fileInfo.path,
       title || fileInfo.filename,
@@ -178,34 +151,11 @@ export function ImportAudioDialog({
       selectedModel?.name || null,
       selectedModel?.provider || null
     );
-  };
 
-  const handleCancel = async () => {
-    if (isProcessing) {
-      await cancelImport();
-      toast.info('Import cancelled');
-    }
+    // Close dialog immediately — progress is shown via toast
+    toast.info('Import queued', { description: 'Progress will appear in the top-right corner.' });
+    onComplete?.();
     onOpenChange(false);
-  };
-
-  // Prevent closing during processing
-  const handleOpenChange = (newOpen: boolean) => {
-    if (!newOpen && isProcessing) {
-      return;
-    }
-    onOpenChange(newOpen);
-  };
-
-  const handleEscapeKeyDown = (event: KeyboardEvent) => {
-    if (isProcessing) {
-      event.preventDefault();
-    }
-  };
-
-  const handleInteractOutside = (event: Event) => {
-    if (isProcessing) {
-      event.preventDefault();
-    }
   };
 
   // Gate: Don't render dialog if beta feature is disabled (defense in depth)
@@ -214,206 +164,156 @@ export function ImportAudioDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent
-        className="sm:max-w-[500px]"
-        onEscapeKeyDown={handleEscapeKeyDown}
-        onInteractOutside={handleInteractOutside}
-      >
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-[500px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
-            {isProcessing ? (
-              <>
-                <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
-                Importing Audio...
-              </>
-            ) : error ? (
-              <>
-                <AlertCircle className="h-5 w-5 text-red-600" />
-                Import Failed
-              </>
-            ) : status === 'complete' ? (
-              <>
-                <CheckCircle2 className="h-5 w-5 text-green-600" />
-                Import Complete
-              </>
-            ) : (
-              <>
-                <Upload className="h-5 w-5 text-blue-600" />
-                Import Audio File
-              </>
-            )}
+            <Upload className="h-5 w-5 text-blue-600" />
+            Import Audio File
           </DialogTitle>
           <DialogDescription>
-            {isProcessing
-              ? progress?.message || 'Processing audio...'
-              : error
-              ? 'An error occurred during import'
-              : 'Import an audio file to create a new meeting with transcripts'}
+            Import an audio file to create a new meeting with transcripts
           </DialogDescription>
         </DialogHeader>
 
         <div className="space-y-4 py-4">
           {/* File selection / info */}
-          {!isProcessing && !error && (
-            <>
-              {fileInfo ? (
-                <div className="bg-gray-50 rounded-lg p-4 space-y-3">
-                  <div className="flex items-start gap-3">
-                    <FileAudio className="h-8 w-8 text-blue-600 flex-shrink-0" />
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-gray-900 truncate">{fileInfo.filename}</p>
-                      <div className="flex items-center gap-4 text-sm text-gray-500 mt-1">
-                        <span className="flex items-center gap-1">
-                          <Clock className="h-3.5 w-3.5" />
-                          {formatDuration(fileInfo.duration_seconds)}
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <HardDrive className="h-3.5 w-3.5" />
-                          {formatFileSize(fileInfo.size_bytes)}
-                        </span>
-                        <span className="text-blue-600 font-medium">{fileInfo.format}</span>
+          {fileInfo ? (
+            <div className="bg-gray-50 rounded-lg p-4 space-y-3">
+              <div className="flex items-start gap-3">
+                <FileAudio className="h-8 w-8 text-blue-600 flex-shrink-0" />
+                <div className="flex-1 min-w-0">
+                  <p className="font-medium text-gray-900 truncate">{fileInfo.filename}</p>
+                  <div className="flex items-center gap-4 text-sm text-gray-500 mt-1">
+                    <span className="flex items-center gap-1">
+                      <Clock className="h-3.5 w-3.5" />
+                      {formatDuration(fileInfo.duration_seconds)}
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <HardDrive className="h-3.5 w-3.5" />
+                      {formatFileSize(fileInfo.size_bytes)}
+                    </span>
+                    <span className="text-blue-600 font-medium">{fileInfo.format}</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Editable title */}
+              <div className="space-y-1">
+                <label className="text-sm font-medium text-gray-700">Meeting Title</label>
+                <Input
+                  value={title}
+                  onChange={(e) => {
+                    setTitle(e.target.value);
+                    setTitleModifiedByUser(true);
+                  }}
+                  placeholder="Enter meeting title"
+                />
+              </div>
+
+              <Button variant="outline" size="sm" onClick={handleSelectFile} className="w-full">
+                Choose Different File
+              </Button>
+            </div>
+          ) : (
+            <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center">
+              <FileAudio className="h-12 w-12 text-gray-400 mx-auto mb-4" />
+              <Button onClick={handleSelectFile} disabled={status === 'validating'}>
+                {status === 'validating' ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Validating...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="h-4 w-4 mr-2" />
+                    Select Audio File
+                  </>
+                )}
+              </Button>
+              <p className="text-sm text-gray-500 mt-2">MP4, WAV, MP3, FLAC, OGG, MKV, WebM, WMA</p>
+            </div>
+          )}
+
+          {/* Advanced options (collapsible) */}
+          {fileInfo && (
+            <div className="border rounded-lg">
+              <button
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                className="w-full flex items-center justify-between p-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
+              >
+                <span>Advanced Options</span>
+                {showAdvanced ? (
+                  <ChevronUp className="h-4 w-4" />
+                ) : (
+                  <ChevronDown className="h-4 w-4" />
+                )}
+              </button>
+
+              {showAdvanced && (
+                <div className="p-3 pt-0 space-y-4 border-t">
+                  {/* Language selector */}
+                  {!isParakeetModel ? (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <Globe className="h-4 w-4 text-muted-foreground" />
+                        <span className="text-sm font-medium">Language</span>
                       </div>
+                      <Select value={selectedLang} onValueChange={setSelectedLang}>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select language" />
+                        </SelectTrigger>
+                        <SelectContent className="max-h-60">
+                          {LANGUAGES.map((lang) => (
+                            <SelectItem key={lang.code} value={lang.code}>
+                              {lang.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
-                  </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <Globe className="h-4 w-4 text-muted-foreground" />
+                        <span className="text-sm font-medium">Language</span>
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Language selection isn't supported for Parakeet. It always uses automatic detection.
+                      </p>
+                    </div>
+                  )}
 
-                  {/* Editable title */}
-                  <div className="space-y-1">
-                    <label className="text-sm font-medium text-gray-700">Meeting Title</label>
-                    <Input
-                      value={title}
-                      onChange={(e) => {
-                        setTitle(e.target.value);
-                        setTitleModifiedByUser(true);
-                      }}
-                      placeholder="Enter meeting title"
-                    />
-                  </div>
-
-                  <Button variant="outline" size="sm" onClick={handleSelectFile} className="w-full">
-                    Choose Different File
-                  </Button>
-                </div>
-              ) : (
-                <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center">
-                  <FileAudio className="h-12 w-12 text-gray-400 mx-auto mb-4" />
-                  <Button onClick={handleSelectFile} disabled={status === 'validating'}>
-                    {status === 'validating' ? (
-                      <>
-                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                        Validating...
-                      </>
-                    ) : (
-                      <>
-                        <Upload className="h-4 w-4 mr-2" />
-                        Select Audio File
-                      </>
-                    )}
-                  </Button>
-                  <p className="text-sm text-gray-500 mt-2">MP4, WAV, MP3, FLAC, OGG, MKV, WebM, WMA</p>
-                </div>
-              )}
-
-              {/* Advanced options (collapsible) */}
-              {fileInfo && (
-                <div className="border rounded-lg">
-                  <button
-                    onClick={() => setShowAdvanced(!showAdvanced)}
-                    className="w-full flex items-center justify-between p-3 text-sm font-medium text-gray-700 hover:bg-gray-50"
-                  >
-                    <span>Advanced Options</span>
-                    {showAdvanced ? (
-                      <ChevronUp className="h-4 w-4" />
-                    ) : (
-                      <ChevronDown className="h-4 w-4" />
-                    )}
-                  </button>
-
-                  {showAdvanced && (
-                    <div className="p-3 pt-0 space-y-4 border-t">
-                      {/* Language selector */}
-                      {!isParakeetModel ? (
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-2">
-                            <Globe className="h-4 w-4 text-muted-foreground" />
-                            <span className="text-sm font-medium">Language</span>
-                          </div>
-                          <Select value={selectedLang} onValueChange={setSelectedLang}>
-                            <SelectTrigger className="w-full">
-                              <SelectValue placeholder="Select language" />
-                            </SelectTrigger>
-                            <SelectContent className="max-h-60">
-                              {LANGUAGES.map((lang) => (
-                                <SelectItem key={lang.code} value={lang.code}>
-                                  {lang.name}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      ) : (
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-2">
-                            <Globe className="h-4 w-4 text-muted-foreground" />
-                            <span className="text-sm font-medium">Language</span>
-                          </div>
-                          <p className="text-xs text-muted-foreground">
-                            Language selection isn't supported for Parakeet. It always uses automatic detection.
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Model selector */}
-                      {availableModels.length > 0 && (
-                        <div className="space-y-2">
-                          <div className="flex items-center gap-2">
-                            <Cpu className="h-4 w-4 text-muted-foreground" />
-                            <span className="text-sm font-medium">Model</span>
-                          </div>
-                          <Select
-                            value={selectedModelKey}
-                            onValueChange={setSelectedModelKey}
-                            disabled={loadingModels}
-                          >
-                            <SelectTrigger className="w-full">
-                              <SelectValue placeholder={loadingModels ? 'Loading models...' : 'Select model'} />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {availableModels.map((model) => (
-                                <SelectItem
-                                  key={`${model.provider}:${model.name}`}
-                                  value={`${model.provider}:${model.name}`}
-                                >
-                                  {model.displayName} ({Math.round(model.size_mb)} MB)
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </div>
-                      )}
+                  {/* Model selector */}
+                  {availableModels.length > 0 && (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <Cpu className="h-4 w-4 text-muted-foreground" />
+                        <span className="text-sm font-medium">Model</span>
+                      </div>
+                      <Select
+                        value={selectedModelKey}
+                        onValueChange={setSelectedModelKey}
+                        disabled={loadingModels}
+                      >
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder={loadingModels ? 'Loading models...' : 'Select model'} />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {availableModels.map((model) => (
+                            <SelectItem
+                              key={`${model.provider}:${model.name}`}
+                              value={`${model.provider}:${model.name}`}
+                            >
+                              {model.displayName} ({Math.round(model.size_mb)} MB)
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
                   )}
                 </div>
               )}
-            </>
-          )}
-
-          {/* Progress display */}
-          {isProcessing && progress && (
-            <div className="space-y-2">
-              <div className="relative">
-                <div className="w-full bg-gray-200 rounded-full h-3">
-                  <div
-                    className="bg-blue-600 h-3 rounded-full transition-all duration-300 ease-out"
-                    style={{ width: `${Math.min(progress.progress_percentage, 100)}%` }}
-                  />
-                </div>
-                <div className="flex justify-between text-xs text-gray-600 mt-1">
-                  <span>{progress.stage}</span>
-                  <span>{Math.round(progress.progress_percentage)}%</span>
-                </div>
-              </div>
-              <p className="text-sm text-muted-foreground text-center">{progress.message}</p>
             </div>
           )}
 
@@ -426,7 +326,7 @@ export function ImportAudioDialog({
         </div>
 
         <DialogFooter>
-          {!isProcessing && !error && (
+          {!error ? (
             <>
               <Button variant="outline" onClick={() => onOpenChange(false)}>
                 Cancel
@@ -440,14 +340,7 @@ export function ImportAudioDialog({
                 Import
               </Button>
             </>
-          )}
-          {isProcessing && (
-            <Button variant="outline" onClick={handleCancel}>
-              <X className="h-4 w-4 mr-2" />
-              Cancel
-            </Button>
-          )}
-          {error && (
+          ) : (
             <>
               <Button variant="outline" onClick={() => onOpenChange(false)}>
                 Close

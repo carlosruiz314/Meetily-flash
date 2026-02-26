@@ -172,6 +172,12 @@ impl RecordingSaver {
             }
         }
 
+        // Set saving flag BEFORE spawning the task to avoid race condition
+        // where the task reads is_saving=false before we set it to true
+        if let Ok(mut is_saving) = self.is_saving.lock() {
+            *is_saving = true;
+        }
+
         // Start accumulation task
         let is_saving_clone = self.is_saving.clone();
         let incremental_saver_arc = self.incremental_saver.clone();
@@ -226,11 +232,6 @@ impl RecordingSaver {
 
                 info!("Recording saver accumulation task ended");
             });
-        }
-
-        // Set saving flag
-        if let Ok(mut is_saving) = self.is_saving.lock() {
-            *is_saving = true;
         }
 
         sender
