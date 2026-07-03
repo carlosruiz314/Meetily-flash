@@ -1494,6 +1494,7 @@ mod tests {
         let samples_arc = std::sync::Arc::new(samples);
         let segments_arc = std::sync::Arc::new(transcript_segments.clone());
         let adapter_arc = std::sync::Arc::new(adapter);
+        let samples_for_energy = std::sync::Arc::clone(&samples_arc);
         let chunks = tokio::task::spawn_blocking(move || {
             adapter_arc.build_chunks(&samples_arc, DIARIZATION_SAMPLE_RATE, &segments_arc)
         })
@@ -1502,7 +1503,7 @@ mod tests {
         eprintln!("drift diagnostic: {} chunks", chunks.len());
         assert!(!chunks.is_empty());
 
-        let (labels, _) =
+        let (labels, centroids_a) =
             crate::audio::speaker::sherpa_adapter::cluster_by_centroids(&chunks, 0.40);
         let sr = DIARIZATION_SAMPLE_RATE as f64;
 
@@ -1696,6 +1697,545 @@ mod tests {
                 if l >= 5 { "SURVIVES" } else { "" }
             );
         }
+
+        // ===== TRACT 1: cross-stage stability check =====
+        // Stage A (raw AHC) absorption is characterized above (userB -> ~7 late
+        // chunks). Replicate Stage B (AHC + temporal smoothing) at chunk level to
+        // see whether smoothing compounds the absorption. Mirrors process()'s
+        // internal smooth_to_fixed_point call exactly.
+        let embeddings_b: Vec<Vec<f32>> = chunks.iter().map(|c| c.embedding.clone()).collect();
+        let timestamps_b: Vec<f64> = chunks.iter().map(|c| c.start_sample as f64 / sr).collect();
+        let durations_b: Vec<f64> = chunks.iter().map(|c| c.duration_secs).collect();
+        let (labels_b, centroids_b) =
+            crate::audio::speaker::sherpa_adapter::smooth_to_fixed_point(
+                &labels,
+                &embeddings_b,
+                &timestamps_b,
+                &durations_b,
+                &centroids_a,
+                &crate::audio::speaker::sherpa_adapter::SmoothParams::default(),
+            );
+        let mut b_early: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        let mut b_late: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        for (c, &lab) in chunks.iter().zip(labels_b.iter()) {
+            let t0 = c.start_sample as f64 / sr;
+            if t0 < 1800.0 {
+                *b_early.entry(lab).or_insert(0) += 1;
+            } else {
+                *b_late.entry(lab).or_insert(0) += 1;
+            }
+        }
+        let cyn_b = b_early
+            .iter()
+            .filter(|(_, &n)| n >= 5)
+            .min_by_key(|(lab, _)| b_late.get(*lab).copied().unwrap_or(0))
+            .map(|(lab, _)| *lab);
+        eprintln!(
+            "TRACT 1 (Stage B = AHC + smoothing): userB-equiv = {:?} | early {:?} | late {:?}",
+            cyn_b, b_early, b_late
+        );
+        let n_clusters_b: std::collections::HashSet<u32> = labels_b.iter().copied().collect();
+        let effective_cap = resolve_effective_cap_for_meeting(&pool, meeting_id).await;
+        eprintln!(
+            "TRACT 1: {} clusters after smoothing vs effective cap {} -> cap {}",
+            n_clusters_b.len(),
+            effective_cap,
+            if n_clusters_b.len() > effective_cap {
+                "FIRES (Stage D active)"
+            } else {
+                "no-op (Stage D exonerated)"
+            }
+        );
+
+        // ===== TRACT 1b: cap simulation =====
+        // Simulate enforce_max_speakers_cap on the smoothed output to determine
+        // whether UserB's distinct-but-small cluster gets merged. The cap merges
+        // the MOST ISOLATED cluster (lowest nearest-neighbour centroid cosine) into
+        // its NN, repeating until count <= cap. UserB's cos->carlos = 0.31 makes
+        // her a prime candidate. Mirrors enforce_max_speakers_cap (commands.rs:856).
+        let mut cap_centroids = centroids_b.clone();
+        let mut cap_durations: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
+        for (c, &lab) in chunks.iter().zip(labels_b.iter()) {
+            *cap_durations.entry(lab).or_insert(0.0) += c.duration_secs;
+        }
+        let cyn_b_label = cyn_b.unwrap_or(u32::MAX);
+        eprintln!(
+            "TRACT 1b: simulating cap ({}) on {} clusters (userB-equiv label {}):",
+            effective_cap, cap_centroids.len(), cyn_b_label
+        );
+        let mut cap_step = 0usize;
+        while cap_centroids.len() > effective_cap.max(2) {
+            let ids: Vec<u32> = cap_centroids.keys().copied().collect();
+            let mut most_isolated = ids[0];
+            let mut lowest_nn = f32::MAX;
+            let mut nn_of_isolated = ids[0];
+            for &i in &ids {
+                let mut best_sim = f32::MIN;
+                let mut best_j = i;
+                for &j in &ids {
+                    if i == j {
+                        continue;
+                    }
+                    let s = cosine(&cap_centroids[&i], &cap_centroids[&j]);
+                    if s > best_sim {
+                        best_sim = s;
+                        best_j = j;
+                    }
+                }
+                if best_sim < lowest_nn {
+                    lowest_nn = best_sim;
+                    most_isolated = i;
+                    nn_of_isolated = best_j;
+                }
+            }
+            let cynthia_hit = most_isolated == cyn_b_label || nn_of_isolated == cyn_b_label;
+            eprintln!(
+                "  cap step {}: merge {} ({:.1}s) -> {} ({:.1}s) nn_sim={:.3}{}",
+                cap_step,
+                most_isolated,
+                cap_durations.get(&most_isolated).copied().unwrap_or(0.0),
+                nn_of_isolated,
+                cap_durations.get(&nn_of_isolated).copied().unwrap_or(0.0),
+                lowest_nn,
+                if cynthia_hit { " <- USERB MERGED" } else { "" },
+            );
+            let cent_nn = cap_centroids[&nn_of_isolated].clone();
+            let cent_iso = cap_centroids[&most_isolated].clone();
+            let dur_nn = cap_durations[&nn_of_isolated];
+            let dur_iso = cap_durations[&most_isolated];
+            let total = dur_nn + dur_iso;
+            let w_nn = dur_nn as f32 / total as f32;
+            let w_iso = dur_iso as f32 / total as f32;
+            let merged: Vec<f32> = cent_nn
+                .iter()
+                .zip(cent_iso.iter())
+                .map(|(a, b)| a * w_nn + b * w_iso)
+                .collect();
+            cap_centroids.insert(nn_of_isolated, merged);
+            cap_durations.insert(nn_of_isolated, total);
+            cap_centroids.remove(&most_isolated);
+            cap_durations.remove(&most_isolated);
+            cap_step += 1;
+        }
+        let cyn_survives_cap = cap_centroids.contains_key(&cyn_b_label);
+        eprintln!(
+            "TRACT 1b: userB {} the cap (final clusters: {:?})",
+            if cyn_survives_cap { "SURVIVES" } else { "is ABSORBED by" },
+            cap_centroids.keys().collect::<Vec<_>>(),
+        );
+
+        // ===== TRACT 1c: absolute cosine distribution of "nearer userB" late chunks =====
+        // The 178 late chunks cosine-nearer UserB's early centroid than UserA's are
+        // NOT contamination (Tract 2 refutes the cascade). This measures their ABSOLUTE
+        // cosine to UserB: >= 0.5 = genuinely her voice (data loss); < 0.4 = sub-threshold
+        // ambiguous chunks that never reached the merge threshold (illusory absorption).
+        let mut cos_bins = [0usize; 5];
+        let mut nearer_cyn_total = 0usize;
+        for (c, &_lab) in chunks.iter().zip(labels.iter()) {
+            let t0 = c.start_sample as f64 / sr;
+            if t0 < 1800.0 {
+                continue;
+            }
+            let cos_cyn = cosine(&c.embedding, cynthia_c);
+            let cos_car = cosine(&c.embedding, carlos_c);
+            if cos_cyn > cos_car {
+                nearer_cyn_total += 1;
+                let idx = if cos_cyn < 0.2 {
+                    0
+                } else if cos_cyn < 0.3 {
+                    1
+                } else if cos_cyn < 0.4 {
+                    2
+                } else if cos_cyn < 0.5 {
+                    3
+                } else {
+                    4
+                };
+                cos_bins[idx] += 1;
+            }
+        }
+        eprintln!(
+            "TRACT 1c: {} 'nearer userB' late chunks — absolute cos->userB distribution:",
+            nearer_cyn_total
+        );
+        eprintln!(
+            "  <0.2: {} | 0.2-0.3: {} | 0.3-0.4: {} | 0.4-0.5: {} | >=0.5: {}  (threshold = 0.40)",
+            cos_bins[0], cos_bins[1], cos_bins[2], cos_bins[3], cos_bins[4]
+        );
+        eprintln!(
+            "TRACT 1c: {} chunks >= 0.5 (genuinely userB's voice) vs {} < 0.4 (sub-threshold ambiguous)",
+            cos_bins[4],
+            cos_bins[0] + cos_bins[1] + cos_bins[2]
+        );
+
+        // ===== TRACT 2: AHC merge-tree instrumentation =====
+        // Local instrumented copy of cluster_by_centroids (mirrors
+        // sherpa_adapter.rs:498-589 verbatim) that records every merge so we can
+        // replay userB's cluster-ancestor: contamination onset (first carlos-origin
+        // member absorbed), per-merge centroid drift, and cumulative drift of her
+        // centroid away from her pure early centroid toward carlos. Tests the
+        // contamination-cascade hypothesis — see
+        // openspec/exploration/diarization-absorption-ahc-cascade.md.
+        let n = chunks.len();
+        let mut members: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
+        let mut centroids_m: Vec<Vec<f32>> = chunks.iter().map(|c| c.embedding.clone()).collect();
+        let mut cluster_durations: Vec<f64> = chunks.iter().map(|c| c.duration_secs).collect();
+        let mut alive: Vec<bool> = vec![true; n];
+        let mut sim: Vec<Vec<f32>> = (0..n)
+            .map(|a| {
+                (a + 1..n)
+                    .map(|b| cosine(&centroids_m[a], &centroids_m[b]))
+                    .collect()
+            })
+            .collect();
+
+        struct MergeEvent {
+            step: usize,
+            surv: usize,
+            abso: usize,
+            sim_val: f32,
+            shift: f32,
+            centroid_after: Vec<f32>,
+            absorbed_members: Vec<usize>,
+        }
+        let mut merge_log: Vec<MergeEvent> = Vec::new();
+
+        loop {
+            let mut best_sim = 0.40f32;
+            let mut best_pair: Option<(usize, usize)> = None;
+            for a in 0..n {
+                if !alive[a] {
+                    continue;
+                }
+                for b in (a + 1)..n {
+                    if !alive[b] {
+                        continue;
+                    }
+                    let s = sim[a][b - a - 1];
+                    if s > best_sim {
+                        best_sim = s;
+                        best_pair = Some((a, b));
+                    }
+                }
+            }
+            let Some((a, b)) = best_pair else { break };
+
+            let cent_before = centroids_m[a].clone();
+            let dur_a = cluster_durations[a];
+            let dur_b = cluster_durations[b];
+            let total_dur = dur_a + dur_b;
+            let w_a = dur_a as f32 / total_dur as f32;
+            let w_b = dur_b as f32 / total_dur as f32;
+            let b_members = std::mem::take(&mut members[b]);
+            let b_centroid = centroids_m[b].clone();
+            for (i, v) in b_centroid.iter().enumerate() {
+                centroids_m[a][i] = centroids_m[a][i] * w_a + v * w_b;
+            }
+            cluster_durations[a] = total_dur;
+            members[a].extend_from_slice(&b_members);
+            alive[b] = false;
+            for x in (a + 1)..n {
+                if alive[x] {
+                    sim[a][x - a - 1] = cosine(&centroids_m[a], &centroids_m[x]);
+                }
+            }
+            for x in 0..a {
+                if alive[x] {
+                    sim[x][a - x - 1] = cosine(&centroids_m[x], &centroids_m[a]);
+                }
+            }
+
+            let shift = cosine(&cent_before, &centroids_m[a]);
+            merge_log.push(MergeEvent {
+                step: merge_log.len(),
+                surv: a,
+                abso: b,
+                sim_val: best_sim,
+                shift,
+                centroid_after: centroids_m[a].clone(),
+                absorbed_members: b_members,
+            });
+        }
+
+        let mut local_labels = vec![0u32; n];
+        let mut next_label = 0u32;
+        let mut label_map: std::collections::HashMap<usize, u32> = std::collections::HashMap::new();
+        let mut final_centroids: std::collections::HashMap<u32, Vec<f32>> =
+            std::collections::HashMap::new();
+        for (idx, is_alive) in alive.iter().enumerate() {
+            if !is_alive {
+                continue;
+            }
+            let label = next_label;
+            next_label += 1;
+            label_map.insert(idx, label);
+            for &member in &members[idx] {
+                local_labels[member] = label;
+            }
+            final_centroids.insert(label, centroids_m[idx].clone());
+        }
+        assert_eq!(
+            local_labels, labels,
+            "local AHC copy must match production cluster_by_centroids output"
+        );
+
+        let slot_of: std::collections::HashMap<u32, usize> =
+            label_map.iter().map(|(&s, &l)| (l, s)).collect();
+        let cyn_slot = *slot_of.get(&userB).expect("userB slot");
+        let cyn_final = &final_centroids[&userB];
+        let car_final = &final_centroids[&carlos];
+
+        // Tag each chunk's origin by its nearest FINAL centroid (userB vs carlos).
+        let chunk_is_carlos_origin: Vec<bool> = chunks
+            .iter()
+            .map(|c| cosine(&c.embedding, car_final) > cosine(&c.embedding, cyn_final))
+            .collect();
+
+        let cyn_merges: usize = merge_log.iter().filter(|m| m.surv == cyn_slot).count();
+        eprintln!(
+            "TRACT 2: replaying {} merges into userB's cluster-ancestor (slot {}):",
+            cyn_merges, cyn_slot
+        );
+        let mut onset: Option<usize> = None;
+        for m in &merge_log {
+            if m.surv != cyn_slot {
+                continue;
+            }
+            let carlos_origin = m
+                .absorbed_members
+                .iter()
+                .filter(|&&ci| chunk_is_carlos_origin[ci])
+                .count();
+            let drift_from_early = cosine(&m.centroid_after, cynthia_c);
+            let is_contamination = carlos_origin > 0;
+            if onset.is_none() && is_contamination {
+                onset = Some(m.step);
+            }
+            eprintln!(
+                "  step {}: absorb slot {} ({} members, {} carlos-origin) sim={:.3} shift={:.4} cos->her_early={:.4}{}",
+                m.step,
+                m.abso,
+                m.absorbed_members.len(),
+                carlos_origin,
+                m.sim_val,
+                m.shift,
+                drift_from_early,
+                if is_contamination { " <- CONTAMINATION" } else { "" },
+            );
+        }
+        eprintln!("TRACT 2: contamination onset at step {:?}", onset);
+
+        let final_drift_cyn = cosine(cyn_final, cynthia_c);
+        let final_drift_car = cosine(cyn_final, carlos_c);
+        eprintln!(
+            "TRACT 2: userB final centroid: cos->her_early={:.4}, cos->carlos_early={:.4}",
+            final_drift_cyn, final_drift_car
+        );
+        eprintln!(
+            "TRACT 2: cascade verdict: {}",
+            if final_drift_car > 0.5 {
+                "centroid drifted toward carlos (cascade signature present)"
+            } else {
+                "centroid did NOT drift toward carlos (cascade refuted — pure geometry)"
+            }
+        );
+
+        // ===== TRACT 3: third-speaker placement + per-cluster embedding stability =====
+        // Tract 1c only compared chunks against userB vs carlos — never cluster 0
+        // (the third speaker). ~170 of the 178 "nearer userB" chunks are in cluster
+        // 0 by label. Are those orphans solidly the third speaker (high cos to cluster
+        // 0) or genuinely ambiguous (low cos to both)? Does userB's embedding
+        // degrade over time while others stay stable? Is the loss a cliff at 30 min
+        // or gradual? Is her late audio quiet (SNR/channel) or loud (embedder fault)?
+        let third = early_vec
+            .iter()
+            .filter(|(lab, n)| *lab != userB && *lab != carlos && *n >= 5)
+            .max_by_key(|(_, n)| *n)
+            .map(|(lab, _)| *lab);
+        let third_c: Option<&Vec<f32>> = third.and_then(|t| early_centroids.get(&t));
+        eprintln!(
+            "TRACT 3: third-speaker cluster = {:?} (has early centroid = {})",
+            third,
+            third_c.is_some()
+        );
+
+        // 3a: 3-way nearest-centroid for late chunks + orphan placement.
+        let mut nearest3: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        let mut orphan_cos_third: Vec<f32> = Vec::new();
+        let mut orphan_cos_cyn: Vec<f32> = Vec::new();
+        let mut orphan_by_label: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        for (c, &lab) in chunks.iter().zip(labels.iter()) {
+            let t0 = c.start_sample as f64 / sr;
+            if t0 < 1800.0 {
+                continue;
+            }
+            let cos_cyn = cosine(&c.embedding, cynthia_c);
+            let cos_car = cosine(&c.embedding, carlos_c);
+            let cos_third = third_c
+                .map(|tc| cosine(&c.embedding, tc))
+                .unwrap_or(f32::MIN);
+            let best = if cos_cyn >= cos_car && cos_cyn >= cos_third {
+                "userB"
+            } else if cos_car >= cos_cyn && cos_car >= cos_third {
+                "carlos"
+            } else {
+                "third"
+            };
+            *nearest3.entry(best).or_insert(0) += 1;
+            if cos_cyn > cos_car && lab != userB {
+                orphan_cos_third.push(cos_third);
+                orphan_cos_cyn.push(cos_cyn);
+                *orphan_by_label.entry(lab).or_insert(0) += 1;
+            }
+        }
+        eprintln!(
+            "TRACT 3a: late chunks 3-way nearest-centroid: {:?}",
+            nearest3
+        );
+        eprintln!(
+            "TRACT 3a: 'nearer-userB' orphans (not in her cluster) by AHC label: {:?}",
+            orphan_by_label
+        );
+        let ocn = orphan_cos_cyn.len();
+        if ocn > 0 {
+            let mean_cyn: f64 =
+                orphan_cos_cyn.iter().map(|&v| v as f64).sum::<f64>() / ocn as f64;
+            let mean_third: f64 =
+                orphan_cos_third.iter().map(|&v| v as f64).sum::<f64>() / ocn as f64;
+            eprintln!(
+                "TRACT 3a: {} orphans: mean cos->userB={:.4}, mean cos->third={:.4} \
+                 (third >> cyn => solidly the 3rd speaker, userB's late speech is MISSING/not chunked; \
+                 both < 0.4 => genuinely ambiguous no-man's-land)",
+                ocn, mean_cyn, mean_third
+            );
+        }
+
+        // 3b: per-cluster early->late embedding stability. For each main cluster, mean
+        // cos of early chunks to own early centroid vs late chunks to the SAME early
+        // centroid. All speakers weakened => global recording issue; only userB =>
+        // speaker-specific (mic/channel/SNR).
+        let main_labels: Vec<u32> = [Some(userB), Some(carlos), third]
+            .iter()
+            .filter_map(|x| *x)
+            .collect();
+        for lab in &main_labels {
+            let Some(cent) = early_centroids.get(lab) else {
+                continue;
+            };
+            let mut early_sum = 0.0f64;
+            let mut en = 0usize;
+            let mut late_sum = 0.0f64;
+            let mut ln = 0usize;
+            for (c, &l) in chunks.iter().zip(labels.iter()) {
+                if l != *lab {
+                    continue;
+                }
+                let t0 = c.start_sample as f64 / sr;
+                let cos = cosine(&c.embedding, cent) as f64;
+                if t0 < 1800.0 {
+                    early_sum += cos;
+                    en += 1;
+                } else {
+                    late_sum += cos;
+                    ln += 1;
+                }
+            }
+            if en > 0 && ln > 0 {
+                let late_mean = late_sum / ln as f64;
+                eprintln!(
+                    "TRACT 3b: label {:?}: early cos->own-centroid={:.4} (n={}), \
+                     late cos->own-EARLY-centroid={:.4} (n={}){}",
+                    lab,
+                    early_sum / en as f64,
+                    en,
+                    late_mean,
+                    ln,
+                    if late_mean < 0.5 {
+                        " <- LATE EMBEDDINGS WEAKENED vs early"
+                    } else {
+                        ""
+                    }
+                );
+            }
+        }
+
+        // 3c: temporal cliff vs gradual. 5-min bins; orphan count + mean cos->userB.
+        let mut windows: std::collections::BTreeMap<u32, (usize, f64, usize)> =
+            std::collections::BTreeMap::new();
+        for (c, &lab) in chunks.iter().zip(labels.iter()) {
+            let t0 = c.start_sample as f64 / sr;
+            let bin = (t0 / 300.0) as u32;
+            let cos_cyn = cosine(&c.embedding, cynthia_c);
+            let cos_car = cosine(&c.embedding, carlos_c);
+            let entry = windows.entry(bin).or_insert((0, 0.0, 0));
+            entry.2 += 1;
+            if cos_cyn > cos_car && lab != userB {
+                entry.0 += 1;
+                entry.1 += cos_cyn as f64;
+            }
+        }
+        eprintln!(
+            "TRACT 3c: 5-min bins (bin | start | total | orphans | orphan_mean_cos->userB):"
+        );
+        for (bin, (oc, sum, tot)) in &windows {
+            let mean = if *oc > 0 { sum / *oc as f64 } else { 0.0 };
+            eprintln!(
+                "  bin {:>2} ({}-{}s): total={:<4} orphans={:<4} mean_cos_cyn={:.3}",
+                bin,
+                bin * 300,
+                (bin + 1) * 300,
+                tot,
+                oc,
+                mean
+            );
+        }
+
+        // 3d: audio RMS energy for userB's late chunks vs orphans. Low orphan energy
+        // = her late speech is quiet/attenuated (SNR/channel/mixing issue); high energy
+        // = loud audio the embedder should handle (failure is in the model).
+        let samples_ref = samples_for_energy.as_slice();
+        let mut cyn_e: Vec<f64> = Vec::new();
+        let mut orph_e: Vec<f64> = Vec::new();
+        for (c, &lab) in chunks.iter().zip(labels.iter()) {
+            let t0 = c.start_sample as f64 / sr;
+            if t0 < 1800.0 {
+                continue;
+            }
+            let start = c.start_sample as usize;
+            let n_samp = (c.duration_secs * sr) as usize;
+            let end = (start + n_samp).min(samples_ref.len());
+            if start >= samples_ref.len() || end <= start {
+                continue;
+            }
+            let sum_sq: f64 = samples_ref[start..end]
+                .iter()
+                .map(|s| (*s as f64).powi(2))
+                .sum();
+            let rms = (sum_sq / (end - start) as f64).sqrt();
+            let cos_cyn = cosine(&c.embedding, cynthia_c);
+            let cos_car = cosine(&c.embedding, carlos_c);
+            if lab == userB {
+                cyn_e.push(rms);
+            } else if cos_cyn > cos_car {
+                orph_e.push(rms);
+            }
+        }
+        let mean_of = |v: &[f64]| {
+            if v.is_empty() {
+                0.0
+            } else {
+                v.iter().sum::<f64>() / v.len() as f64
+            }
+        };
+        eprintln!(
+            "TRACT 3d: RMS energy — userB late (n={}): mean={:.6} | orphans (n={}): mean={:.6} \
+             (orphan << userB => quiet/attenuated = SNR/channel/mix issue; \
+             comparable => loud audio, embedder is the failure)",
+            cyn_e.len(),
+            mean_of(&cyn_e),
+            orph_e.len(),
+            mean_of(&orph_e)
+        );
     }
 
     #[tokio::test]
