@@ -16,7 +16,10 @@ rem Prerequisite: create the junction once with:
 rem   mklink /J C:\mf <abs-path-to-repo>\target
 rem
 rem If the VS environment fails to initialise below, check that VS 2022 Build Tools
-rem are installed. Community/Professional editions use a different path — adapt line 20.
+rem are installed. Community/Professional editions use a different path — adapt the
+rem vcvarsall path below.
+
+cd /d "%~dp0"
 
 call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvarsall.bat" amd64
 if errorlevel 1 (
