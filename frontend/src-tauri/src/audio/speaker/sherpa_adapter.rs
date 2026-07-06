@@ -395,7 +395,7 @@ impl SherpaOnnxDiarizationAdapter {
 /// Merge speakers whose total duration is below threshold into nearest neighbour.
 /// Threshold = MIN_CLUSTER_FRAC × total audio, but never below MIN_SPEECH_SECS
 /// (model can't produce embeddings from shorter clips anyway).
-fn merge_short_speakers(
+pub(crate) fn merge_short_speakers(
     mut segments: Vec<SpeakerSegment>,
     mut centroids: HashMap<u32, Vec<f32>>,
     total_audio_secs: f64,

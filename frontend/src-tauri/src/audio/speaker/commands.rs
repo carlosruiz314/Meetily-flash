@@ -2238,6 +2238,747 @@ mod tests {
         );
     }
 
+    /// Mirrors `SherpaOnnxDiarizationAdapter::process()` steps 2–5 plus the
+    /// commands.rs max-speakers cap, so the diagnostic sweep sees exactly what
+    /// production would store: cluster → smooth → coalesce → merge_short → cap.
+    fn prod_path_on_chunks(
+        chunks: &[crate::audio::speaker::sherpa_adapter::Chunk],
+        embeddings: &[Vec<f32>],
+        timestamps: &[f64],
+        durations: &[f64],
+        threshold: f32,
+        cap: usize,
+        sr_f: f64,
+    ) -> (
+        Vec<SpeakerSegment>,
+        std::collections::HashMap<u32, Vec<f32>>,
+    ) {
+        use crate::audio::speaker::sherpa_adapter::{
+            SmoothParams, cluster_by_centroids, merge_short_speakers, smooth_to_fixed_point,
+        };
+        let (labels, centroids) = cluster_by_centroids(chunks, threshold);
+        let (labels, centroids) = smooth_to_fixed_point(
+            &labels,
+            embeddings,
+            timestamps,
+            durations,
+            &centroids,
+            &SmoothParams::default(),
+        );
+        let mut indexed: Vec<(usize, u32)> = labels.iter().copied().enumerate().collect();
+        indexed.sort_by_key(|(i, _)| chunks[*i].start_sample);
+        let mut segments: Vec<SpeakerSegment> = Vec::new();
+        if let Some(&(ci0, cur0)) = indexed.first() {
+            let mut cur = cur0;
+            let mut seg_start = chunks[ci0].start_sample as f64 / sr_f;
+            let mut seg_end = chunks[ci0].end_sample as f64 / sr_f;
+            for &(ci, lab) in &indexed[1..] {
+                let cs = chunks[ci].start_sample as f64 / sr_f;
+                let ce = chunks[ci].end_sample as f64 / sr_f;
+                if lab == cur {
+                    seg_end = ce;
+                } else {
+                    segments.push(SpeakerSegment {
+                        start_seconds: seg_start,
+                        end_seconds: seg_end,
+                        speaker_id: cur,
+                    });
+                    cur = lab;
+                    seg_start = cs;
+                    seg_end = ce;
+                }
+            }
+            segments.push(SpeakerSegment {
+                start_seconds: seg_start,
+                end_seconds: seg_end,
+                speaker_id: cur,
+            });
+        }
+        let total: f64 = segments.iter().map(|s| s.end_seconds - s.start_seconds).sum();
+        let (mut segments, mut centroids) = merge_short_speakers(segments, centroids, total);
+        enforce_max_speakers_cap(&mut centroids, &mut segments, cap);
+        (segments, centroids)
+    }
+
+    // GATE (task 1.1 + 1.2): runs the native OfflineSpeakerDiarization pipeline
+    // on cde5c264's audio, then sweeps our clustering threshold {0.30, 0.35,
+    // 0.40} on the re-embedded native windows. The absorbed speaker (UserB)
+    // is identified by a voice fingerprint from the OLD whisper-segment path
+    // (her early centroid), then cosine-matched to the new pipeline's clusters
+    // regardless of label numbering. D3 proceed metric: her late-half speech
+    // ≥ 30 % of early AND ≥ 60 s absolute, at SOME threshold. Native windows
+    // are cached to a temp file so the slow pipeline only runs once.
+    #[ignore]
+    #[tokio::test]
+    async fn test_cde5c264_native_pipeline_diagnostic() {
+        let _ = env_logger::builder().is_test(true).try_init();
+        let db_path = r"C:\Users\UserA\AppData\Roaming\com.meetily.ai\meeting_minutes.sqlite";
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite:{}?mode=ro", db_path))
+            .await
+            .expect("DB connect (read-only)");
+        let meeting_id = "meeting-cde5c264-1c4a-49d9-97c5-6a7e69bb9323";
+
+        let row = sqlx::query("SELECT folder_path FROM meetings WHERE id = ?")
+            .bind(meeting_id)
+            .fetch_optional(&pool)
+            .await
+            .expect("fetch meeting");
+        let folder = row
+            .and_then(|r| sqlx::Row::get::<Option<String>, _>(&r, "folder_path"))
+            .expect("cde5c264 folder_path missing");
+        let audio_path =
+            find_audio_in_folder(std::path::Path::new(&folder)).expect("audio file");
+        let decoded = crate::audio::decoder::decode_audio_file(&audio_path).expect("decode audio");
+        let samples_arc = std::sync::Arc::new(decoded.to_whisper_format());
+        let sr_f = DIARIZATION_SAMPLE_RATE as f64;
+        let audio_duration = decoded.duration_seconds.max(0.001);
+
+        let models_dir = dirs::home_dir().unwrap_or_default().join(".meetily-models");
+        let embedding_path =
+            models_dir.join(crate::audio::speaker::model_download::embedding_filename());
+        let segmentation_path = models_dir.join("pyannote-segmentation.onnx");
+        assert!(embedding_path.exists(), "nemo_titanet embedding model missing");
+        assert!(segmentation_path.exists(), "pyannote segmentation model missing");
+
+        let threshold_fp = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
+            (0.40f32 * 65536.0) as u32,
+        ));
+        let adapter =
+            crate::audio::speaker::sherpa_adapter::SherpaOnnxDiarizationAdapter::with_shared_threshold(
+                embedding_path.to_str().unwrap(),
+                segmentation_path.to_str().unwrap(),
+                std::sync::Arc::clone(&threshold_fp),
+            )
+            .expect("create adapter");
+        let adapter_arc = std::sync::Arc::new(adapter);
+
+        // ── STEP 1: UserB's voice fingerprint from the OLD whisper-segment path.
+        // She is the absorbed speaker — early-dominant, vanishes late under the
+        // old fixed-split chunking. Her early-segment centroid is a voice
+        // fingerprint we cosine-match against the new pipeline's clusters
+        // regardless of label numbering.
+        let transcript_segments = fetch_transcript_timestamps(&pool, meeting_id, audio_duration)
+            .await
+            .expect("fetch transcript timestamps");
+        let adapter_for_old = std::sync::Arc::clone(&adapter_arc);
+        let samples_for_old = std::sync::Arc::clone(&samples_arc);
+        let seg_arc = std::sync::Arc::new(transcript_segments);
+        let old_chunks = tokio::task::spawn_blocking(move || {
+            adapter_for_old.build_chunks(&samples_for_old, DIARIZATION_SAMPLE_RATE, &seg_arc)
+        })
+        .await
+        .expect("old build_chunks panicked");
+        assert!(
+            !old_chunks.is_empty(),
+            "need old-path chunks to fingerprint UserB"
+        );
+
+        let (old_labels, _) =
+            crate::audio::speaker::sherpa_adapter::cluster_by_centroids(&old_chunks, 0.40);
+        let mut old_early: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        let mut old_late: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        for (c, &lab) in old_chunks.iter().zip(old_labels.iter()) {
+            let t0 = c.start_sample as f64 / sr_f;
+            if t0 < 1800.0 {
+                *old_early.entry(lab).or_insert(0) += 1;
+            } else {
+                *old_late.entry(lab).or_insert(0) += 1;
+            }
+        }
+        let cynthia_label = old_early
+            .iter()
+            .filter(|(_, &n)| n >= 5)
+            .min_by_key(|(lab, _)| old_late.get(lab).copied().unwrap_or(0))
+            .map(|(lab, _)| *lab)
+            .expect("need an early-dominant old label to fingerprint UserB");
+        let dim = old_chunks[0].embedding.len();
+        let mut cynthia_sum = vec![0.0f32; dim];
+        let mut cynthia_n = 0usize;
+        for (c, &lab) in old_chunks.iter().zip(old_labels.iter()) {
+            if lab == cynthia_label && (c.start_sample as f64 / sr_f) < 1800.0 {
+                for (acc, v) in cynthia_sum.iter_mut().zip(c.embedding.iter()) {
+                    *acc += v;
+                }
+                cynthia_n += 1;
+            }
+        }
+        assert!(cynthia_n > 0, "UserB fingerprint needs ≥1 early chunk");
+        let cynthia_centroid: Vec<f32> = cynthia_sum.iter().map(|v| v / cynthia_n as f32).collect();
+        eprintln!(
+            "STEP 1 (fingerprint): old-path label {} = UserB ({} early chunks); old early {:?} | late {:?}",
+            cynthia_label, cynthia_n, old_early, old_late,
+        );
+
+        // ── STEP 2: native windows (cached — the expensive pipeline runs once).
+        let cache_path = std::env::temp_dir().join("meetily_native_windows_cde5c264.txt");
+        let windows: Vec<(f64, f64)> = if cache_path.exists() {
+            eprintln!(
+                "STEP 2 (native): loading cached windows from {}",
+                cache_path.display()
+            );
+            std::fs::read_to_string(&cache_path)
+                .expect("read cache")
+                .lines()
+                .filter_map(|l| {
+                    let mut it = l.split(',');
+                    let s = it.next()?.parse::<f64>().ok()?;
+                    let e = it.next()?.parse::<f64>().ok()?;
+                    Some((s, e))
+                })
+                .collect()
+        } else {
+            use sherpa_onnx::{
+                FastClusteringConfig, OfflineSpeakerDiarization, OfflineSpeakerDiarizationConfig,
+                OfflineSpeakerSegmentationModelConfig,
+                OfflineSpeakerSegmentationPyannoteModelConfig, SpeakerEmbeddingExtractorConfig,
+            };
+            // min_duration_on/off = 0.0 so the native pass never silently drops a
+            // short turn — our downstream MIN_SPEECH_SECS filter does all duration
+            // gating, and a 0.3s native default would hide the very recoverable
+            // short speaker turns this change targets.
+            let native_config = OfflineSpeakerDiarizationConfig {
+                segmentation: OfflineSpeakerSegmentationModelConfig {
+                    pyannote: OfflineSpeakerSegmentationPyannoteModelConfig {
+                        model: Some(segmentation_path.to_string_lossy().to_string()),
+                    },
+                    num_threads: 8,
+                    debug: false,
+                    provider: Some("cpu".to_string()),
+                },
+                embedding: SpeakerEmbeddingExtractorConfig {
+                    model: Some(embedding_path.to_string_lossy().to_string()),
+                    num_threads: 8,
+                    debug: false,
+                    provider: Some("cpu".to_string()),
+                },
+                clustering: FastClusteringConfig::default(),
+                min_duration_on: 0.0,
+                min_duration_off: 0.0,
+            };
+            let native = OfflineSpeakerDiarization::create(&native_config)
+                .expect("native create (silent None → model-load failure)");
+            assert_eq!(native.sample_rate(), 16000, "pyannote expects 16kHz");
+
+            let peak_rss = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0u64));
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let (peak_t, stop_t) =
+                (std::sync::Arc::clone(&peak_rss), std::sync::Arc::clone(&stop));
+            let sampler = std::thread::spawn(move || {
+                while !stop_t.load(std::sync::atomic::Ordering::Relaxed) {
+                    if let Some(ms) = memory_stats::memory_stats() {
+                        peak_t.fetch_max(
+                            ms.physical_mem as u64,
+                            std::sync::atomic::Ordering::Relaxed,
+                        );
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            });
+            let native_arc = std::sync::Arc::new(native);
+            let native_for_proc = std::sync::Arc::clone(&native_arc);
+            let samples_for_native = std::sync::Arc::clone(&samples_arc);
+            let t_native = std::time::Instant::now();
+            let result = tokio::task::spawn_blocking(move || {
+                native_for_proc.process(&samples_for_native[..])
+            })
+            .await
+            .expect("native process panicked")
+            .expect("native process returned None");
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+            sampler.join().ok();
+            let elapsed = t_native.elapsed();
+            let peak_bytes = peak_rss.load(std::sync::atomic::Ordering::Relaxed);
+            eprintln!(
+                "STEP 2 (native): process() = {:.1}s ({:.3}x realtime of {:.0}s); peak RSS ≈ {:.0} MB; native num_speakers estimate = {} (discarded)",
+                elapsed.as_secs_f64(),
+                elapsed.as_secs_f64() / audio_duration,
+                audio_duration,
+                peak_bytes as f64 / 1e6,
+                result.num_speakers(),
+            );
+            let native_segs = result.sort_by_start_time();
+            eprintln!(
+                "STEP 2 (native): {} speaker-homogeneous windows",
+                native_segs.len()
+            );
+            let wins: Vec<(f64, f64)> = native_segs
+                .iter()
+                .map(|s| (s.start as f64, s.end as f64))
+                .collect();
+            let cache_text: String =
+                wins.iter().map(|(s, e)| format!("{},{}\n", s, e)).collect();
+            let _ = std::fs::write(&cache_path, &cache_text);
+            eprintln!(
+                "STEP 2 (native): cached {} windows to {}",
+                wins.len(),
+                cache_path.display()
+            );
+            wins
+        };
+
+        // ── STEP 3: re-embed native windows through OUR extractor.
+        let adapter_for_new = std::sync::Arc::clone(&adapter_arc);
+        let samples_for_new = std::sync::Arc::clone(&samples_arc);
+        let windows_arc = std::sync::Arc::new(windows);
+        let chunks = tokio::task::spawn_blocking(move || {
+            adapter_for_new.build_chunks(&samples_for_new, DIARIZATION_SAMPLE_RATE, &windows_arc)
+        })
+        .await
+        .expect("new build_chunks panicked");
+        eprintln!(
+            "STEP 3 (re-embed): {} chunks from native windows",
+            chunks.len()
+        );
+        assert!(!chunks.is_empty());
+
+        let embeddings: Vec<Vec<f32>> = chunks.iter().map(|c| c.embedding.clone()).collect();
+        let timestamps: Vec<f64> = chunks.iter().map(|c| c.start_sample as f64 / sr_f).collect();
+        let durations: Vec<f64> = chunks.iter().map(|c| c.duration_secs).collect();
+
+        // ── STEP 4: sweep threshold {0.30, 0.35, 0.40}; identify UserB at each.
+        for &threshold in &[0.30f32, 0.35, 0.40] {
+            let (segs, cents) = prod_path_on_chunks(
+                &chunks,
+                &embeddings,
+                &timestamps,
+                &durations,
+                threshold,
+                3,
+                sr_f,
+            );
+            let speakers: std::collections::HashSet<u32> =
+                segs.iter().map(|s| s.speaker_id).collect();
+            let mut p_early: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
+            let mut p_late: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
+            for s in &segs {
+                let dur = s.end_seconds - s.start_seconds;
+                let mid = (s.start_seconds + s.end_seconds) * 0.5;
+                if mid < 1800.0 {
+                    *p_early.entry(s.speaker_id).or_insert(0.0) += dur;
+                } else {
+                    *p_late.entry(s.speaker_id).or_insert(0.0) += dur;
+                }
+            }
+            let (cyn_id, cyn_cos) = cents
+                .iter()
+                .map(|(id, c)| {
+                    (*id, cosine_similarity_centroids(c, &cynthia_centroid))
+                })
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .unwrap_or((u32::MAX, 0.0));
+            let cyn_early = p_early.get(&cyn_id).copied().unwrap_or(0.0);
+            let cyn_late = p_late.get(&cyn_id).copied().unwrap_or(0.0);
+            let ratio = if cyn_early > 0.0 {
+                cyn_late / cyn_early
+            } else {
+                f64::INFINITY
+            };
+            let meets = cyn_early > 0.0 && cyn_late >= 0.30 * cyn_early && cyn_late >= 60.0;
+            let tag = if cyn_cos < 0.5 {
+                "NO MATCH (cos<0.5)"
+            } else if meets {
+                "★ MEETS proceed metric"
+            } else {
+                "below metric"
+            };
+            eprintln!(
+                "SWEEP t={:.2}: {} speakers [early {:?} | late {:?}] | UserB→cluster {} (cos {:.3}): early {:.0}s late {:.0}s (ratio {:.2}) {}",
+                threshold,
+                speakers.len(),
+                p_early,
+                p_late,
+                cyn_id,
+                cyn_cos,
+                cyn_early,
+                cyn_late,
+                ratio,
+                tag,
+            );
+        }
+    }
+
+    // GATE alternative: tests whether FINER FIXED splitting fixes absorption
+    // WITHOUT the native pipeline. Root cause (per absorption memory) is coarse
+    // chunking — `effective_split` coarsens to ~8.3s for this 83-min meeting,
+    // and segments ≤10s get one embedding for the whole mixed-speaker window.
+    // Pre-splitting whisper segments into 3–5s sub-segments forces build_chunks
+    // into its one-chunk-per-segment path at a granularity where windows are
+    // more likely speaker-homogeneous. If UserB survives here, the fix is
+    // trivially simple (change the split granularity) — no native pipeline, no
+    // new model, no double-embedding latency.
+    #[ignore]
+    #[tokio::test]
+    async fn test_cde5c264_finer_split_diagnostic() {
+        let _ = env_logger::builder().is_test(true).try_init();
+        let db_path = r"C:\Users\UserA\AppData\Roaming\com.meetily.ai\meeting_minutes.sqlite";
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite:{}?mode=ro", db_path))
+            .await
+            .expect("DB connect (read-only)");
+        let meeting_id = "meeting-cde5c264-1c4a-49d9-97c5-6a7e69bb9323";
+
+        let row = sqlx::query("SELECT folder_path FROM meetings WHERE id = ?")
+            .bind(meeting_id)
+            .fetch_optional(&pool)
+            .await
+            .expect("fetch meeting");
+        let folder = row
+            .and_then(|r| sqlx::Row::get::<Option<String>, _>(&r, "folder_path"))
+            .expect("cde5c264 folder_path missing");
+        let audio_path =
+            find_audio_in_folder(std::path::Path::new(&folder)).expect("audio file");
+        let decoded = crate::audio::decoder::decode_audio_file(&audio_path).expect("decode audio");
+        let samples_arc = std::sync::Arc::new(decoded.to_whisper_format());
+        let sr_f = DIARIZATION_SAMPLE_RATE as f64;
+        let audio_duration = decoded.duration_seconds.max(0.001);
+
+        let models_dir = dirs::home_dir().unwrap_or_default().join(".meetily-models");
+        let embedding_path =
+            models_dir.join(crate::audio::speaker::model_download::embedding_filename());
+        let segmentation_path = models_dir.join("pyannote-segmentation.onnx");
+        assert!(embedding_path.exists(), "embedding model missing");
+
+        let threshold_fp = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
+            (0.40f32 * 65536.0) as u32,
+        ));
+        let adapter =
+            crate::audio::speaker::sherpa_adapter::SherpaOnnxDiarizationAdapter::with_shared_threshold(
+                embedding_path.to_str().unwrap(),
+                segmentation_path.to_str().unwrap(),
+                std::sync::Arc::clone(&threshold_fp),
+            )
+            .expect("create adapter");
+        let adapter_arc = std::sync::Arc::new(adapter);
+
+        let transcript_segments = fetch_transcript_timestamps(&pool, meeting_id, audio_duration)
+            .await
+            .expect("fetch transcript timestamps");
+
+        // ── Fingerprint: UserB from the OLD (coarse ~8.3s) path.
+        let adapter_for_old = std::sync::Arc::clone(&adapter_arc);
+        let samples_for_old = std::sync::Arc::clone(&samples_arc);
+        let seg_arc = std::sync::Arc::new(transcript_segments.clone());
+        let old_chunks = tokio::task::spawn_blocking(move || {
+            adapter_for_old.build_chunks(&samples_for_old, DIARIZATION_SAMPLE_RATE, &seg_arc)
+        })
+        .await
+        .expect("old build_chunks panicked");
+        assert!(
+            !old_chunks.is_empty(),
+            "need old-path chunks to fingerprint UserB"
+        );
+
+        let (old_labels, _) =
+            crate::audio::speaker::sherpa_adapter::cluster_by_centroids(&old_chunks, 0.40);
+        let mut old_early: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        let mut old_late: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        for (c, &lab) in old_chunks.iter().zip(old_labels.iter()) {
+            let t0 = c.start_sample as f64 / sr_f;
+            if t0 < 1800.0 {
+                *old_early.entry(lab).or_insert(0) += 1;
+            } else {
+                *old_late.entry(lab).or_insert(0) += 1;
+            }
+        }
+        let cynthia_label = old_early
+            .iter()
+            .filter(|(_, &n)| n >= 5)
+            .min_by_key(|(lab, _)| old_late.get(lab).copied().unwrap_or(0))
+            .map(|(lab, _)| *lab)
+            .expect("fingerprint: need an early-dominant old label");
+        let dim = old_chunks[0].embedding.len();
+        let mut cynthia_sum = vec![0.0f32; dim];
+        let mut cynthia_n = 0usize;
+        for (c, &lab) in old_chunks.iter().zip(old_labels.iter()) {
+            if lab == cynthia_label && (c.start_sample as f64 / sr_f) < 1800.0 {
+                for (acc, v) in cynthia_sum.iter_mut().zip(c.embedding.iter()) {
+                    *acc += v;
+                }
+                cynthia_n += 1;
+            }
+        }
+        assert!(cynthia_n > 0, "UserB fingerprint needs ≥1 early chunk");
+        let cynthia_centroid: Vec<f32> = cynthia_sum.iter().map(|v| v / cynthia_n as f32).collect();
+        eprintln!(
+            "FINGERPRINT: old label {} = UserB ({} early chunks); old early {:?} | late {:?}",
+            cynthia_label, cynthia_n, old_early, old_late,
+        );
+
+        // ── Sweep finer fixed-split granularities.
+        for &split_secs in &[3.0f64, 5.0] {
+            let fine_segments: Vec<(f64, f64)> = transcript_segments
+                .iter()
+                .flat_map(|(start, end)| {
+                    let mut t = *start;
+                    let mut subs: Vec<(f64, f64)> = Vec::new();
+                    while t < *end {
+                        let next = (t + split_secs).min(*end);
+                        subs.push((t, next));
+                        t = next;
+                    }
+                    subs
+                })
+                .collect();
+
+            let adapter_for_fine = std::sync::Arc::clone(&adapter_arc);
+            let samples_for_fine = std::sync::Arc::clone(&samples_arc);
+            let fine_arc = std::sync::Arc::new(fine_segments);
+            let t_bc = std::time::Instant::now();
+            let chunks = tokio::task::spawn_blocking(move || {
+                adapter_for_fine.build_chunks(
+                    &samples_for_fine,
+                    DIARIZATION_SAMPLE_RATE,
+                    &fine_arc,
+                )
+            })
+            .await
+            .expect("fine build_chunks panicked");
+            let bc_secs = t_bc.elapsed().as_secs_f64();
+
+            let embeddings: Vec<Vec<f32>> = chunks.iter().map(|c| c.embedding.clone()).collect();
+            let timestamps: Vec<f64> =
+                chunks.iter().map(|c| c.start_sample as f64 / sr_f).collect();
+            let durations: Vec<f64> = chunks.iter().map(|c| c.duration_secs).collect();
+
+            let (segs, cents) = prod_path_on_chunks(
+                &chunks,
+                &embeddings,
+                &timestamps,
+                &durations,
+                0.40,
+                3,
+                sr_f,
+            );
+            let speakers: std::collections::HashSet<u32> =
+                segs.iter().map(|s| s.speaker_id).collect();
+            let mut p_early: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
+            let mut p_late: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
+            for s in &segs {
+                let dur = s.end_seconds - s.start_seconds;
+                let mid = (s.start_seconds + s.end_seconds) * 0.5;
+                if mid < 1800.0 {
+                    *p_early.entry(s.speaker_id).or_insert(0.0) += dur;
+                } else {
+                    *p_late.entry(s.speaker_id).or_insert(0.0) += dur;
+                }
+            }
+            // Cosine threshold lowered to 0.4: the fingerprint comes from
+            // coarse ~8.3s mixed-speaker chunks, so it's noisier than a clean
+            // single-speaker centroid — a true UserB cluster in the finer path
+            // may match at 0.4–0.6 rather than 0.8+.
+            let (cyn_id, cyn_cos) = cents
+                .iter()
+                .map(|(id, c)| {
+                    (*id, cosine_similarity_centroids(c, &cynthia_centroid))
+                })
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .unwrap_or((u32::MAX, 0.0));
+            let cyn_early = p_early.get(&cyn_id).copied().unwrap_or(0.0);
+            let cyn_late = p_late.get(&cyn_id).copied().unwrap_or(0.0);
+            let ratio = if cyn_early > 0.0 {
+                cyn_late / cyn_early
+            } else {
+                f64::INFINITY
+            };
+            let meets = cyn_early > 0.0 && cyn_late >= 0.30 * cyn_early && cyn_late >= 60.0;
+            let tag = if cyn_cos < 0.4 {
+                "NO MATCH (cos<0.4)"
+            } else if meets {
+                "★ MEETS proceed metric"
+            } else {
+                "below metric"
+            };
+            eprintln!(
+                "SPLIT {:.0}s: {} chunks in {:.0}s → {} speakers [early {:?} | late {:?}] | UserB→cluster {} (cos {:.3}): early {:.0}s late {:.0}s (ratio {:.2}) {}",
+                split_secs,
+                chunks.len(),
+                bc_secs,
+                speakers.len(),
+                p_early,
+                p_late,
+                cyn_id,
+                cyn_cos,
+                cyn_early,
+                cyn_late,
+                ratio,
+                tag,
+            );
+        }
+    }
+
+    // Decisive diagnostic: per-chunk embedding analysis. Determines whether
+    // UserB's late-half absorption is EMBEDDING DEGRADATION (her quieter
+    // speech produces embeddings far from her centroid) or CLUSTERING MERGE
+    // (embeddings are close but AHC assigns them to other clusters). This
+    // chooses between an audio/embedding-level fix and a clustering-level fix.
+    #[ignore]
+    #[tokio::test]
+    async fn test_cde5c264_embedding_survival_diagnostic() {
+        let _ = env_logger::builder().is_test(true).try_init();
+        let db_path = r"C:\Users\UserA\AppData\Roaming\com.meetily.ai\meeting_minutes.sqlite";
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite:{}?mode=ro", db_path))
+            .await
+            .expect("DB connect (read-only)");
+        let meeting_id = "meeting-cde5c264-1c4a-49d9-97c5-6a7e69bb9323";
+
+        let row = sqlx::query("SELECT folder_path FROM meetings WHERE id = ?")
+            .bind(meeting_id)
+            .fetch_optional(&pool)
+            .await
+            .expect("fetch meeting");
+        let folder = row
+            .and_then(|r| sqlx::Row::get::<Option<String>, _>(&r, "folder_path"))
+            .expect("cde5c264 folder_path missing");
+        let audio_path =
+            find_audio_in_folder(std::path::Path::new(&folder)).expect("audio file");
+        let decoded = crate::audio::decoder::decode_audio_file(&audio_path).expect("decode audio");
+        let samples_arc = std::sync::Arc::new(decoded.to_whisper_format());
+        let sr_f = DIARIZATION_SAMPLE_RATE as f64;
+
+        let models_dir = dirs::home_dir().unwrap_or_default().join(".meetily-models");
+        let embedding_path =
+            models_dir.join(crate::audio::speaker::model_download::embedding_filename());
+        let segmentation_path = models_dir.join("pyannote-segmentation.onnx");
+        assert!(embedding_path.exists(), "embedding model missing");
+
+        let threshold_fp = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
+            (0.40f32 * 65536.0) as u32,
+        ));
+        let adapter =
+            crate::audio::speaker::sherpa_adapter::SherpaOnnxDiarizationAdapter::with_shared_threshold(
+                embedding_path.to_str().unwrap(),
+                segmentation_path.to_str().unwrap(),
+                std::sync::Arc::clone(&threshold_fp),
+            )
+            .expect("create adapter");
+        let adapter_arc = std::sync::Arc::new(adapter);
+
+        let transcript_segments =
+            fetch_transcript_timestamps(&pool, meeting_id, decoded.duration_seconds.max(0.001))
+                .await
+                .expect("fetch transcript timestamps");
+
+        let fine_segments: Vec<(f64, f64)> = transcript_segments
+            .iter()
+            .flat_map(|(start, end)| {
+                let mut t = *start;
+                let mut subs: Vec<(f64, f64)> = Vec::new();
+                while t < *end {
+                    let next = (t + 3.0).min(*end);
+                    subs.push((t, next));
+                    t = next;
+                }
+                subs
+            })
+            .collect();
+
+        let adapter_for_chunks = std::sync::Arc::clone(&adapter_arc);
+        let samples_for_chunks = std::sync::Arc::clone(&samples_arc);
+        let fine_arc = std::sync::Arc::new(fine_segments);
+        eprintln!("Extracting embeddings for {} 3s chunks...", fine_arc.len());
+        let chunks = tokio::task::spawn_blocking(move || {
+            adapter_for_chunks.build_chunks(
+                &samples_for_chunks,
+                DIARIZATION_SAMPLE_RATE,
+                &fine_arc,
+            )
+        })
+        .await
+        .expect("build_chunks panicked");
+        eprintln!("Built {} chunks", chunks.len());
+
+        for &thresh in &[0.30f32, 0.40, 0.50] {
+            let (labels, centroids) =
+                crate::audio::speaker::sherpa_adapter::cluster_by_centroids(&chunks, thresh);
+
+            let mut early_dur: std::collections::HashMap<u32, f64> =
+                std::collections::HashMap::new();
+            let mut late_dur: std::collections::HashMap<u32, f64> =
+                std::collections::HashMap::new();
+            for (i, c) in chunks.iter().enumerate() {
+                let t0 = c.start_sample as f64 / sr_f;
+                let map = if t0 < 1800.0 {
+                    &mut early_dur
+                } else {
+                    &mut late_dur
+                };
+                *map.entry(labels[i]).or_insert(0.0) += c.duration_secs;
+            }
+            let cynthia_cluster = *early_dur
+                .iter()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(k, _)| k)
+                .unwrap_or(&0);
+            let cynthia_centroid = centroids
+                .get(&cynthia_cluster)
+                .expect("centroid exists");
+
+            let mut bins_early = [0usize; 5];
+            let mut bins_late = [0usize; 5];
+            let mut late_close_right = 0usize;
+            let mut late_close_wrong = 0usize;
+            let mut late_far = 0usize;
+            for (i, c) in chunks.iter().enumerate() {
+                let t0 = c.start_sample as f64 / sr_f;
+                let cos = cosine_similarity_centroids(&c.embedding, cynthia_centroid);
+                let bin = if cos < 0.2 {
+                    0
+                } else if cos < 0.4 {
+                    1
+                } else if cos < 0.6 {
+                    2
+                } else if cos < 0.8 {
+                    3
+                } else {
+                    4
+                };
+                let is_late = t0 >= 1800.0;
+                let is_cynthia = labels[i] == cynthia_cluster;
+                if is_late {
+                    bins_late[bin] += 1;
+                    if cos >= thresh {
+                        if is_cynthia {
+                            late_close_right += 1;
+                        } else {
+                            late_close_wrong += 1;
+                        }
+                    } else {
+                        late_far += 1;
+                    }
+                } else {
+                    bins_early[bin] += 1;
+                }
+            }
+
+            let cyn_e = early_dur.get(&cynthia_cluster).copied().unwrap_or(0.0);
+            let cyn_l = late_dur.get(&cynthia_cluster).copied().unwrap_or(0.0);
+            eprintln!(
+                "\n=== THRESHOLD {:.2}: {} clusters | UserB=cluster {} | early {:.0}s late {:.0}s (ratio {:.2}) ===",
+                thresh,
+                centroids.len(),
+                cynthia_cluster,
+                cyn_e,
+                cyn_l,
+                if cyn_e > 0.0 {
+                    cyn_l / cyn_e
+                } else {
+                    f64::INFINITY
+                },
+            );
+            eprintln!(
+                "  Early cos bins [.0-.2 .2-.4 .4-.6 .6-.8 .8-1.0]: {:?}",
+                bins_early,
+            );
+            eprintln!(
+                "  Late  cos bins [.0-.2 .2-.4 .4-.6 .6-.8 .8-1.0]: {:?}",
+                bins_late,
+            );
+            eprintln!(
+                "  Late half: {} chunks close->UserB, {} close->WRONG cluster, {} far (<{:.2})",
+                late_close_right, late_close_wrong, late_far, thresh,
+            );
+        }
+    }
+
     #[tokio::test]
     async fn auto_label_does_not_overwrite_manual() {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:")
