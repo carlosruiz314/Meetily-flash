@@ -3171,6 +3171,349 @@ mod tests {
         eprintln!("EXPORT: wrote {}", out.display());
     }
 
+    // §1.1 perf gate + §5.1 oracle (diarization-label-quality): runs the full
+    // two-pass (process → enforce_max_speakers_cap → refine_pass2 with post-cap
+    // centroids) on cde5c264 and asserts the [46:58] UserC interjection —
+    // swallowed by production into a UserB run — survives as a ≥10s fine
+    // segment whose centroid matches a UserC reference derived from his
+    // user-confirmed 17:37 join region. Also gates Pass 2 wall-clock (<60s, else
+    // §1.2 scopes an 8kHz-downsample path). Replaces manual QA per
+    // feedback_verify_with_existing_data.
+    #[ignore]
+    #[tokio::test]
+    async fn test_cde5c264_two_pass_oracle() {
+        let _ = env_logger::builder().is_test(true).try_init();
+        let db_path = r"C:\Users\UserA\AppData\Roaming\com.meetily.ai\meeting_minutes.sqlite";
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite:{}?mode=ro", db_path))
+            .await
+            .expect("DB connect (read-only)");
+        let meeting_id = "meeting-cde5c264-1c4a-49d9-97c5-6a7e69bb9323";
+
+        let row = sqlx::query("SELECT folder_path FROM meetings WHERE id = ?")
+            .bind(meeting_id)
+            .fetch_optional(&pool)
+            .await
+            .expect("fetch meeting");
+        let folder = row
+            .and_then(|r| sqlx::Row::get::<Option<String>, _>(&r, "folder_path"))
+            .expect("cde5c264 folder_path missing");
+        let audio_path =
+            find_audio_in_folder(std::path::Path::new(&folder)).expect("audio file");
+        let decoded = crate::audio::decoder::decode_audio_file(&audio_path).expect("decode audio");
+        let samples = decoded.to_whisper_format();
+        let audio_duration = decoded.duration_seconds.max(0.001);
+
+        let models_dir = dirs::home_dir().unwrap_or_default().join(".meetily-models");
+        let embedding_path =
+            models_dir.join(crate::audio::speaker::model_download::embedding_filename());
+        let segmentation_path = models_dir.join("pyannote-segmentation.onnx");
+        assert!(embedding_path.exists(), "nemo_titanet embedding model missing");
+        assert!(segmentation_path.exists(), "pyannote segmentation model missing");
+
+        let threshold_fp = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
+            (0.40f32 * 65536.0) as u32,
+        ));
+        let adapter =
+            crate::audio::speaker::sherpa_adapter::SherpaOnnxDiarizationAdapter::with_shared_threshold(
+                embedding_path.to_str().unwrap(),
+                segmentation_path.to_str().unwrap(),
+                threshold_fp,
+            )
+            .expect("create adapter");
+
+        let transcript_segments = fetch_transcript_timestamps(&pool, meeting_id, audio_duration)
+            .await
+            .expect("fetch transcript timestamps");
+        let effective_cap = resolve_effective_cap_for_meeting(&pool, meeting_id).await;
+
+        let sr = DIARIZATION_SAMPLE_RATE;
+        let n_fine_grid = crate::audio::speaker::sherpa_adapter::fine_chunk_ranges(
+            samples.len(),
+            sr,
+            crate::audio::speaker::sherpa_adapter::FINE_SPLIT_SECS,
+        )
+        .len();
+
+        let (fine_segments, centroids, pass2_secs) =
+            tokio::task::spawn_blocking(move || {
+                let coarse = adapter.process(&samples, sr, &transcript_segments)?;
+                let mut segments = coarse.segments;
+                let mut centroids = coarse.centroids;
+                enforce_max_speakers_cap(&mut centroids, &mut segments, effective_cap);
+
+                let t_pass2 = std::time::Instant::now();
+                let fine = adapter.refine_pass2(&samples, sr, &centroids)?;
+                let pass2_secs = t_pass2.elapsed().as_secs_f64();
+
+                Ok::<_, anyhow::Error>((fine, centroids, pass2_secs))
+            })
+            .await
+            .expect("two-pass panicked")
+            .expect("two-pass failed");
+
+        eprintln!(
+            "PASS2: {:.2}s wall-clock, ~{} fine-grid chunks, {} output segments",
+            pass2_secs, n_fine_grid, fine_segments.len()
+        );
+
+        // Identify UserC by temporal ground truth, not voice averaging: he
+        // joins at 17:37, so his label has minimal pre-join presence. A voice
+        // reference averaged from [17:37,19:00] blends all 3 speakers (diagnostic
+        // dump showed chunks nearest to centroids 0, 1, AND 2 in that span) and
+        // lands closest to the wrong centroid. The join-time constraint is
+        // user-confirmed ground truth and needs no clean audio reference.
+        let join_sec = 17.0 * 60.0 + 37.0;
+        let dur_before = |label: u32| {
+            fine_segments
+                .iter()
+                .filter(|s| s.speaker_id == label && s.start_seconds < join_sec)
+                .map(|s| (s.end_seconds.min(join_sec) - s.start_seconds).max(0.0))
+                .sum::<f64>()
+        };
+        let dur_after = |label: u32| {
+            fine_segments
+                .iter()
+                .filter(|s| s.speaker_id == label && s.end_seconds > join_sec)
+                .map(|s| (s.end_seconds - s.start_seconds.max(join_sec)).max(0.0))
+                .sum::<f64>()
+        };
+        let ric_label = centroids
+            .keys()
+            .map(|&k| (k, dur_before(k)))
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .expect("no centroids")
+            .0;
+        let ric_late = dur_after(ric_label);
+        eprintln!(
+            "USERC: label {} (pre-join {:.0}s, post-join {:.0}s)",
+            ric_label,
+            dur_before(ric_label),
+            ric_late
+        );
+        assert!(
+            ric_late > 300.0,
+            "identified late-joiner label {} has only {:.0}s post-join speech (expected >300s) — \
+             temporal ground-truth heuristic picked a phantom label",
+            ric_label,
+            ric_late
+        );
+
+        // §5.1 oracle (primary target): [46:42, 47:02] must contain ≥10s of
+        // UserC — production swallowed [46:58] into a UserB run.
+        let window_start = 46.0 * 60.0 + 42.0;
+        let window_end = 47.0 * 60.0 + 2.0;
+        let ric_dur: f64 = fine_segments
+            .iter()
+            .filter(|s| s.speaker_id == ric_label)
+            .map(|s| {
+                let ov = s.end_seconds.min(window_end) - s.start_seconds.max(window_start);
+                ov.max(0.0)
+            })
+            .sum();
+        eprintln!("USERC [46:42–47:02]: {:.1}s total (target ≥10s)", ric_dur);
+        assert!(
+            ric_dur >= 10.0,
+            "§5.1 FAIL: UserC has only {:.1}s in [46:42–47:02] (target ≥10s); \
+             interjection still swallowed",
+            ric_dur
+        );
+
+        // §5.1 oracle (facet 2): UserC must NOT appear before his 17:37 join.
+        // The [0:01] "Hello" vowel-dominated chunk was globally nearest UserC
+        // in production; the orphan scan should have relabeled it.
+        let early_ric_count = fine_segments
+            .iter()
+            .filter(|s| s.speaker_id == ric_label && s.start_seconds < 3.0)
+            .count();
+        eprintln!(
+            "USERC in [0–3s]: {} segment(s) (must be 0 — he joins at 17:37)",
+            early_ric_count
+        );
+        assert_eq!(
+            early_ric_count, 0,
+            "§5.1 FAIL: UserC labeled in [0–3s] before his 17:37 join — \
+             facet-2 temporal-presence orphan scan failed"
+        );
+
+        // §1.1 GATE (checked last so oracle results are visible regardless):
+        // Pass 2 must complete in <60s after rayon parallelization. If this
+        // fails, scope an 8kHz-downsample path per design.md §1.2.
+        assert!(
+            pass2_secs < 60.0,
+            "§1.1 GATE: Pass 2 took {:.2}s (>60s) — scope 8kHz-downsample path per design",
+            pass2_secs
+        );
+    }
+
+    // §5.2: end-to-end integration of the real two-pass diarization with the
+    // token-level alignment layer on the [46:42–47:02] target. §5.1 proves the
+    // boundary exists (UserC [2802–2820s]); this test proves it reaches
+    // align_with_tokens and yields ≥1 word to each side of the boundary.
+    //
+    // CAVEAT: cde5c264 was recorded before token_timestamps population and the
+    // prod DB is read-only (?mode=ro), so the column is NULL for every row.
+    // Token_words are synthesized at uniform spacing within each real Whisper
+    // segment's [audio_start, audio_end]. This exercises the identical
+    // alignment logic (token.start_ms → speaker_at_time) in the correct
+    // audio-relative time base; validating with real Whisper token timing is
+    // deferred until cde5c264 is re-transcribed.
+    #[ignore]
+    #[tokio::test]
+    async fn test_cde5c264_per_word_split_alignment() {
+        use crate::audio::speaker::alignment::{
+            align_transcripts_with_diarization, DiarizationSegment, TokenWord,
+        };
+        use std::collections::HashSet;
+        let _ = env_logger::builder().is_test(true).try_init();
+        let db_path = r"C:\Users\UserA\AppData\Roaming\com.meetily.ai\meeting_minutes.sqlite";
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite:{}?mode=ro", db_path))
+            .await
+            .expect("DB connect (read-only)");
+        let meeting_id = "meeting-cde5c264-1c4a-49d9-97c5-6a7e69bb9323";
+
+        let row = sqlx::query("SELECT folder_path FROM meetings WHERE id = ?")
+            .bind(meeting_id)
+            .fetch_optional(&pool)
+            .await
+            .expect("fetch meeting");
+        let folder = row
+            .and_then(|r| sqlx::Row::get::<Option<String>, _>(&r, "folder_path"))
+            .expect("cde5c264 folder_path missing");
+        let audio_path =
+            find_audio_in_folder(std::path::Path::new(&folder)).expect("audio file");
+        let decoded = crate::audio::decoder::decode_audio_file(&audio_path).expect("decode audio");
+        let samples = decoded.to_whisper_format();
+        let audio_duration = decoded.duration_seconds.max(0.001);
+
+        let models_dir = dirs::home_dir().unwrap_or_default().join(".meetily-models");
+        let embedding_path =
+            models_dir.join(crate::audio::speaker::model_download::embedding_filename());
+        let segmentation_path = models_dir.join("pyannote-segmentation.onnx");
+        let threshold_fp = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
+            (0.40f32 * 65536.0) as u32,
+        ));
+        let adapter =
+            crate::audio::speaker::sherpa_adapter::SherpaOnnxDiarizationAdapter::with_shared_threshold(
+                embedding_path.to_str().unwrap(),
+                segmentation_path.to_str().unwrap(),
+                threshold_fp,
+            )
+            .expect("create adapter");
+
+        let transcript_segments = fetch_transcript_timestamps(&pool, meeting_id, audio_duration)
+            .await
+            .expect("fetch transcript timestamps");
+        let effective_cap = resolve_effective_cap_for_meeting(&pool, meeting_id).await;
+        let sr = DIARIZATION_SAMPLE_RATE;
+
+        let fine_segments = tokio::task::spawn_blocking(move || {
+            let coarse = adapter.process(&samples, sr, &transcript_segments)?;
+            let mut segments = coarse.segments;
+            let mut centroids = coarse.centroids;
+            enforce_max_speakers_cap(&mut centroids, &mut segments, effective_cap);
+            adapter.refine_pass2(&samples, sr, &centroids)
+        })
+        .await
+        .expect("two-pass panicked")
+        .expect("two-pass failed");
+
+        // Identify UserC by temporal ground truth (minimal pre-17:37 presence).
+        let join_sec = 17.0 * 60.0 + 37.0;
+        let labels: HashSet<u32> = fine_segments.iter().map(|s| s.speaker_id).collect();
+        let ric_label = labels
+            .iter()
+            .map(|&k| {
+                let pre: f64 = fine_segments
+                    .iter()
+                    .filter(|s| s.speaker_id == k && s.start_seconds < join_sec)
+                    .map(|s| (s.end_seconds.min(join_sec) - s.start_seconds).max(0.0))
+                    .sum();
+                (k, pre)
+            })
+            .min_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(k, _)| k)
+            .expect("speaker labels");
+
+        // Real transcript text + boundaries from the DB; synthesize uniform
+        // token_words (column is NULL — see CAVEAT above).
+        let mut transcripts = fetch_transcripts_for_alignment(&pool, meeting_id)
+            .await
+            .expect("fetch transcripts for alignment");
+        for t in &mut transcripts {
+            if t.token_words.is_some() {
+                continue;
+            }
+            let words: Vec<&str> = t.text.split_whitespace().collect();
+            if words.is_empty() {
+                continue;
+            }
+            let span = (t.audio_end_ms - t.audio_start_ms).max(1);
+            let step = span as f64 / words.len() as f64;
+            t.token_words = Some(
+                words
+                    .iter()
+                    .enumerate()
+                    .map(|(i, w)| TokenWord {
+                        word: w.to_string(),
+                        start_ms: t.audio_start_ms + (step * i as f64) as i64,
+                        end_ms: t.audio_start_ms + (step * (i as f64 + 1.0)) as i64,
+                    })
+                    .collect(),
+            );
+        }
+
+        let window_start = ((46.0 * 60.0 + 42.0) * 1000.0) as i64;
+        let window_end = ((47.0 * 60.0 + 2.0) * 1000.0) as i64;
+        let windowed: Vec<_> = transcripts
+            .into_iter()
+            .filter(|t| t.audio_end_ms > window_start && t.audio_start_ms < window_end)
+            .collect();
+        assert!(
+            !windowed.is_empty(),
+            "no transcript segments overlap [46:42–47:02] — data mismatch"
+        );
+
+        let diarization: Vec<DiarizationSegment> = fine_segments
+            .iter()
+            .map(|s| DiarizationSegment {
+                start_ms: (s.start_seconds * 1000.0) as i64,
+                end_ms: (s.end_seconds * 1000.0) as i64,
+                speaker_id: s.speaker_id,
+            })
+            .collect();
+
+        let aligned = align_transcripts_with_diarization(windowed, &diarization);
+
+        let count_words = |label: u32| {
+            aligned
+                .iter()
+                .filter(|a| a.speaker == format!("Speaker {}", label))
+                .map(|a| a.text.split_whitespace().count())
+                .sum::<usize>()
+        };
+        let ric_words = count_words(ric_label);
+        let other_words: usize = labels
+            .iter()
+            .filter(|&&l| l != ric_label)
+            .map(|&l| count_words(l))
+            .sum();
+        eprintln!(
+            "§5.2 [46:42–47:02]: UserC(label {}) {} words, other speakers {} words, {} aligned segments",
+            ric_label,
+            ric_words,
+            other_words,
+            aligned.len()
+        );
+        assert!(
+            ric_words >= 1,
+            "§5.2 FAIL: 0 UserC words in [46:42–47:02] — alignment didn't attribute any word to the boundary speaker"
+        );
+        assert!(
+            other_words >= 1,
+            "§5.2 FAIL: 0 non-UserC words in [46:42–47:02] — alignment didn't split across the boundary"
+        );
+    }
+
     // GATE alternative: tests whether FINER FIXED splitting fixes absorption
     // WITHOUT the native pipeline. Root cause (per absorption memory) is coarse
     // chunking — `effective_split` coarsens to ~8.3s for this 83-min meeting,

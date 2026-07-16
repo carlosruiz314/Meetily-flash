@@ -190,6 +190,8 @@ pub struct TranscriptSegment {
     pub audio_end_time: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub token_timestamps: Option<String>,
 }
 
 impl From<crate::audio::recording_saver::TranscriptSegment> for TranscriptSegment {
@@ -201,6 +203,7 @@ impl From<crate::audio::recording_saver::TranscriptSegment> for TranscriptSegmen
             audio_start_time: Some(s.audio_start_time),
             audio_end_time: Some(s.audio_end_time),
             duration: Some(s.duration),
+            token_timestamps: None,
         }
     }
 }

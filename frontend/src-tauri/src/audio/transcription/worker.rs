@@ -411,7 +411,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                 .transcribe_audio_with_confidence(speech_samples, language)
                 .await
             {
-                Ok((text, confidence, is_partial)) => {
+                Ok((text, confidence, is_partial, _token_ts)) => {
                     let cleaned_text = text.trim().to_string();
                     if cleaned_text.is_empty() {
                         return Ok((String::new(), Some(confidence), is_partial));
