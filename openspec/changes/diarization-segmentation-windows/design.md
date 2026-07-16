@@ -59,7 +59,55 @@ exactly what it expects. One call: `process(samples: &[f32])` → speaker-homoge
 > (cap-mechanism) below. The standalone-segmentation claim in D1 was independently verified by
 > two sharks.
 
-### D1: Run native `OfflineSpeakerDiarization`, consume only its window boundaries
+### D1-revised (2026-07-04): Path B — `ort::Session` + Rust post-processing (original D1 IMPOSSIBLE)
+
+> **Original D1 (sherpa `OfflineSpeakerDiarization`) is IMPOSSIBLE.**
+> `OfflineSpeakerDiarization::create()` crashes with `STATUS_ACCESS_VIOLATION`
+> (`commands.rs:2458`). Root cause: ORT DLL collision on Windows — `sherpa-onnx`
+> 1.13.2 (shared feature) bundles ORT 1.17.1 (API v17); the `ort` crate
+> 2.0.0-rc.10 (ORT 1.20+, API v24, required for Parakeet — the DEFAULT live
+> transcription engine) coexists in the same binary. `sherpa-onnx-c-api.dll`
+> exports `OrtGetApi`; the `ort` crate's link-time import resolves to the wrong
+> ORT. Version alignment cannot fix this (sherpa statically links its ORT
+> regardless). Path A (standalone sherpa segmentation FFI) is also dead — no
+> standalone `OfflineSpeakerSegmentation` type exists, only the crashing
+> orchestrator. Path C (remove `ort` crate) is dead — Parakeet needs it. Path D
+> (Python subprocess) is architecturally wrong (breaks "frontend runs
+> standalone"); used only for the diagnostic workaround (sherpa-onnx Python
+> wheels bundle matching ORT, no collision).
+
+**Path B — the only viable path:** load `pyannote-segmentation-3.0.onnx` via the
+`ort` crate's `Session` (already in the tree for Parakeet). Model I/O: input
+`x` = `[N, 1, T]` mono f32 @ 16kHz; output `y` = `[T', 293, 7]` (293 frames per
+5s window; 7 = max concurrent speakers, pyannote 3.0 "7channels" variant).
+Implement the pyannote sliding-window post-processing in Rust: 5s window,
+~500ms hop, per-frame per-speaker activity > 0.5 → contiguous
+speaker-homogeneous regions → `Vec<(f64, f64)>` windows. Feed those windows to
+the EXISTING `SpeakerEmbeddingExtractor` (sherpa — works) + EXISTING AHC +
+smoothing. **No collision:** segmentation inference goes through the `ort`
+crate's own ORT; embedding extraction stays on sherpa's ORT (same as production
+today). The two ORT stacks never meet inside one sherpa call.
+
+**Plug-in point:** `SherpaOnnxDiarizationAdapter::new` already accepts
+`segmentation_model_path` (`sherpa_adapter.rs:89`) — currently validated for
+existence but never loaded. Path B stores an `ort::Session` alongside the
+existing `SpeakerEmbeddingExtractor`.
+
+**Latency is BETTER than original D1's estimate:** Path B runs only the
+segmentation model (one pass over the audio), not the full native pipeline
+(segmentation + 4200–8400 internal embedding passes, all discarded). The
+double-embedding RAM concern also disappears — nemo_titanet loads once, in our
+extractor only.
+
+**Risk:** must match pyannote's post-processing closely enough to preserve
+speaker-homogeneity. Exact window boundaries may differ from the native
+pipeline, but AHC + smoothing are robust to perturbation (the decisive
+diagnostic's 22× recovery holds at cos > 0.5, a loose threshold — boundary
+jitter is tolerable).
+
+---
+
+### D1 (SUPERSEDED — see D1-revised above): Run native `OfflineSpeakerDiarization`, consume only its window boundaries
 
 The segmentation model is exposed in the Rust binding **only** bundled inside
 `OfflineSpeakerDiarization` — there is no standalone segmentation-model type. **Verified

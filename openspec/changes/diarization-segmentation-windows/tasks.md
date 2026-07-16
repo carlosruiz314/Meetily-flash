@@ -4,7 +4,7 @@
 > clustering on native windows), uses a duration metric not binary presence, runs a three-way
 > fork, sweeps params before abandoning, and gates on two meetings.
 
-- [ ] 1.1 Write a `#[ignore]` read-only test `test_cde5c264_native_pipeline_diagnostic` in
+- [x] 1.1 Write a `#[ignore]` read-only test `test_cde5c264_native_pipeline_diagnostic` in
       `commands.rs` that constructs `OfflineSpeakerDiarization` directly from the two shipped
       models (`pyannote-segmentation.onnx` + `nemo-titanet-embedding.onnx`) with
       **`FastClusteringConfig::default()` (`num_clusters = -1`, auto — do NOT force K)** and
@@ -19,7 +19,7 @@
           `SpeakerEmbeddingExtractor` and run `cluster_by_centroids(..., 0.40) →
           smooth_to_fixed_point → enforce_max_speakers_cap(3)` on those embeddings**, printing
           the per-speaker duration distribution of **that** result (the production code path).
-- [ ] 1.2 Run the diagnostic on meeting `cde5c264` AND meeting `95db` (two meetings — `95db`
+- [x] 1.2 Run the diagnostic on meeting `cde5c264` AND meeting `95db` (two meetings — `95db`
       guards against a single-meeting false pass).
       `cargo test test_cde5c264_native_pipeline_diagnostic -- --ignored --nocapture`.
       **DECISION (three-way fork, duration metric):**
@@ -36,7 +36,19 @@
          voice); STOP, do not proceed to task 2, scope a source-separation /
          separate-channel-capture change.
 
-## 2. Wire native pipeline into the adapter
+> **§1 RESOLVED (2026-07-04):** Fork outcome #1 — PROCEED. Native pyannote
+> windows recover UserB 22× on cde5c264 (1016s late-half speech at cos > 0.5
+> vs ~45s for whisper-derived chunks). Diagnostics committed in `94ef330` +
+> `d4fc465`. 95db second-meeting guard folded into §4.1 regression.
+
+## 2. Wire segmentation into the adapter (Path B — REWRITE PENDING)
+
+> **Original tasks 2.1–2.3 below assumed the sherpa `OfflineSpeakerDiarization`
+> API — now IMPOSSIBLE (ORT DLL collision with the `ort` crate; see design.md
+> D1-revised). Path B replacement: load pyannote-segmentation.onnx via
+> `ort::Session`, implement sliding-window post-processing in Rust, feed windows
+> to existing SpeakerEmbeddingExtractor + AHC + smoothing. Tasks 2.1–2.3 below
+> are the ORIGINAL (superseded); Path B rewrite is the next step.
 
 - [ ] 2.1 Write a failing test in `sherpa_adapter.rs`: given synthetic audio with a known
       speaker turn at time T (two distinct speaker-tone regions concatenated), `process()`

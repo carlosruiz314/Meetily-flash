@@ -1,4 +1,29 @@
-## Why
+> **⚠ ABANDONED — superseded by `diarization-f0-correction`.**
+> This change's root-cause premise was **disproven** by diagnostics D8–D13
+> (`openspec/exploration/diarization-eend-poc-log.md`). The premise below — "the embeddings
+> themselves are correct; the **windows** are wrong" — is exactly backwards:
+>
+> 1. **D11 stage-trace** showed absorption happens at the AHC clustering step (954s early /
+>    48s late), **not** at the windowing step. If windows were the cause, the failure would
+>    appear at `build_chunks`, not at clustering.
+> 2. **D12** showed switching from centroid linkage to average linkage (the Python POC's
+>    algorithm) produces the **same** 48s late — the clustering algorithm is not the variable.
+> 3. **D13** showed 202 of 423 mis-assigned late chunks have F0 in the absorbed speaker's
+>    register (≥190 Hz) — pitch survives the mix-down in a way the TDNN embedding does not,
+>    which is only possible if the embedding is contaminated, not if the window is wrong.
+>
+> The actual root cause: the two remote speakers are **pre-mixed on one system channel by the
+> meeting platform** before Meetily captures anything, so no windowing decision —
+> speaker-homogeneous or otherwise — can separate them. The fix is an F0 (pitch) corrective
+> layer that uses a separate acoustic dimension to reassign the mis-attributed chunks, not a
+> segmentation-model re-windowing. See `openspec/changes/diarization-f0-correction/`.
+>
+> This change is left in place (not archived) as a historical record of the disproven
+> hypothesis; its tasks are not implemented. The exploration diagnostics committed on this
+> branch (`commands.rs` stage-trace, `sherpa_adapter.rs` average-linkage comparison) are
+> cleaned up as scaffolding-removal tasks under `diarization-f0-correction` §3.3.
+
+## Why (original, premise now disproven — see ABANDONED note above)
 
 In multi-speaker meetings, a quieter speaker can vanish from diarization mid-meeting
 ("absorption"). On meeting `cde5c264` (3 speakers, 70 min, 2026-06-22), the quieter third
