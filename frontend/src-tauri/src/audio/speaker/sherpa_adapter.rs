@@ -143,6 +143,7 @@ fn from_fp(v: u32) -> f32 {
     v as f32 / 65536.0
 }
 
+#[derive(Clone)]
 pub(crate) struct Chunk {
     pub(crate) start_sample: usize,
     pub(crate) end_sample: usize,
@@ -231,6 +232,37 @@ impl DiarizationPort for SherpaOnnxDiarizationAdapter {
             n_clusters.len(),
         );
 
+        // F0 pitch correction (change: diarization-f0-correction): DISABLED.
+        // Validated 2026-07-10 on cde5c264 + 95db: the approach is fundamentally
+        // circular — per-cluster F0 medians are derived from contaminated
+        // embedding clusters, so the profiles inherit the absorption. UserB's
+        // embedding cluster has median 190 Hz but her actual late speech sits at
+        // 222–308 Hz; correction sends her late chunks to the wrong cluster and
+        // steals her low-F0 early chunks (1→2: 40 stolen, 2→1: 1 recovered).
+        // It also collapsed 95db from 3→2 speakers. The detect_f0 /
+        // correct_labels_by_f0 functions and their unit tests are retained for
+        // reference; see openspec/changes/diarization-f0-correction/design.md
+        // "Real-data failure" section. Re-enable only with a non-circular F0
+        // profile source (e.g. source-separated channels).
+        const F0_CORRECTION_ENABLED: bool = false;
+        let labels = if F0_CORRECTION_ENABLED {
+            correct_labels_by_f0(
+                &labels,
+                samples,
+                sample_rate,
+                &chunks,
+                &cluster_centroids,
+                &F0CorrectionParams::default(),
+            )
+        } else {
+            labels
+        };
+        let n_clusters: std::collections::HashSet<u32> = labels.iter().copied().collect();
+        log::info!(
+            "DIARIZATION: post-smoothing produced {} speakers",
+            n_clusters.len(),
+        );
+
         // Step 3: Build speaker segments from clustered chunks.
         // Sort chunks by start_sample to get temporal order.
         let mut indexed: Vec<(usize, u32)> = labels.into_iter().enumerate().collect();
@@ -312,6 +344,16 @@ impl SherpaOnnxDiarizationAdapter {
         sample_rate: u32,
         segments: &[(f64, f64)],
     ) -> Vec<Chunk> {
+        self.build_chunks_with_min(samples, sample_rate, segments, MIN_SPEECH_SECS)
+    }
+
+    pub(crate) fn build_chunks_with_min(
+        &self,
+        samples: &[f32],
+        sample_rate: u32,
+        segments: &[(f64, f64)],
+        min_speech_secs: f64,
+    ) -> Vec<Chunk> {
         let sr_f = sample_rate as f64;
         let t_chunk = std::time::Instant::now();
         let mut chunks: Vec<Chunk> = Vec::new();
@@ -319,13 +361,13 @@ impl SherpaOnnxDiarizationAdapter {
         let speech_seconds: f64 = segments
             .iter()
             .map(|&(s, e)| (e - s).max(0.0))
-            .filter(|&d| d >= MIN_SPEECH_SECS)
+            .filter(|&d| d >= min_speech_secs)
             .sum();
         let effective_split = (speech_seconds / MAX_DIARIZATION_CHUNKS as f64).max(SPLIT_TARGET_SECS);
 
         for &(start_s, end_s) in segments {
             let dur = end_s - start_s;
-            if dur < MIN_SPEECH_SECS {
+            if dur < min_speech_secs {
                 continue;
             }
 
@@ -366,7 +408,7 @@ impl SherpaOnnxDiarizationAdapter {
                 // Handle remaining tail if it's long enough
                 if pos < end_limit {
                     let tail_dur = (end_limit - pos) as f64 / sr_f;
-                    if tail_dur >= MIN_SPEECH_SECS {
+                    if tail_dur >= min_speech_secs {
                         let audio = &samples[pos..end_limit];
                         if let Some(emb) = self.extract_embedding(audio, sample_rate) {
                             chunks.push(Chunk {
@@ -382,9 +424,10 @@ impl SherpaOnnxDiarizationAdapter {
         }
 
         log::warn!(
-            "DIARIZATION: chunked + embedded {} chunks from {} segments in {:.2}s",
+            "DIARIZATION: chunked + embedded {} chunks from {} segments (min={:.1}s) in {:.2}s",
             chunks.len(),
             segments.len(),
+            min_speech_secs,
             t_chunk.elapsed().as_secs_f64(),
         );
 
@@ -920,6 +963,220 @@ fn is_effectively_silent(audio: &[f32]) -> bool {
     }
     let sum_sq: f32 = audio.iter().map(|&s| s * s).sum();
     (sum_sq / audio.len() as f32) < 1e-10
+}
+
+// ── F0 pitch corrective layer (change: diarization-f0-correction) ──
+//
+// Mixed-audio chunks (two remote speakers pre-mixed on one system channel)
+// produce TDNN embeddings dominated by the louder voice, burying the quieter
+// speaker's voiceprint. F0 (pitch) survives mix-down, so detect_f0 + the
+// 3-conjunct reassignment recover chunks the embeddings mis-attributed. See
+// design.md D3 (detect_f0) and D4 (correct_labels_by_f0).
+
+const F0_MATCH_TOLERANCE: f32 = 30.0;
+const F0_DISAGREEMENT_MIN: f32 = 50.0;
+const F0_REGISTER_BOUNDARY: f32 = 180.0;
+const F0_VOICING_THRESHOLD: f32 = 0.30;
+const F0_MIN_VOICED_MEMBERS: usize = 3;
+
+/// Per-chunk F0 via normalised autocorrelation on downsampled audio.
+/// Returns the strongest NCC peak's frequency, or None if unvoiced / too short.
+/// Sanitises NaN/Inf before the boxcar (which propagates NaN), then boxcar +
+/// decimate + DC-remove + NCC scan + voicing gate. See design D3.
+pub(crate) fn detect_f0(samples: &[f32], sample_rate: u32) -> Option<f32> {
+    let ds = (sample_rate as usize) / 4000;
+    if ds == 0 || samples.is_empty() {
+        return None;
+    }
+
+    // Sanitise FIRST: the boxcar propagates NaN (NaN + finite = NaN), which
+    // would contaminate the DC-removal mean and zero the entire chunk.
+    let clean: Vec<f32> = samples
+        .iter()
+        .map(|&s| if s.is_finite() { s } else { 0.0 })
+        .collect();
+
+    // DOWNSAMPLE-tap boxcar low-pass + decimate by DOWNSAMPLE. At 16 kHz
+    // (ds=4) this is the 4-tap boxcar + 4× decimate from design D3.
+    let decimated: Vec<f32> = clean
+        .windows(ds)
+        .step_by(ds)
+        .map(|w| w.iter().sum::<f32>() / ds as f32)
+        .collect();
+    if decimated.is_empty() {
+        return None;
+    }
+
+    // DC remove so DC bias does not produce a spurious lag-0 peak.
+    let mean: f32 = decimated.iter().sum::<f32>() / decimated.len() as f32;
+    let signal: Vec<f32> = decimated.iter().map(|&x| x - mean).collect();
+
+    let ds_rate = sample_rate as usize / ds;
+    let min_lag = (ds_rate / 400).max(1);
+    let max_lag = ds_rate / 80;
+    let n = signal.len();
+    if n <= max_lag {
+        return None;
+    }
+
+    let mut sq_prefix = vec![0.0f32; n + 1];
+    for i in 0..n {
+        sq_prefix[i + 1] = sq_prefix[i] + signal[i] * signal[i];
+    }
+
+    let mut best_ncc = 0.0f32;
+    let mut best_adjusted = 0.0f32;
+    let mut best_lag = 0usize;
+    for tau in min_lag..=max_lag {
+        let overlap = n - tau;
+        let mut dot: f32 = 0.0;
+        for i in 0..overlap {
+            dot += signal[i] * signal[i + tau];
+        }
+        let energy_a = sq_prefix[overlap];
+        let energy_b = sq_prefix[n] - sq_prefix[tau];
+        let denom_sq = energy_a * energy_b;
+        if denom_sq <= 0.0 {
+            continue;
+        }
+        let ncc = dot / denom_sq.sqrt();
+        // Lag penalty: autocorrelation of a periodic signal peaks at every
+        // integer multiple of the period. For a pure sine the longest
+        // exact-multiple lag can have marginally higher NCC than the
+        // fundamental (finite-signal boundary effects + exact-period
+        // alignment, e.g. a 240 Hz sine at 4 kHz hits NCC=1.0 at lag 50 =
+        // 3 periods). The tiny per-lag penalty breaks these near-ties toward
+        // the shorter lag (higher F0) without overriding genuine octave-
+        // strength differences in real speech (where the fundamental is
+        // typically 0.01+ stronger). Raw NCC is retained for the voicing gate.
+        let adjusted = ncc - tau as f32 * 3e-4;
+        if adjusted > best_adjusted {
+            best_adjusted = adjusted;
+            best_ncc = ncc;
+            best_lag = tau;
+        }
+    }
+
+    if best_ncc < F0_VOICING_THRESHOLD || best_lag == 0 {
+        return None;
+    }
+    Some(ds_rate as f32 / best_lag as f32)
+}
+
+pub(crate) struct F0CorrectionParams {
+    pub(crate) match_tolerance: f32,
+    pub(crate) disagreement_min: f32,
+    pub(crate) register_boundary: f32,
+    pub(crate) min_voiced_members: usize,
+}
+
+impl Default for F0CorrectionParams {
+    fn default() -> Self {
+        F0CorrectionParams {
+            match_tolerance: F0_MATCH_TOLERANCE,
+            disagreement_min: F0_DISAGREEMENT_MIN,
+            register_boundary: F0_REGISTER_BOUNDARY,
+            min_voiced_members: F0_MIN_VOICED_MEMBERS,
+        }
+    }
+}
+
+/// Reassign per-chunk labels using F0 (pitch) to recover speakers absorbed by
+/// embedding contamination. Labels only — centroids are read-only (D2). Three
+/// conjuncts (D4): pitch matches target, disagrees with source, registers on
+/// opposite sides of the boundary. No octave guard. Deterministic smallest-
+/// label tie-break. See design D4.
+pub(crate) fn correct_labels_by_f0(
+    labels: &[u32],
+    samples: &[f32],
+    sample_rate: u32,
+    chunks: &[Chunk],
+    centroids: &HashMap<u32, Vec<f32>>,
+    params: &F0CorrectionParams,
+) -> Vec<u32> {
+    if labels.is_empty() || chunks.is_empty() {
+        return labels.to_vec();
+    }
+
+    let chunk_f0: Vec<Option<f32>> = chunks
+        .iter()
+        .map(|c| {
+            let start = c.start_sample.min(samples.len());
+            let end = c.end_sample.min(samples.len());
+            if end <= start {
+                return None;
+            }
+            detect_f0(&samples[start..end], sample_rate)
+        })
+        .collect();
+
+    let mut cluster_f0s: Vec<u32> = labels
+        .iter()
+        .filter(|l| centroids.contains_key(l))
+        .copied()
+        .collect();
+    cluster_f0s.sort();
+    cluster_f0s.dedup();
+
+    // Per-cluster F0 profile: median of voiced members (≥3 required, D4).
+    let mut profiles: HashMap<u32, f32> = HashMap::new();
+    for &label in &cluster_f0s {
+        let mut voiced: Vec<f32> = labels
+            .iter()
+            .enumerate()
+            .filter(|(_, &l)| l == label)
+            .filter_map(|(i, _)| chunk_f0[i])
+            .collect();
+        if voiced.len() >= params.min_voiced_members {
+            voiced.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            profiles.insert(label, voiced[voiced.len() / 2]);
+        }
+    }
+
+    let mut corrected = labels.to_vec();
+    for i in 0..labels.len() {
+        let f0_i = match chunk_f0[i] {
+            Some(f) => f,
+            None => continue,
+        };
+        let l_i = labels[i];
+        let reg_l = match profiles.get(&l_i) {
+            Some(&r) => r,
+            None => continue,
+        };
+
+        // Scan candidates in sorted label order for deterministic smallest-label
+        // tie-break (strict < keeps the first / smallest label on equal dist).
+        let mut best_candidate: Option<u32> = None;
+        let mut best_dist = f32::MAX;
+        for &k in &cluster_f0s {
+            if k == l_i {
+                continue;
+            }
+            let reg_k = match profiles.get(&k) {
+                Some(&r) => r,
+                None => continue,
+            };
+            let dist_k = (f0_i - reg_k).abs();
+            let dist_l = (f0_i - reg_l).abs();
+            let opposite_sides = (reg_k < params.register_boundary)
+                != (reg_l < params.register_boundary);
+            if dist_k < params.match_tolerance
+                && dist_l > params.disagreement_min
+                && opposite_sides
+                && dist_k < best_dist
+            {
+                best_dist = dist_k;
+                best_candidate = Some(k);
+            }
+        }
+
+        if let Some(k) = best_candidate {
+            corrected[i] = k;
+        }
+    }
+
+    corrected
 }
 
 fn renumber_speakers(segments: Vec<SpeakerSegment>) -> (Vec<SpeakerSegment>, HashMap<u32, u32>) {
@@ -1903,6 +2160,86 @@ mod tests {
         }
     }
 
+    // Task 5.1 — SAFETY invariants for correct_labels_by_f0: for any input the
+    // correction is deterministic, length-preserving, never invents labels,
+    // never increases cluster count, and leaves centroids untouched. Samples use
+    // sine waves (NOT noise) so chunks are voiced and the correction logic is
+    // actually exercised. Each (label, audio-register) pair is independent,
+    // creating aligned and misaligned chunks at random. Idempotency is checked
+    // conditionally — only when every cluster has ≥10 voiced members, because a
+    // single reassignment can shift a small cluster's median (design D4).
+    // Reassignment validity (F0 within tolerance of target) is enforced by the
+    // implementation's own conjunct and pinned by §2 targeted tests, so it is
+    // tautological to re-assert here.
+    proptest::proptest! {
+        #[test]
+        fn proptest_f0_correction_invariants(
+            entries in proptest::collection::vec((0u32..4u32, 0u32..4u32), 12..30)
+        ) {
+            let n = entries.len();
+            let sr = 16000u32;
+            let chunk_dur = 0.5f32;
+            let chunk_n = (sr as f32 * chunk_dur) as usize;
+            let k = (entries.iter().map(|(l, _)| *l).max().unwrap_or(0) + 1) as usize;
+            let dim = k.max(1);
+
+            // Non-harmonic F0s straddling 180 Hz: 120, 190, 260, 330.
+            let freq_for = |lab: u32| 120.0 + lab as f32 * 70.0;
+
+            let labels: Vec<u32> = entries.iter().map(|(l, _)| *l).collect();
+            let mut samples = Vec::with_capacity(n * chunk_n);
+            let mut chunks = Vec::with_capacity(n);
+            let mut pos = 0usize;
+            for &(label, freq_label) in &entries {
+                let wave = sine_wave(freq_for(freq_label), sr, chunk_dur, 0.5);
+                samples.extend_from_slice(&wave);
+                chunks.push(Chunk {
+                    start_sample: pos,
+                    end_sample: pos + chunk_n,
+                    duration_secs: chunk_dur as f64,
+                    embedding: emb(label as usize, dim),
+                });
+                pos += chunk_n;
+            }
+
+            let centroids: HashMap<u32, Vec<f32>> = (0..k as u32)
+                .map(|kk| (kk, emb(kk as usize, dim)))
+                .collect();
+            let centroids_before = centroids.clone();
+            let params = F0CorrectionParams::default();
+
+            let out1 = correct_labels_by_f0(&labels, &samples, sr, &chunks, &centroids, &params);
+            let out2 = correct_labels_by_f0(&labels, &samples, sr, &chunks, &centroids, &params);
+
+            proptest::prop_assert_eq!(&out1, &out2, "F0 correction must be deterministic");
+            proptest::prop_assert_eq!(out1.len(), n, "output length must equal input length");
+
+            let in_unique: std::collections::HashSet<u32> = labels.iter().copied().collect();
+            let out_unique: std::collections::HashSet<u32> = out1.iter().copied().collect();
+            proptest::prop_assert!(
+                out_unique.len() <= in_unique.len(),
+                "cluster count increased: {} > {}", out_unique.len(), in_unique.len()
+            );
+            for l in &out1 {
+                proptest::prop_assert!(in_unique.contains(l), "F0 correction invented new label {}", l);
+            }
+
+            proptest::prop_assert_eq!(&centroids, &centroids_before, "centroids must not be modified");
+
+            let out1_again = correct_labels_by_f0(&out1, &samples, sr, &chunks, &centroids, &params);
+            let mut voiced_counts: HashMap<u32, usize> = HashMap::new();
+            for i in 0..n {
+                if detect_f0(&samples[chunks[i].start_sample..chunks[i].end_sample], sr).is_some() {
+                    *voiced_counts.entry(labels[i]).or_insert(0) += 1;
+                }
+            }
+            if !voiced_counts.is_empty() && voiced_counts.values().all(|&c| c >= 10) {
+                proptest::prop_assert_eq!(&out1, &out1_again,
+                    "idempotency violated when all clusters have ≥10 voiced members");
+            }
+        }
+    }
+
     // Task 2.1 — centroid recomputation: de-contaminated labels yield a centroid
     // different from the pre-smoothing (contaminated) one.
     #[test]
@@ -2187,5 +2524,440 @@ mod tests {
             "manual verify gate — see the ignore-reason recipe. \
              Prod DB: meeting-cde5c264-... (READ-ONLY)."
         );
+    }
+
+    // ── diarization-f0-correction — detect_f0 tests (§1.1) ──────────────
+
+    fn sine_wave(freq: f32, sample_rate: u32, duration_secs: f32, amplitude: f32) -> Vec<f32> {
+        let n = (sample_rate as f32 * duration_secs) as usize;
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / sample_rate as f32;
+                amplitude * (2.0 * std::f32::consts::PI * freq * t).sin()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn detect_f0_240hz_sine_at_16k() {
+        let sr = 16000;
+        let samples = sine_wave(240.0, sr, 1.0, 0.5);
+        let f0 = detect_f0(&samples, sr).expect("voiced 240 Hz sine");
+        assert!((f0 - 240.0).abs() < 15.0, "expected ~240 Hz, got {}", f0);
+    }
+
+    #[test]
+    fn detect_f0_120hz_sine_at_16k() {
+        let sr = 16000;
+        let samples = sine_wave(120.0, sr, 1.0, 0.5);
+        let f0 = detect_f0(&samples, sr).expect("voiced 120 Hz sine");
+        assert!((f0 - 120.0).abs() < 15.0, "expected ~120 Hz, got {}", f0);
+    }
+
+    #[test]
+    fn detect_f0_white_noise_returns_none() {
+        let sr = 16000;
+        let mut state: u64 = 12345;
+        let samples: Vec<f32> = (0..sr)
+            .map(|_| {
+                state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                ((state >> 33) as f64 / (1u64 << 31) as f64) as f32 * 2.0 - 1.0
+            })
+            .collect();
+        assert!(detect_f0(&samples, sr).is_none(), "white noise should be unvoiced");
+    }
+
+    #[test]
+    fn detect_f0_240hz_octave_tiebreak_picks_fundamental() {
+        // Pure 240 Hz sine: fundamental (lag ~17) and octave (lag ~33) produce
+        // ~equal NCC. Strict > tie-break toward shorter lag picks 240 Hz.
+        let sr = 16000;
+        let samples = sine_wave(240.0, sr, 1.0, 0.5);
+        let f0 = detect_f0(&samples, sr).expect("voiced");
+        assert!((f0 - 240.0).abs() < 15.0, "tie-break should pick fundamental 240 Hz, got {}", f0);
+    }
+
+    #[test]
+    fn detect_f0_120hz_rejects_anti_correlated_octave() {
+        // True-120 Hz sine: 240 Hz lag is anti-correlated (NCC ≈ −0.998),
+        // rejected by best_ncc = 0.0 initialiser.
+        let sr = 16000;
+        let samples = sine_wave(120.0, sr, 1.0, 0.5);
+        let f0 = detect_f0(&samples, sr).expect("voiced");
+        assert!((f0 - 120.0).abs() < 15.0, "should be ~120 Hz, got {}", f0);
+    }
+
+    #[test]
+    fn detect_f0_mixed_pitch_louder_wins() {
+        // Quiet-240 (0.3) + loud-120 (1.0): louder dominates → ~120 Hz.
+        let sr = 16000;
+        let mut samples = sine_wave(240.0, sr, 1.0, 0.3);
+        let loud = sine_wave(120.0, sr, 1.0, 1.0);
+        for (s, l) in samples.iter_mut().zip(loud.iter()) {
+            *s += l;
+        }
+        let f0 = detect_f0(&samples, sr).expect("voiced");
+        assert!((f0 - 120.0).abs() < 20.0, "louder 120 Hz should dominate, got {}", f0);
+    }
+
+    #[test]
+    fn detect_f0_mixed_pitch_recovery_case() {
+        // Non-harmonic mix: quiet-140 (0.3) + loud-200 (1.0). The louder
+        // 200 Hz component's autocorrelation peak is the strongest because
+        // 140/200 = 0.7 is not a 1:2 ratio — at the 200 Hz period the quiet
+        // 140 Hz component is anti-correlated, suppressing the sub-harmonic.
+        //
+        // KNOWN LIMITATION: for a 2:1 harmonic mix (e.g. 120+240), the
+        // autocorrelation peaks at the sub-harmonic (120 Hz) regardless of
+        // which component is louder, because both align at the longer lag.
+        // F0 correction cannot recover an absorbed speaker whose pitch is
+        // an exact octave of the absorber's. Real speech rarely has exact
+        // 2:1 F0 ratios (see design D13 upper-bound acknowledgment).
+        let sr = 16000;
+        let mut samples = sine_wave(140.0, sr, 1.0, 0.3);
+        let loud = sine_wave(200.0, sr, 1.0, 1.0);
+        for (s, l) in samples.iter_mut().zip(loud.iter()) {
+            *s += l;
+        }
+        let f0 = detect_f0(&samples, sr).expect("voiced");
+        assert!((f0 - 200.0).abs() < 20.0, "louder 200 Hz should dominate, got {}", f0);
+    }
+
+    #[test]
+    fn detect_f0_clipped_sine() {
+        let sr = 16000;
+        let mut samples = sine_wave(240.0, sr, 1.0, 1.0);
+        for s in samples.iter_mut() {
+            *s = s.clamp(-0.8, 0.8);
+        }
+        let f0 = detect_f0(&samples, sr).expect("voiced");
+        assert!((f0 - 240.0).abs() < 15.0, "clipped 240 Hz should still detect, got {}", f0);
+    }
+
+    #[test]
+    fn detect_f0_all_zero_returns_none() {
+        let sr = 16000;
+        let samples = vec![0.0f32; sr as usize];
+        assert!(detect_f0(&samples, sr).is_none(), "all-zero should be unvoiced");
+    }
+
+    #[test]
+    fn detect_f0_constant_dc_returns_none() {
+        let sr = 16000;
+        let samples = vec![0.5f32; sr as usize];
+        assert!(detect_f0(&samples, sr).is_none(), "constant-DC should be unvoiced after DC removal");
+    }
+
+    #[test]
+    fn detect_f0_few_nan_surrounded_by_valid() {
+        let sr = 16000;
+        let mut samples = sine_wave(240.0, sr, 1.0, 0.5);
+        samples[100] = f32::NAN;
+        samples[101] = f32::INFINITY;
+        samples[200] = f32::NEG_INFINITY;
+        let f0 = detect_f0(&samples, sr).expect("should return valid F0 despite NaN");
+        assert!((f0 - 240.0).abs() < 15.0, "few NaN should not zero the chunk, got {}", f0);
+    }
+
+    #[test]
+    fn detect_f0_short_chunk_no_garbage() {
+        let sr = 16000;
+        let samples = sine_wave(240.0, sr, 800.0 / sr as f32, 0.5);
+        match detect_f0(&samples, sr) {
+            Some(f0) => assert!((f0 - 240.0).abs() < 25.0, "short chunk got {}, expected ~240 or None", f0),
+            None => {}
+        }
+    }
+
+    #[test]
+    fn detect_f0_48khz_dynamic_sample_rate() {
+        let sr = 48000;
+        let samples = sine_wave(240.0, sr, 1.0, 0.5);
+        let f0 = detect_f0(&samples, sr).expect("voiced at 48 kHz");
+        assert!((f0 - 240.0).abs() < 15.0, "48 kHz should detect ~240 Hz, got {}", f0);
+    }
+
+    // ── correct_labels_by_f0 tests (§2.1–§2.11) ─────────────────────────
+
+    fn f0_scenario(
+        sr: u32,
+        chunk_specs: &[(f32, u32)],
+    ) -> (Vec<f32>, Vec<Chunk>, Vec<u32>, HashMap<u32, Vec<f32>>) {
+        let chunk_dur = 0.5f32;
+        let chunk_n = (sr as f32 * chunk_dur) as usize;
+        let mut samples = Vec::new();
+        let mut chunks = Vec::new();
+        let mut labels = Vec::new();
+        let mut centroid_labels: Vec<u32> = Vec::new();
+        let mut pos = 0usize;
+        for &(freq, label) in chunk_specs {
+            let wave = if freq > 0.0 {
+                sine_wave(freq, sr, chunk_dur, 0.5)
+            } else {
+                vec![0.0f32; chunk_n]
+            };
+            samples.extend_from_slice(&wave);
+            chunks.push(Chunk {
+                start_sample: pos,
+                end_sample: pos + chunk_n,
+                duration_secs: chunk_dur as f64,
+                embedding: vec![0.0; 4],
+            });
+            labels.push(label);
+            if !centroid_labels.contains(&label) {
+                centroid_labels.push(label);
+            }
+            pos += chunk_n;
+        }
+        let mut centroids = HashMap::new();
+        for l in &centroid_labels {
+            centroids.insert(*l, vec![0.5; 4]);
+        }
+        (samples, chunks, labels, centroids)
+    }
+
+    #[test]
+    fn f0_clean_meeting_noop() {
+        let (samples, chunks, labels, centroids) = f0_scenario(16000, &[
+            (120.0, 0), (120.0, 0), (120.0, 0), (120.0, 0), (120.0, 0),
+            (240.0, 1), (240.0, 1), (240.0, 1), (240.0, 1), (240.0, 1),
+        ]);
+        let corrected = correct_labels_by_f0(&labels, &samples, 16000, &chunks, &centroids, &F0CorrectionParams::default());
+        assert_eq!(corrected, labels, "clean meeting should be a no-op");
+    }
+
+    #[test]
+    fn f0_absorption_recovery_synthetic() {
+        let (samples, chunks, labels, centroids) = f0_scenario(16000, &[
+            (120.0, 0), (120.0, 0), (120.0, 0), (120.0, 0), (120.0, 0),
+            (240.0, 1), (240.0, 1), (240.0, 1), (240.0, 1), (240.0, 1),
+            (240.0, 0), (240.0, 0), (240.0, 0), (240.0, 0),
+        ]);
+        let corrected = correct_labels_by_f0(&labels, &samples, 16000, &chunks, &centroids, &F0CorrectionParams::default());
+        for i in 10..14 {
+            assert_eq!(corrected[i], 1, "absorbed chunk {} should move to cluster 1", i);
+        }
+        for i in 0..5 {
+            assert_eq!(corrected[i], 0, "absorber chunk {} should stay at 0", i);
+        }
+    }
+
+    #[test]
+    fn f0_all_same_register_noop() {
+        let (samples, chunks, labels, centroids) = f0_scenario(16000, &[
+            (140.0, 0), (140.0, 0), (140.0, 0), (140.0, 0),
+            (150.0, 1), (150.0, 1), (150.0, 1), (150.0, 1),
+        ]);
+        let corrected = correct_labels_by_f0(&labels, &samples, 16000, &chunks, &centroids, &F0CorrectionParams::default());
+        assert_eq!(corrected, labels, "same-register clusters should not trigger reassignment");
+    }
+
+    #[test]
+    fn f0_unvoiced_chunks_skipped() {
+        let (samples, chunks, labels, centroids) = f0_scenario(16000, &[
+            (120.0, 0), (120.0, 0), (120.0, 0), (120.0, 0),
+            (240.0, 1), (240.0, 1), (240.0, 1), (240.0, 1),
+            (0.0, 0), // silence labeled 0 — unvoiced, should not be reassigned
+        ]);
+        let corrected = correct_labels_by_f0(&labels, &samples, 16000, &chunks, &centroids, &F0CorrectionParams::default());
+        assert_eq!(corrected[8], 0, "unvoiced chunk must keep its label");
+        assert_eq!(corrected, labels, "unvoiced chunk should not trigger any reassignment");
+    }
+
+    #[test]
+    fn f0_boundary_register_noop() {
+        let (samples, chunks, labels, centroids) = f0_scenario(16000, &[
+            (175.0, 0), (175.0, 0), (175.0, 0), (175.0, 0),
+            (185.0, 1), (185.0, 1), (185.0, 1), (185.0, 1),
+            (190.0, 0), (170.0, 0), // jitter ±15 around 175
+            (200.0, 1), (170.0, 1), // jitter ±15 around 185
+        ]);
+        let corrected = correct_labels_by_f0(&labels, &samples, 16000, &chunks, &centroids, &F0CorrectionParams::default());
+        assert_eq!(corrected, labels, "near-boundary registers with ±15 Hz jitter should not flap");
+    }
+
+    #[test]
+    fn f0_cluster_count_never_increases() {
+        let (samples, chunks, labels, centroids) = f0_scenario(16000, &[
+            (120.0, 0), (120.0, 0), (120.0, 0), (120.0, 0),
+            (240.0, 1), (240.0, 1), (240.0, 1), (240.0, 1),
+            (240.0, 0), (240.0, 0),
+        ]);
+        let corrected = correct_labels_by_f0(&labels, &samples, 16000, &chunks, &centroids, &F0CorrectionParams::default());
+        let input_clusters: std::collections::HashSet<u32> = labels.iter().copied().collect();
+        let output_clusters: std::collections::HashSet<u32> = corrected.iter().copied().collect();
+        assert!(output_clusters.is_subset(&input_clusters), "output clusters must be a subset of input");
+    }
+
+    #[test]
+    fn f0_empty_and_single_cluster_noop() {
+        let params = F0CorrectionParams::default();
+        let empty: Vec<u32> = vec![];
+        let empty_chunks: Vec<Chunk> = vec![];
+        let empty_centroids: HashMap<u32, Vec<f32>> = HashMap::new();
+        assert_eq!(
+            correct_labels_by_f0(&empty, &[], 16000, &empty_chunks, &empty_centroids, &params),
+            empty
+        );
+        let (samples, chunks, labels, centroids) = f0_scenario(16000, &[(120.0, 0), (120.0, 0), (120.0, 0)]);
+        assert_eq!(
+            correct_labels_by_f0(&labels, &samples, 16000, &chunks, &centroids, &params),
+            labels
+        );
+    }
+
+    #[test]
+    fn f0_determinism_and_tie_break_label() {
+        // Two clusters with identical profiles (both ~240 Hz) + a chunk whose
+        // F0 matches both equally → smallest label (1) must win, and output
+        // must be byte-identical across calls.
+        let (samples, chunks, labels, centroids) = f0_scenario(16000, &[
+            (120.0, 0), (120.0, 0), (120.0, 0),
+            (240.0, 1), (240.0, 1), (240.0, 1),
+            (240.0, 2), (240.0, 2), (240.0, 2),
+            (240.0, 0), // test chunk: matches both 1 and 2
+        ]);
+        let params = F0CorrectionParams::default();
+        let corrected1 = correct_labels_by_f0(&labels, &samples, 16000, &chunks, &centroids, &params);
+        let corrected2 = correct_labels_by_f0(&labels, &samples, 16000, &chunks, &centroids, &params);
+        assert_eq!(corrected1, corrected2, "must be deterministic");
+        assert_eq!(corrected1[9], 1, "tie must go to smallest label (1), got {}", corrected1[9]);
+    }
+
+    #[test]
+    fn f0_creaky_voice_no_spurious_reassignment() {
+        // Creaky voice: alternating period lengths (jitter >20%). The chunk is
+        // either unvoiced (NCC < 0.30) or its F0 stays in its own register.
+        let sr = 16000u32;
+        let chunk_dur = 0.5f32;
+        let n = (sr as f32 * chunk_dur) as usize;
+        let mut creaky = Vec::with_capacity(n);
+        let mut t = 0.0f32;
+        let mut period = 133.0f32; // ~120 Hz
+        let mut samples_in_period = 0.0f32;
+        let dir = 2.0 * std::f32::consts::PI;
+        for _ in 0..n {
+            let phase = (samples_in_period / period) * dir;
+            creaky.push(0.5 * phase.sin());
+            samples_in_period += 1.0;
+            if samples_in_period >= period {
+                samples_in_period = 0.0;
+                period = if period > 140.0 { 133.0 } else { 160.0 }; // jitter ~20%
+            }
+            t += 1.0 / sr as f32;
+        }
+        let _ = t;
+        let mut samples = Vec::new();
+        let mut chunks = Vec::new();
+        let mut labels = Vec::new();
+        for (freq, label) in [(120.0, 0), (120.0, 0), (120.0, 0), (120.0, 0), (240.0, 1), (240.0, 1), (240.0, 1), (240.0, 1)] {
+            let wave = sine_wave(freq, sr, chunk_dur, 0.5);
+            samples.extend_from_slice(&wave);
+            let start = samples.len() - wave.len();
+            chunks.push(Chunk { start_sample: start, end_sample: samples.len(), duration_secs: chunk_dur as f64, embedding: vec![0.0; 4] });
+            labels.push(label);
+        }
+        let creaky_start = samples.len();
+        samples.extend_from_slice(&creaky);
+        chunks.push(Chunk { start_sample: creaky_start, end_sample: samples.len(), duration_secs: chunk_dur as f64, embedding: vec![0.0; 4] });
+        labels.push(0);
+        let mut centroids = HashMap::new();
+        centroids.insert(0, vec![0.5; 4]);
+        centroids.insert(1, vec![0.5; 4]);
+        let corrected = correct_labels_by_f0(&labels, &samples, sr, &chunks, &centroids, &F0CorrectionParams::default());
+        assert_eq!(corrected[8], 0, "creaky-voice chunk must not be spuriously reassigned to cluster 1");
+    }
+
+    #[test]
+    fn f0_min_voiced_exemption_both_directions() {
+        // Cluster 0: 2 voiced at 240 Hz (< 3, no profile). Cluster 1: 3 voiced
+        // at 120 Hz (profile = 120).
+        let (samples, chunks, labels, centroids) = f0_scenario(16000, &[
+            (240.0, 0), (240.0, 0),                          // A: 2 voiced, no profile
+            (120.0, 1), (120.0, 1), (120.0, 1),             // B: 3 voiced, profile = 120
+            (240.0, 1),                                      // (b) chunk in B at 240 Hz — A exempt as receiver
+        ]);
+        let corrected = correct_labels_by_f0(&labels, &samples, 16000, &chunks, &centroids, &F0CorrectionParams::default());
+        // (a) chunks 0,1 in A stay (A exempt as giver — no profile → reg_l None → skip)
+        assert_eq!(corrected[0], 0, "giver-exempt: chunk in A must not be reassigned");
+        assert_eq!(corrected[1], 0, "giver-exempt: chunk in A must not be reassigned");
+        // (b) chunk 5 in B at 240 Hz stays (A exempt as receiver — no profile to match)
+        assert_eq!(corrected[5], 1, "receiver-exempt: chunk in B must not move to profile-less A");
+    }
+
+    #[test]
+    fn f0_centroids_unchanged() {
+        let (samples, chunks, labels, centroids) = f0_scenario(16000, &[
+            (120.0, 0), (120.0, 0), (120.0, 0), (120.0, 0), (120.0, 0),
+            (240.0, 1), (240.0, 1), (240.0, 1), (240.0, 1), (240.0, 1),
+            (240.0, 0), (240.0, 0),
+        ]);
+        let centroids_before = centroids.clone();
+        let corrected = correct_labels_by_f0(&labels, &samples, 16000, &chunks, &centroids, &F0CorrectionParams::default());
+        assert_ne!(corrected, labels, "expected at least one reassignment");
+        assert_eq!(centroids, centroids_before, "centroids must not be modified (read-only, D2)");
+    }
+
+    #[test]
+    fn f0_correction_in_pipeline_recovers_absorbed_speaker() {
+        // §3.1: Integration test — simulates the post-clustering pipeline
+        // (smooth → F0 correct) to verify F0 correction is wired after
+        // smoothing. All embeddings are identical (vec![0.5; 4]), so
+        // smoothing cannot distinguish speakers by embedding similarity.
+        // The absorbed chunks are temporally isolated from cluster 1
+        // (4-chunk buffer > ±3 smoothing window), so smoothing leaves
+        // them as cluster 0 — F0 correction is the only recovery path.
+        //
+        // NOTE (2026-07-10): this validates the FUNCTION composition on
+        // synthetic data only. The production pipeline gate
+        // (`F0_CORRECTION_ENABLED = false` in `process()`) is OFF because the
+        // same functions failed on real contaminated audio — see design.md
+        // "⚠ REAL-DATA VALIDATION FAILED". Synthetic sine waves have clean
+        // single-pitch F0; real mixed-mono audio does not.
+        let sr = 16000u32;
+        let chunk_dur = 1.0f32;
+        let chunk_n = (sr as f32 * chunk_dur) as usize;
+        let specs: &[(f32, u32)] = &[
+            (120.0, 0), (120.0, 0), (120.0, 0), (120.0, 0), (120.0, 0),
+            (120.0, 0), (120.0, 0), (120.0, 0), (120.0, 0), (120.0, 0),
+            (240.0, 1), (240.0, 1), (240.0, 1), (240.0, 1), (240.0, 1),
+            (240.0, 1), (240.0, 1), (240.0, 1), (240.0, 1), (240.0, 1),
+            (120.0, 0), (120.0, 0), (120.0, 0), (120.0, 0),
+            (240.0, 0), (240.0, 0), (240.0, 0), (240.0, 0),
+        ];
+        let mut samples = Vec::new();
+        let mut chunks = Vec::new();
+        let mut labels = Vec::new();
+        let mut pos = 0usize;
+        for &(freq, label) in specs {
+            let wave = sine_wave(freq, sr, chunk_dur, 0.5);
+            samples.extend_from_slice(&wave);
+            chunks.push(Chunk {
+                start_sample: pos,
+                end_sample: pos + chunk_n,
+                duration_secs: chunk_dur as f64,
+                embedding: vec![0.5; 4],
+            });
+            labels.push(label);
+            pos += chunk_n;
+        }
+        let mut centroids = HashMap::new();
+        centroids.insert(0, vec![0.5; 4]);
+        centroids.insert(1, vec![0.5; 4]);
+        let embeddings: Vec<Vec<f32>> = chunks.iter().map(|c| c.embedding.clone()).collect();
+        let timestamps: Vec<f64> = chunks.iter().map(|c| c.start_sample as f64 / sr as f64).collect();
+        let durations: Vec<f64> = chunks.iter().map(|c| c.duration_secs).collect();
+
+        let (smoothed, smoothed_centroids) = smooth_to_fixed_point(
+            &labels, &embeddings, &timestamps, &durations, &centroids, &SmoothParams::default(),
+        );
+        assert_eq!(&smoothed[24..28], &[0, 0, 0, 0],
+            "smoothing alone must not recover — identical embeddings + temporal isolation");
+
+        let corrected = correct_labels_by_f0(
+            &smoothed, &samples, sr, &chunks, &smoothed_centroids, &F0CorrectionParams::default(),
+        );
+        assert_eq!(&corrected[24..28], &[1, 1, 1, 1],
+            "F0 correction must recover absorbed chunks after smoothing");
     }
 }

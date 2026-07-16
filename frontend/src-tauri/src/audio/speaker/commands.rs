@@ -2520,8 +2520,9 @@ mod tests {
         let adapter_for_new = std::sync::Arc::clone(&adapter_arc);
         let samples_for_new = std::sync::Arc::clone(&samples_arc);
         let windows_arc = std::sync::Arc::new(windows);
+        let windows_arc_for_step3 = std::sync::Arc::clone(&windows_arc);
         let chunks = tokio::task::spawn_blocking(move || {
-            adapter_for_new.build_chunks(&samples_for_new, DIARIZATION_SAMPLE_RATE, &windows_arc)
+            adapter_for_new.build_chunks(&samples_for_new, DIARIZATION_SAMPLE_RATE, &windows_arc_for_step3)
         })
         .await
         .expect("new build_chunks panicked");
@@ -2595,6 +2596,563 @@ mod tests {
                 tag,
             );
         }
+
+        // ── STEP 5: sweep MIN_SPEECH_SECS. build_chunks drops 37% of native
+        // windows at the production 1.5s floor. Re-embed ALL windows at min=0.0,
+        // then filter + cluster at each minimum to see if UserB's late speech
+        // was trapped in the short-window bucket.
+        let adapter_for_sweep = std::sync::Arc::clone(&adapter_arc);
+        let samples_for_sweep = std::sync::Arc::clone(&samples_arc);
+        let all_chunks = tokio::task::spawn_blocking(move || {
+            adapter_for_sweep.build_chunks_with_min(
+                &samples_for_sweep,
+                DIARIZATION_SAMPLE_RATE,
+                &windows_arc,
+                0.0,
+            )
+        })
+        .await
+        .expect("sweep build_chunks panicked");
+        eprintln!(
+            "STEP 5 (min-sweep): embedded {} chunks at min=0.0 (vs {} at production 1.5s)",
+            all_chunks.len(),
+            chunks.len()
+        );
+
+        for &min_speech in &[0.3f64, 0.5, 1.0, 1.5] {
+            let filtered: Vec<crate::audio::speaker::sherpa_adapter::Chunk> = all_chunks
+                .iter()
+                .filter(|c| c.duration_secs >= min_speech)
+                .cloned()
+                .collect();
+            let embeddings: Vec<Vec<f32>> =
+                filtered.iter().map(|c| c.embedding.clone()).collect();
+            let timestamps: Vec<f64> =
+                filtered.iter().map(|c| c.start_sample as f64 / sr_f).collect();
+            let durations: Vec<f64> = filtered.iter().map(|c| c.duration_secs).collect();
+            let (segs, cents) = prod_path_on_chunks(
+                &filtered,
+                &embeddings,
+                &timestamps,
+                &durations,
+                0.40f32,
+                3,
+                sr_f,
+            );
+            let speakers: std::collections::HashSet<u32> =
+                segs.iter().map(|s| s.speaker_id).collect();
+            let (cyn_id, cyn_cos) = cents
+                .iter()
+                .map(|(id, c)| {
+                    (*id, cosine_similarity_centroids(c, &cynthia_centroid))
+                })
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .unwrap_or((u32::MAX, 0.0));
+            let mut p_early: std::collections::HashMap<u32, f64> =
+                std::collections::HashMap::new();
+            let mut p_late: std::collections::HashMap<u32, f64> =
+                std::collections::HashMap::new();
+            for s in &segs {
+                let dur = s.end_seconds - s.start_seconds;
+                let mid = (s.start_seconds + s.end_seconds) * 0.5;
+                if mid < 1800.0 {
+                    *p_early.entry(s.speaker_id).or_insert(0.0) += dur;
+                } else {
+                    *p_late.entry(s.speaker_id).or_insert(0.0) += dur;
+                }
+            }
+            let cyn_early = p_early.get(&cyn_id).copied().unwrap_or(0.0);
+            let cyn_late = p_late.get(&cyn_id).copied().unwrap_or(0.0);
+            let ratio = if cyn_early > 0.0 {
+                cyn_late / cyn_early
+            } else {
+                f64::INFINITY
+            };
+            let meets = cyn_early > 0.0
+                && cyn_late >= 0.30 * cyn_early
+                && cyn_late >= 60.0;
+            let tag = if cyn_cos < 0.5 {
+                "NO MATCH (cos<0.5)"
+            } else if meets {
+                "★ MEETS proceed metric"
+            } else {
+                "below metric"
+            };
+            eprintln!(
+                "STEP 5 MIN={:.1}s: {} chunks, {} speakers [early {:?} | late {:?}] | UserB→cluster {} (cos {:.3}): early {:.0}s late {:.0}s (ratio {:.2}) {}",
+                min_speech,
+                filtered.len(),
+                speakers.len(),
+                p_early,
+                p_late,
+                cyn_id,
+                cyn_cos,
+                cyn_early,
+                cyn_late,
+                ratio,
+                tag,
+            );
+        }
+
+        // ── STEP 6: native process() with FastClustering forced to 3 clusters.
+        // STEP 5 proved our AHC absorbs UserB at all thresholds and minimums.
+        // This tests whether sherpa's own FastClustering keeps UserB distinct
+        // under the same 3-speaker constraint our production cap enforces.
+        {
+            use sherpa_onnx::{
+                FastClusteringConfig, OfflineSpeakerDiarization, OfflineSpeakerDiarizationConfig,
+                OfflineSpeakerSegmentationModelConfig,
+                OfflineSpeakerSegmentationPyannoteModelConfig, SpeakerEmbeddingExtractorConfig,
+            };
+            let native6_cache =
+                std::env::temp_dir().join("meetily_native3_labels_cde5c264.txt");
+            let native6_segs: Vec<(f32, f32, i32)> = if native6_cache.exists() {
+                eprintln!(
+                    "STEP 6 (native-3): loading cached labels from {}",
+                    native6_cache.display()
+                );
+                std::fs::read_to_string(&native6_cache)
+                    .unwrap_or_default()
+                    .lines()
+                    .filter_map(|line| {
+                        let mut it = line.split(',');
+                        let s = it.next()?.parse::<f32>().ok()?;
+                        let e = it.next()?.parse::<f32>().ok()?;
+                        let sp = it.next()?.parse::<i32>().ok()?;
+                        Some((s, e, sp))
+                    })
+                    .collect()
+            } else {
+                let native6_config = OfflineSpeakerDiarizationConfig {
+                    segmentation: OfflineSpeakerSegmentationModelConfig {
+                        pyannote: OfflineSpeakerSegmentationPyannoteModelConfig {
+                            model: Some(segmentation_path.to_string_lossy().to_string()),
+                        },
+                        num_threads: 8,
+                        debug: false,
+                        provider: Some("cpu".to_string()),
+                    },
+                    embedding: SpeakerEmbeddingExtractorConfig {
+                        model: Some(embedding_path.to_string_lossy().to_string()),
+                        num_threads: 8,
+                        debug: false,
+                        provider: Some("cpu".to_string()),
+                    },
+                    clustering: FastClusteringConfig {
+                        num_clusters: 3,
+                        threshold: 0.5,
+                    },
+                    min_duration_on: 0.0,
+                    min_duration_off: 0.0,
+                };
+                let samples_for_native6 = std::sync::Arc::clone(&samples_arc);
+                let t_native6 = std::time::Instant::now();
+                let native6_result = tokio::task::spawn_blocking(move || {
+                    let native = OfflineSpeakerDiarization::create(&native6_config)
+                        .expect("native6 create");
+                    native.process(&samples_for_native6[..])
+                })
+                .await
+                .expect("native6 process panicked")
+                .expect("native6 process returned None");
+                let elapsed = t_native6.elapsed();
+                let segs = native6_result.sort_by_start_time();
+                eprintln!(
+                    "STEP 6 (native-3): process() = {:.1}s; {} segments, {} speakers (forced 3)",
+                    elapsed.as_secs_f64(),
+                    segs.len(),
+                    native6_result.num_speakers(),
+                );
+                let raw: Vec<(f32, f32, i32)> =
+                    segs.iter().map(|s| (s.start, s.end, s.speaker)).collect();
+                let cache_text: String = raw
+                    .iter()
+                    .map(|(s, e, sp)| format!("{},{},{}\n", s, e, sp))
+                    .collect();
+                let _ = std::fs::write(&native6_cache, &cache_text);
+                raw
+            };
+
+            let dim = cynthia_centroid.len();
+            let mut n_early: std::collections::HashMap<i32, f64> = std::collections::HashMap::new();
+            let mut n_late: std::collections::HashMap<i32, f64> = std::collections::HashMap::new();
+            let mut n_sum: std::collections::HashMap<i32, (Vec<f64>, f64)> =
+                std::collections::HashMap::new();
+            for (start, end, speaker) in &native6_segs {
+                let dur = (*end - *start) as f64;
+                let mid = ((*start + *end) * 0.5) as f64;
+                if mid < 1800.0 {
+                    *n_early.entry(*speaker).or_insert(0.0) += dur;
+                } else {
+                    *n_late.entry(*speaker).or_insert(0.0) += dur;
+                }
+                let seg_start = *start as f64;
+                let seg_end = *end as f64;
+                for c in &all_chunks {
+                    let c_mid = c.start_sample as f64 / sr_f + c.duration_secs * 0.5;
+                    if c_mid >= seg_start && c_mid <= seg_end {
+                        let entry = n_sum.entry(*speaker).or_insert((vec![0.0f64; dim], 0.0));
+                        for (k, &v) in c.embedding.iter().enumerate() {
+                            entry.0[k] += v as f64 * c.duration_secs;
+                        }
+                        entry.1 += c.duration_secs;
+                    }
+                }
+            }
+
+            let mut cyn_native_id = i32::MAX;
+            let mut cyn_native_cos = 0.0f32;
+            for (id, (sum_vec, total_dur)) in &n_sum {
+                if *total_dur > 0.0 {
+                    let cent: Vec<f32> =
+                        sum_vec.iter().map(|&x| (x / *total_dur) as f32).collect();
+                    let cos = cosine_similarity_centroids(&cent, &cynthia_centroid);
+                    if cos > cyn_native_cos {
+                        cyn_native_cos = cos;
+                        cyn_native_id = *id;
+                    }
+                }
+            }
+            let cyn_e = n_early.get(&cyn_native_id).copied().unwrap_or(0.0);
+            let cyn_l = n_late.get(&cyn_native_id).copied().unwrap_or(0.0);
+            let ratio = if cyn_e > 0.0 { cyn_l / cyn_e } else { f64::INFINITY };
+            let meets = cyn_e > 0.0 && cyn_l >= 0.30 * cyn_e && cyn_l >= 60.0;
+            let tag = if cyn_native_cos < 0.5 {
+                "NO MATCH (cos<0.5)"
+            } else if meets {
+                "★ MEETS proceed metric"
+            } else {
+                "below metric"
+            };
+            eprintln!(
+                "STEP 6 (native-3): speakers early {:?} late {:?} | UserB→native {} (cos {:.3}): early {:.0}s late {:.0}s (ratio {:.2}) {}",
+                n_early, n_late, cyn_native_id, cyn_native_cos, cyn_e, cyn_l, ratio, tag,
+            );
+        }
+
+        // ── STEP 7: per-chunk cosine to UserB's centroid on native windows.
+        // STEP 6 reports per-cluster aggregates only. This splits the
+        // embedding-vs-clustering question: are UserB's late native-window
+        // embeddings actually resembling her early centroid (→ clustering fails
+        // to group them) or do they NOT resemble it (→ embedding model can't
+        // extract her voice print from mixed audio)?
+        {
+            let mut early_buckets = [0.0f64; 4]; // [>=0.5, >=0.4, >=0.3, <0.3]
+            let mut late_buckets = [0.0f64; 4];
+            let mut late_max_cos = -1.0f32;
+            let mut late_top: Vec<(f32, f64, f64)> = Vec::new();
+            for c in &all_chunks {
+                let mid = c.start_sample as f64 / sr_f + c.duration_secs * 0.5;
+                let cos = cosine_similarity_centroids(&c.embedding, &cynthia_centroid);
+                let dur = c.duration_secs;
+                let idx = if cos >= 0.5 {
+                    0
+                } else if cos >= 0.4 {
+                    1
+                } else if cos >= 0.3 {
+                    2
+                } else {
+                    3
+                };
+                if mid < 1800.0 {
+                    early_buckets[idx] += dur;
+                } else {
+                    late_buckets[idx] += dur;
+                    if cos > late_max_cos {
+                        late_max_cos = cos;
+                    }
+                    if cos >= 0.5 {
+                        late_top.push((cos, mid, dur));
+                    }
+                }
+            }
+            late_top.sort_by(|a, b| {
+                b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal)
+            });
+            eprintln!(
+                "STEP 7 (per-chunk cos to UserB centroid, native windows @ min=0.0):"
+            );
+            eprintln!(
+                "  EARLY (<30min): cos>=0.5: {:.0}s | >=0.4: {:.0}s | >=0.3: {:.0}s | <0.3: {:.0}s",
+                early_buckets[0], early_buckets[1], early_buckets[2], early_buckets[3]
+            );
+            eprintln!(
+                "  LATE (>=30min): cos>=0.5: {:.0}s | >=0.4: {:.0}s | >=0.3: {:.0}s | <0.3: {:.0}s | max_cos={:.3}",
+                late_buckets[0], late_buckets[1], late_buckets[2], late_buckets[3], late_max_cos
+            );
+            let total_late: f64 = late_buckets.iter().sum();
+            let verdict = if late_buckets[0] >= 60.0 {
+                "EMBEDDINGS PRESENT (>=60s at cos>=0.5) -> clustering fails to group them"
+            } else if late_buckets[0] + late_buckets[1] >= 30.0 {
+                "PARTIAL (30-60s at cos>=0.4) -> mixed signal; clustering + embedding both weak"
+            } else {
+                "EMBEDDINGS ABSENT (<30s at cos>=0.4) -> embedding model fails on mixed audio"
+            };
+            eprintln!("  VERDICT: {} (late total {:.0}s)", verdict, total_late);
+            eprintln!(
+                "  Late chunks at cos>=0.5: count={} (showing top 10 by cos):",
+                late_top.len()
+            );
+            for (cos, mid, dur) in late_top.iter().take(10) {
+                eprintln!("    cos={:.3} @ {:.0}s (dur {:.1}s)", cos, mid, dur);
+            }
+        }
+
+        // ── STEP 8: alternate embedding models on the SAME native windows.
+        // STEP 7 proved nemo_titanet_small extracts Speaker 2's print from
+        // 96.6% of UserB's late speech. This tests whether a different
+        // extractor recovers her print from the same mixed audio. Early
+        // UserB windows are selected by TIME overlap with nemo's cos>=0.5
+        // early set (model-independent), so centroid differences reflect the
+        // extractor, not the selection.
+        {
+            let alt_segments: Vec<(f64, f64)> = all_chunks
+                .iter()
+                .map(|c| {
+                    let s = c.start_sample as f64 / sr_f;
+                    (s, s + c.duration_secs)
+                })
+                .collect();
+
+            let nemo_cyn_early_ranges: Vec<(f64, f64)> = all_chunks
+                .iter()
+                .filter(|c| {
+                    let mid = c.start_sample as f64 / sr_f + c.duration_secs * 0.5;
+                    mid < 1800.0
+                        && cosine_similarity_centroids(&c.embedding, &cynthia_centroid) >= 0.5
+                })
+                .map(|c| {
+                    let s = c.start_sample as f64 / sr_f;
+                    (s, s + c.duration_secs)
+                })
+                .collect();
+
+            let alt_models: [(&str, &str); 3] = [
+                ("3D-speaker", "3dspeaker-embedding.onnx"),
+                ("ERES2Net", "eres2net-embedding.onnx"),
+                ("nemo_titanet_large", "nemo-titanet-large-embedding.onnx"),
+            ];
+
+            for (model_name, model_file) in &alt_models {
+                let alt_path = models_dir.join(model_file);
+                if !alt_path.exists() {
+                    eprintln!(
+                        "STEP 8 ({}): SKIPPED — model not found at {}",
+                        model_name,
+                        alt_path.display()
+                    );
+                    continue;
+                }
+
+                let alt_adapter = match crate::audio::speaker::sherpa_adapter::SherpaOnnxDiarizationAdapter::with_shared_threshold(
+                    alt_path.to_str().unwrap(),
+                    segmentation_path.to_str().unwrap(),
+                    std::sync::Arc::clone(&threshold_fp),
+                ) {
+                    Ok(a) => a,
+                    Err(e) => {
+                        eprintln!(
+                            "STEP 8 ({}): adapter create failed: {} — skipping",
+                            model_name, e
+                        );
+                        continue;
+                    }
+                };
+
+                let alt_adapter_arc = std::sync::Arc::new(alt_adapter);
+                let alt_adapter_for_embed = std::sync::Arc::clone(&alt_adapter_arc);
+                let samples_for_alt = std::sync::Arc::clone(&samples_arc);
+                let segments_for_alt: Vec<(f64, f64)> = alt_segments.clone();
+                let alt_chunks = tokio::task::spawn_blocking(move || {
+                    alt_adapter_for_embed.build_chunks_with_min(
+                        &samples_for_alt,
+                        DIARIZATION_SAMPLE_RATE,
+                        &segments_for_alt,
+                        0.0,
+                    )
+                })
+                .await
+                .expect("alt build_chunks panicked");
+
+                let dim = alt_chunks.first().map(|c| c.embedding.len()).unwrap_or(0);
+                if dim == 0 {
+                    eprintln!(
+                        "STEP 8 ({}): no alt chunks produced — skipping",
+                        model_name
+                    );
+                    continue;
+                }
+
+                let mut alt_sum = vec![0.0f32; dim];
+                let mut alt_n = 0usize;
+                for c in &alt_chunks {
+                    let mid = c.start_sample as f64 / sr_f + c.duration_secs * 0.5;
+                    if mid >= 1800.0 {
+                        continue;
+                    }
+                    let cs = c.start_sample as f64 / sr_f;
+                    let ce = cs + c.duration_secs;
+                    let in_cyn = nemo_cyn_early_ranges
+                        .iter()
+                        .any(|&(rs, re)| cs < re && rs < ce);
+                    if !in_cyn {
+                        continue;
+                    }
+                    for (acc, v) in alt_sum.iter_mut().zip(c.embedding.iter()) {
+                        *acc += v;
+                    }
+                    alt_n += 1;
+                }
+                if alt_n == 0 {
+                    eprintln!(
+                        "STEP 8 ({}): NO early UserB chunks matched — skipping",
+                        model_name
+                    );
+                    continue;
+                }
+                let alt_centroid: Vec<f32> =
+                    alt_sum.iter().map(|v| v / alt_n as f32).collect();
+
+                let mut early_buckets = [0.0f64; 4];
+                let mut late_buckets = [0.0f64; 4];
+                let mut late_max_cos = -1.0f32;
+                for c in &alt_chunks {
+                    let mid = c.start_sample as f64 / sr_f + c.duration_secs * 0.5;
+                    let cos = cosine_similarity_centroids(&c.embedding, &alt_centroid);
+                    let dur = c.duration_secs;
+                    let idx = if cos >= 0.5 {
+                        0
+                    } else if cos >= 0.4 {
+                        1
+                    } else if cos >= 0.3 {
+                        2
+                    } else {
+                        3
+                    };
+                    if mid < 1800.0 {
+                        early_buckets[idx] += dur;
+                    } else {
+                        late_buckets[idx] += dur;
+                        if cos > late_max_cos {
+                            late_max_cos = cos;
+                        }
+                    }
+                }
+                let total_late: f64 = late_buckets.iter().sum();
+                let verdict = if late_buckets[0] >= 60.0 {
+                    "EMBEDDINGS PRESENT (>=60s at cos>=0.5)"
+                } else if late_buckets[0] + late_buckets[1] >= 30.0 {
+                    "PARTIAL (30-60s at cos>=0.4)"
+                } else {
+                    "EMBEDDINGS ABSENT (<30s at cos>=0.4)"
+                };
+                eprintln!(
+                    "STEP 8 ({}): dim={}, alt_chunks={} (nemo all_chunks={}), early_cyn_n={}",
+                    model_name, dim, alt_chunks.len(), all_chunks.len(), alt_n
+                );
+                eprintln!(
+                    "  EARLY (<30min): cos>=0.5: {:.0}s | >=0.4: {:.0}s | >=0.3: {:.0}s | <0.3: {:.0}s",
+                    early_buckets[0], early_buckets[1], early_buckets[2], early_buckets[3]
+                );
+                eprintln!(
+                    "  LATE (>=30min): cos>=0.5: {:.0}s | >=0.4: {:.0}s | >=0.3: {:.0}s | <0.3: {:.0}s | max_cos={:.3}",
+                    late_buckets[0], late_buckets[1], late_buckets[2], late_buckets[3], late_max_cos
+                );
+                eprintln!("  VERDICT: {} (late total {:.0}s)", verdict, total_late);
+            }
+        }
+    }
+
+    // CONFIRMATION (2026-07-16): runs the REAL production process() on
+    // cde5c264 and exports final segment labels + centroids to a temp file,
+    // so the Python pipeline replication (full_pipeline.py) can be checked
+    // against the actual Rust binary. Python then identifies UserB by cos
+    // to the validated spike_cen centroid and measures her early/late speech.
+    #[ignore]
+    #[tokio::test]
+    async fn test_cde5c264_export_final_pipeline() {
+        let _ = env_logger::builder().is_test(true).try_init();
+        let db_path = r"C:\Users\UserA\AppData\Roaming\com.meetily.ai\meeting_minutes.sqlite";
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite:{}?mode=ro", db_path))
+            .await
+            .expect("DB connect (read-only)");
+        let meeting_id = "meeting-cde5c264-1c4a-49d9-97c5-6a7e69bb9323";
+
+        let row = sqlx::query("SELECT folder_path FROM meetings WHERE id = ?")
+            .bind(meeting_id)
+            .fetch_optional(&pool)
+            .await
+            .expect("fetch meeting");
+        let folder = row
+            .and_then(|r| sqlx::Row::get::<Option<String>, _>(&r, "folder_path"))
+            .expect("cde5c264 folder_path missing");
+        let audio_path =
+            find_audio_in_folder(std::path::Path::new(&folder)).expect("audio file");
+        let decoded = crate::audio::decoder::decode_audio_file(&audio_path).expect("decode audio");
+        let samples = decoded.to_whisper_format();
+        let audio_duration = decoded.duration_seconds.max(0.001);
+
+        let models_dir = dirs::home_dir().unwrap_or_default().join(".meetily-models");
+        let embedding_path =
+            models_dir.join(crate::audio::speaker::model_download::embedding_filename());
+        let segmentation_path = models_dir.join("pyannote-segmentation.onnx");
+        assert!(embedding_path.exists(), "nemo_titanet embedding model missing");
+        assert!(segmentation_path.exists(), "pyannote segmentation model missing");
+
+        let threshold_fp = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
+            (0.40f32 * 65536.0) as u32,
+        ));
+        let adapter =
+            crate::audio::speaker::sherpa_adapter::SherpaOnnxDiarizationAdapter::with_shared_threshold(
+                embedding_path.to_str().unwrap(),
+                segmentation_path.to_str().unwrap(),
+                threshold_fp,
+            )
+            .expect("create adapter");
+
+        let transcript_segments = fetch_transcript_timestamps(&pool, meeting_id, audio_duration)
+            .await
+            .expect("fetch transcript timestamps");
+
+        let diarization = tokio::task::spawn_blocking(move || {
+            adapter.process(&samples, DIARIZATION_SAMPLE_RATE, &transcript_segments)
+        })
+        .await
+        .expect("process panicked")
+        .expect("process failed");
+
+        let mut segments = diarization.segments;
+        let mut centroids = diarization.centroids;
+        let effective_cap = resolve_effective_cap_for_meeting(&pool, meeting_id).await;
+        enforce_max_speakers_cap(&mut centroids, &mut segments, effective_cap);
+
+        let spk: std::collections::HashSet<u32> = segments.iter().map(|s| s.speaker_id).collect();
+        eprintln!(
+            "EXPORT: {} segments, {} speakers (cap {})",
+            segments.len(),
+            spk.len(),
+            effective_cap
+        );
+
+        let out = std::env::temp_dir().join("meetily_final_labels_cde5c264.txt");
+        let mut s = String::new();
+        for seg in &segments {
+            s.push_str(&format!(
+                "SEG {:.4} {:.4} {}\n",
+                seg.start_seconds, seg.end_seconds, seg.speaker_id
+            ));
+        }
+        let mut sorted_c: Vec<(&u32, &Vec<f32>)> = centroids.iter().collect();
+        sorted_c.sort_by_key(|(k, _)| **k);
+        for (k, v) in &sorted_c {
+            s.push_str(&format!("CENT {}", k));
+            for x in v.iter() {
+                s.push_str(&format!(" {:.6}", x));
+            }
+            s.push('\n');
+        }
+        std::fs::write(&out, s).expect("write export");
+        eprintln!("EXPORT: wrote {}", out.display());
     }
 
     // GATE alternative: tests whether FINER FIXED splitting fixes absorption
@@ -2976,6 +3534,755 @@ mod tests {
                 "  Late half: {} chunks close->UserB, {} close->WRONG cluster, {} far (<{:.2})",
                 late_close_right, late_close_wrong, late_far, thresh,
             );
+        }
+    }
+
+    /// Stage-trace: run the EXACT production path (Whisper transcript segments →
+    /// build_chunks → cluster → smooth → coalesce → merge_short) on cde5c264 and
+    /// log UserB's early/late duration at each stage. Python POCs showed no
+    /// contamination at the clustering stage — this isolates which Rust-only
+    /// post-clustering step absorbs her.
+    #[ignore]
+    #[tokio::test]
+    async fn test_cde5c264_stage_trace_diagnostic() {
+        let _ = env_logger::builder().is_test(true).try_init();
+        let db_path = r"C:\Users\UserA\AppData\Roaming\com.meetily.ai\meeting_minutes.sqlite";
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite:{}?mode=ro", db_path))
+            .await
+            .expect("DB connect (read-only)");
+        let meeting_id = "meeting-cde5c264-1c4a-49d9-97c5-6a7e69bb9323";
+
+        let row = sqlx::query("SELECT folder_path FROM meetings WHERE id = ?")
+            .bind(meeting_id)
+            .fetch_optional(&pool)
+            .await
+            .expect("fetch meeting");
+        let folder = row
+            .and_then(|r| sqlx::Row::get::<Option<String>, _>(&r, "folder_path"))
+            .expect("cde5c264 folder_path missing");
+        let audio_path =
+            find_audio_in_folder(std::path::Path::new(&folder)).expect("audio file");
+        let decoded = crate::audio::decoder::decode_audio_file(&audio_path).expect("decode audio");
+        let samples_arc = std::sync::Arc::new(decoded.to_whisper_format());
+        let sr_f = DIARIZATION_SAMPLE_RATE as f64;
+        let audio_duration = decoded.duration_seconds.max(0.001);
+
+        let models_dir = dirs::home_dir().unwrap_or_default().join(".meetily-models");
+        let embedding_path =
+            models_dir.join(crate::audio::speaker::model_download::embedding_filename());
+        let segmentation_path = models_dir.join("pyannote-segmentation.onnx");
+        assert!(embedding_path.exists(), "embedding model missing");
+
+        let threshold_fp = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
+            (0.40f32 * 65536.0) as u32,
+        ));
+        let adapter =
+            crate::audio::speaker::sherpa_adapter::SherpaOnnxDiarizationAdapter::with_shared_threshold(
+                embedding_path.to_str().unwrap(),
+                segmentation_path.to_str().unwrap(),
+                std::sync::Arc::clone(&threshold_fp),
+            )
+            .expect("create adapter");
+        let adapter_arc = std::sync::Arc::new(adapter);
+
+        let transcript_segments = fetch_transcript_timestamps(&pool, meeting_id, audio_duration)
+            .await
+            .expect("fetch transcript timestamps");
+
+        // ── Fingerprint UserB: old coarse path, early-dominant cluster centroid.
+        let adapter_for_old = std::sync::Arc::clone(&adapter_arc);
+        let samples_for_old = std::sync::Arc::clone(&samples_arc);
+        let seg_arc = std::sync::Arc::new(transcript_segments.clone());
+        let old_chunks = tokio::task::spawn_blocking(move || {
+            adapter_for_old.build_chunks(&samples_for_old, DIARIZATION_SAMPLE_RATE, &seg_arc)
+        })
+        .await
+        .expect("old build_chunks panicked");
+        assert!(!old_chunks.is_empty(), "need old-path chunks");
+        let (old_labels, _) =
+            crate::audio::speaker::sherpa_adapter::cluster_by_centroids(&old_chunks, 0.40);
+        let mut old_early: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        let mut old_late: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+        for (c, &lab) in old_chunks.iter().zip(old_labels.iter()) {
+            let t0 = c.start_sample as f64 / sr_f;
+            if t0 < 1800.0 {
+                *old_early.entry(lab).or_insert(0) += 1;
+            } else {
+                *old_late.entry(lab).or_insert(0) += 1;
+            }
+        }
+        let cynthia_label = old_early
+            .iter()
+            .filter(|(_, &n)| n >= 5)
+            .min_by_key(|(lab, _)| old_late.get(lab).copied().unwrap_or(0))
+            .map(|(lab, _)| *lab)
+            .expect("need an early-dominant old label to fingerprint UserB");
+        let dim = old_chunks[0].embedding.len();
+        let mut cynthia_sum = vec![0.0f32; dim];
+        let mut cynthia_n = 0usize;
+        for (c, &lab) in old_chunks.iter().zip(old_labels.iter()) {
+            if lab == cynthia_label && (c.start_sample as f64 / sr_f) < 1800.0 {
+                for (acc, v) in cynthia_sum.iter_mut().zip(c.embedding.iter()) {
+                    *acc += v;
+                }
+                cynthia_n += 1;
+            }
+        }
+        assert!(cynthia_n > 0, "UserB fingerprint needs ≥1 early chunk");
+        let cynthia_fp: Vec<f32> = cynthia_sum.iter().map(|v| v / cynthia_n as f32).collect();
+        eprintln!(
+            "STAGE-TRACE: UserB fingerprint from {} early chunks (old label {}, old early {:?} late {:?})",
+            cynthia_n, cynthia_label, old_early, old_late,
+        );
+
+        // ── Production chunks: Whisper transcript segments (NOT native windows).
+        let adapter_for_prod = std::sync::Arc::clone(&adapter_arc);
+        let samples_for_prod = std::sync::Arc::clone(&samples_arc);
+        let prod_seg_arc = std::sync::Arc::new(transcript_segments.clone());
+        let chunks = tokio::task::spawn_blocking(move || {
+            adapter_for_prod.build_chunks(&samples_for_prod, DIARIZATION_SAMPLE_RATE, &prod_seg_arc)
+        })
+        .await
+        .expect("prod build_chunks panicked");
+        eprintln!(
+            "STAGE-TRACE: {} production chunks from {} transcript segments",
+            chunks.len(),
+            transcript_segments.len(),
+        );
+
+        let embeddings: Vec<Vec<f32>> = chunks.iter().map(|c| c.embedding.clone()).collect();
+        let timestamps: Vec<f64> = chunks.iter().map(|c| c.start_sample as f64 / sr_f).collect();
+        let durations: Vec<f64> = chunks.iter().map(|c| c.duration_secs).collect();
+
+        use crate::audio::speaker::sherpa_adapter::{
+            SmoothParams, cluster_by_centroids, correct_labels_by_f0, detect_f0,
+            merge_short_speakers, smooth_to_fixed_point, F0CorrectionParams,
+        };
+
+        // ── Stage A: cluster only (centroid linkage — current production).
+        let (labels_a, centroids_a) = cluster_by_centroids(&chunks, 0.40);
+        trace_chunk_stage("A: centroid_linkage", &labels_a, &timestamps, &durations, &centroids_a, &cynthia_fp);
+
+        // ── Stage B: + smoothing. Count label changes to measure smoothing impact.
+        let (labels_b, centroids_b) = smooth_to_fixed_point(
+            &labels_a,
+            &embeddings,
+            &timestamps,
+            &durations,
+            &centroids_a,
+            &SmoothParams::default(),
+        );
+        let changed = labels_a.iter().zip(labels_b.iter()).filter(|(a, b)| a != b).count();
+        eprintln!("STAGE-TRACE: smoothing changed {} of {} chunk labels", changed, labels_a.len());
+        trace_chunk_stage("B: +smoothing", &labels_b, &timestamps, &durations, &centroids_b, &cynthia_fp);
+
+        // ── Stage C: build segments (same as process()).
+        let mut indexed: Vec<(usize, u32)> = labels_b.iter().copied().enumerate().collect();
+        indexed.sort_by_key(|(i, _)| chunks[*i].start_sample);
+        let mut segments: Vec<SpeakerSegment> = Vec::new();
+        if let Some(&(ci0, cur0)) = indexed.first() {
+            let mut cur = cur0;
+            let mut seg_start = chunks[ci0].start_sample as f64 / sr_f;
+            let mut seg_end = chunks[ci0].end_sample as f64 / sr_f;
+            for &(ci, lab) in &indexed[1..] {
+                let cs = chunks[ci].start_sample as f64 / sr_f;
+                let ce = chunks[ci].end_sample as f64 / sr_f;
+                if lab == cur {
+                    seg_end = ce;
+                } else {
+                    segments.push(SpeakerSegment {
+                        start_seconds: seg_start,
+                        end_seconds: seg_end,
+                        speaker_id: cur,
+                    });
+                    cur = lab;
+                    seg_start = cs;
+                    seg_end = ce;
+                }
+            }
+            segments.push(SpeakerSegment {
+                start_seconds: seg_start,
+                end_seconds: seg_end,
+                speaker_id: cur,
+            });
+        }
+        trace_segment_stage("C: +segments", &segments, &centroids_b, &cynthia_fp);
+
+        // ── Stage D: + merge_short_speakers (final production output).
+        let total: f64 = segments.iter().map(|s| s.end_seconds - s.start_seconds).sum();
+        let (segments_d, centroids_d) = merge_short_speakers(segments, centroids_b.clone(), total);
+        trace_segment_stage("D: +merge_short (FINAL)", &segments_d, &centroids_d, &cynthia_fp);
+
+        // ── Stage E: + F0 correction (change: diarization-f0-correction).
+        // Apply F0 correction to the smoothed labels, build segments, merge.
+        let samples_ref = samples_arc.as_ref();
+        let labels_e = correct_labels_by_f0(
+            &labels_b,
+            samples_ref,
+            DIARIZATION_SAMPLE_RATE,
+            &chunks,
+            &centroids_b,
+            &F0CorrectionParams::default(),
+        );
+        let f0_changed = labels_b.iter().zip(labels_e.iter()).filter(|(a, b)| a != b).count();
+        eprintln!("STAGE-TRACE: F0 correction changed {} of {} chunk labels", f0_changed, labels_e.len());
+
+        // ── F0 failure diagnostic: per-cluster median F0, relabel flow,
+        // late-half mixed-chunk F0 visibility. Answers whether UserB's
+        // pitch is detectable in her absorbed (mixed-audio) late chunks.
+        {
+            let chunk_f0: Vec<Option<f32>> = chunks
+                .iter()
+                .map(|c| {
+                    let end = c.end_sample.min(samples_ref.len());
+                    if end <= c.start_sample { return None; }
+                    detect_f0(&samples_ref[c.start_sample..end], DIARIZATION_SAMPLE_RATE)
+                })
+                .collect();
+            let mut clust_labels: Vec<u32> = labels_b.iter().copied().collect();
+            clust_labels.sort();
+            clust_labels.dedup();
+            let mut cluster_medians: std::collections::HashMap<u32, f32> = std::collections::HashMap::new();
+            eprintln!("DIAG: per-cluster median F0 (labels_b):");
+            for &lab in &clust_labels {
+                let mut voiced: Vec<f32> = labels_b.iter().enumerate()
+                    .filter(|(_, &l)| l == lab)
+                    .filter_map(|(i, _)| chunk_f0[i])
+                    .collect();
+                voiced.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let total = labels_b.iter().filter(|&&l| l == lab).count();
+                let med = if voiced.is_empty() { f32::NAN } else { voiced[voiced.len() / 2] };
+                cluster_medians.insert(lab, med);
+                eprintln!("DIAG:   cluster {} → median F0 {:.0} Hz ({} voiced / {} total)",
+                    lab, med, voiced.len(), total);
+            }
+            let mut flow: std::collections::HashMap<(u32, u32), usize> = std::collections::HashMap::new();
+            for (&a, &b) in labels_b.iter().zip(labels_e.iter()) {
+                if a != b { *flow.entry((a, b)).or_default() += 1; }
+            }
+            eprintln!("DIAG: relabel flow (old→new):");
+            let mut fv: Vec<_> = flow.into_iter().collect();
+            fv.sort();
+            for ((from, to), count) in &fv {
+                eprintln!("DIAG:   {}→{}: {} chunks", from, to, count);
+            }
+            let cyn_clust_b = centroids_b.keys().copied().max_by(|a, b| {
+                let ca = centroids_b.get(a).map(|v| cosine_similarity_centroids(&cynthia_fp, v)).unwrap_or(-1.0);
+                let cb = centroids_b.get(b).map(|v| cosine_similarity_centroids(&cynthia_fp, v)).unwrap_or(-1.0);
+                ca.partial_cmp(&cb).unwrap_or(std::cmp::Ordering::Equal)
+            }).unwrap_or(0);
+            let cyn_f0_med = *cluster_medians.get(&cyn_clust_b).unwrap_or(&f32::NAN);
+            let late_thresh = (1800.0 * sr_f) as usize;
+            let mut late_voiced = 0usize;
+            let mut late_unvoiced = 0usize;
+            let mut late_match_cyn = 0usize;
+            let mut late_f0s: Vec<f32> = Vec::new();
+            for (i, c) in chunks.iter().enumerate() {
+                if c.start_sample < late_thresh { continue; }
+                if labels_b[i] == cyn_clust_b { continue; }
+                match chunk_f0[i] {
+                    Some(f) => {
+                        late_voiced += 1;
+                        late_f0s.push(f);
+                        if (f - cyn_f0_med).abs() < 30.0 { late_match_cyn += 1; }
+                    }
+                    None => late_unvoiced += 1,
+                }
+            }
+            eprintln!("DIAG: UserB cluster_b={}, median F0={:.0} Hz", cyn_clust_b, cyn_f0_med);
+            eprintln!("DIAG: late non-UserB chunks: {} voiced, {} unvoiced, {} within 30Hz of UserB median",
+                late_voiced, late_unvoiced, late_match_cyn);
+            if !late_f0s.is_empty() {
+                late_f0s.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                let n = late_f0s.len();
+                eprintln!("DIAG: late non-UserB F0: min {:.0} p25 {:.0} med {:.0} p75 {:.0} max {:.0}",
+                    late_f0s[0], late_f0s[n / 4], late_f0s[n / 2],
+                    late_f0s[3 * n / 4], late_f0s[n - 1]);
+            }
+
+            // ── NON-CIRCULAR F0 diagnostic (2026-07-10): the circular
+            // correct_labels_by_f0 failed because per-cluster F0 profiles
+            // inherit embedding contamination. This derives each profile from
+            // CLEAN EARLY chunks (start<1800s AND cos>=0.5) instead, then
+            // reassigns late absorber chunks to UserB using her EARLY
+            // profile. Reuses chunk_f0/cyn_clust_b/late_thresh above.
+            let early_profile: std::collections::HashMap<u32, f32> = centroids_b
+                .keys()
+                .map(|&lab| {
+                    let cent = centroids_b.get(&lab).cloned().unwrap_or_default();
+                    let mut voiced: Vec<f32> = chunks
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, c)| c.start_sample < late_thresh && !cent.is_empty())
+                        .filter(|(i, c)| {
+                            cosine_similarity_centroids(&c.embedding, &cent) >= 0.5
+                        })
+                        .filter_map(|(i, _)| chunk_f0[i])
+                        .collect();
+                    voiced.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                    let med = if voiced.is_empty() { f32::NAN } else { voiced[voiced.len() / 2] };
+                    eprintln!(
+                        "DIAG-NC: cluster {} early-clean F0 median {:.0} Hz ({} voiced)",
+                        lab, med, voiced.len()
+                    );
+                    (lab, med)
+                })
+                .collect();
+            let late_dur_of = |lab: u32, labels: &[u32]| -> f64 {
+                chunks
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, _)| labels[i] == lab)
+                    .filter(|&(_, c)| c.start_sample >= late_thresh)
+                    .map(|(_, c)| c.duration_secs)
+                    .sum()
+            };
+            let absorber_cl = centroids_b
+                .keys()
+                .copied()
+                .filter(|&l| l != cyn_clust_b)
+                .max_by(|a, b| {
+                    late_dur_of(*a, labels_b.as_slice())
+                        .partial_cmp(&late_dur_of(*b, labels_b.as_slice()))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .unwrap_or(cyn_clust_b);
+            let cyn_prof = *early_profile.get(&cyn_clust_b).unwrap_or(&f32::NAN);
+            let abs_prof = *early_profile.get(&absorber_cl).unwrap_or(&f32::NAN);
+            let cyn_late_before = late_dur_of(cyn_clust_b, labels_b.as_slice());
+            let abs_late_before = late_dur_of(absorber_cl, labels_b.as_slice());
+            let mut labels_nc = labels_b.clone();
+            let mut reassigned = 0usize;
+            let mut re_cos_ge04 = 0usize;
+            let mut re_cos_lt03 = 0usize;
+            let cyn_cent = centroids_b.get(&cyn_clust_b).cloned().unwrap_or_default();
+            if cyn_prof.is_finite() && abs_prof.is_finite() {
+                let opposite = (cyn_prof < 180.0) != (abs_prof < 180.0);
+                for (i, c) in chunks.iter().enumerate() {
+                    if c.start_sample < late_thresh || labels_b[i] != absorber_cl {
+                        continue;
+                    }
+                    let f0 = match chunk_f0[i] {
+                        Some(f) => f,
+                        None => continue,
+                    };
+                    if (f0 - cyn_prof).abs() < 30.0 && (f0 - abs_prof).abs() > 50.0 && opposite {
+                        labels_nc[i] = cyn_clust_b;
+                        reassigned += 1;
+                        if !cyn_cent.is_empty() {
+                            let cs = cosine_similarity_centroids(&c.embedding, &cyn_cent);
+                            if cs >= 0.4 { re_cos_ge04 += 1; }
+                            if cs < 0.3 { re_cos_lt03 += 1; }
+                        }
+                    }
+                }
+            }
+            let cyn_late_after = late_dur_of(cyn_clust_b, labels_nc.as_slice());
+            let abs_late_after = late_dur_of(absorber_cl, labels_nc.as_slice());
+            eprintln!(
+                "DIAG-NC: cyn_clust={} early F0 {:.0} Hz | absorber_cl={} early F0 {:.0} Hz | opposite_sides={}",
+                cyn_clust_b, cyn_prof, absorber_cl, abs_prof, (cyn_prof < 180.0) != (abs_prof < 180.0)
+            );
+            eprintln!(
+                "DIAG-NC: REASSIGN {} late absorber→UserB | cos>=0.4: {} | cos<0.3: {}",
+                reassigned, re_cos_ge04, re_cos_lt03
+            );
+            eprintln!(
+                "DIAG-NC: UserB late {:.0}s → {:.0}s | absorber late {:.0}s → {:.0}s",
+                cyn_late_before, cyn_late_after, abs_late_before, abs_late_after
+            );
+        }
+
+        let mut indexed_e: Vec<(usize, u32)> = labels_e.iter().copied().enumerate().collect();
+        indexed_e.sort_by_key(|(i, _)| chunks[*i].start_sample);
+        let mut segments_e: Vec<SpeakerSegment> = Vec::new();
+        if let Some(&(ci0, cur0)) = indexed_e.first() {
+            let mut cur = cur0;
+            let mut seg_start = chunks[ci0].start_sample as f64 / sr_f;
+            let mut seg_end = chunks[ci0].end_sample as f64 / sr_f;
+            for &(ci, lab) in &indexed_e[1..] {
+                let cs = chunks[ci].start_sample as f64 / sr_f;
+                let ce = chunks[ci].end_sample as f64 / sr_f;
+                if lab == cur {
+                    seg_end = ce;
+                } else {
+                    segments_e.push(SpeakerSegment {
+                        start_seconds: seg_start,
+                        end_seconds: seg_end,
+                        speaker_id: cur,
+                    });
+                    cur = lab;
+                    seg_start = cs;
+                    seg_end = ce;
+                }
+            }
+            segments_e.push(SpeakerSegment {
+                start_seconds: seg_start,
+                end_seconds: seg_end,
+                speaker_id: cur,
+            });
+        }
+        let total_e: f64 = segments_e.iter().map(|s| s.end_seconds - s.start_seconds).sum();
+        let (segments_e, centroids_e) = merge_short_speakers(segments_e, centroids_b.clone(), total_e);
+        trace_segment_stage("E: +F0 correction (FINAL)", &segments_e, &centroids_e, &cynthia_fp);
+
+        // ── Rails (§4.1): assert F0 correction recovers UserB without
+        // stealing Speaker 2's chunks or erasing UserB's early half.
+        // Identify UserB's cluster by cosine to fingerprint in each output.
+        let cyn_cluster_d = centroids_d
+            .keys()
+            .copied()
+            .max_by(|a, b| {
+                let ca = centroids_d.get(a).map(|v| cosine_similarity_centroids(&cynthia_fp, v)).unwrap_or(-1.0);
+                let cb = centroids_d.get(b).map(|v| cosine_similarity_centroids(&cynthia_fp, v)).unwrap_or(-1.0);
+                ca.partial_cmp(&cb).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap_or(0);
+        let cyn_cluster_e = centroids_e
+            .keys()
+            .copied()
+            .max_by(|a, b| {
+                let ca = centroids_e.get(a).map(|v| cosine_similarity_centroids(&cynthia_fp, v)).unwrap_or(-1.0);
+                let cb = centroids_e.get(b).map(|v| cosine_similarity_centroids(&cynthia_fp, v)).unwrap_or(-1.0);
+                ca.partial_cmp(&cb).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap_or(0);
+
+        let speaker_dur_split = |segs: &[SpeakerSegment], sid: u32, early: bool| -> f64 {
+            segs.iter()
+                .filter(|s| s.speaker_id == sid)
+                .map(|s| {
+                    if early {
+                        (1800.0_f64.min(s.end_seconds) - s.start_seconds).max(0.0)
+                    } else {
+                        (s.end_seconds - 1800.0_f64.max(s.start_seconds)).max(0.0)
+                    }
+                })
+                .sum::<f64>()
+        };
+
+        let cyn_late_e = speaker_dur_split(&segments_e, cyn_cluster_e, false);
+        let cyn_early_e = speaker_dur_split(&segments_e, cyn_cluster_e, true);
+        let cyn_late_d = speaker_dur_split(&segments_d, cyn_cluster_d, false);
+        let cyn_early_d = speaker_dur_split(&segments_d, cyn_cluster_d, true);
+
+        eprintln!(
+            "RAILS: UserB late D={:.0}s E={:.0}s | early D={:.0}s E={:.0}s",
+            cyn_late_d, cyn_late_e, cyn_early_d, cyn_early_e,
+        );
+
+        // Floor: recovered late-half ≥ 600s (was ~26s without F0 correction).
+        assert!(cyn_late_e >= 600.0,
+            "FLOOR: UserB late-half {:.0}s < 600s — F0 correction did not recover enough", cyn_late_e);
+        // Ceiling: no overshoot ≤ 1800s (D13 upper bound was 1381s).
+        assert!(cyn_late_e <= 1800.0,
+            "CEILING: UserB late-half {:.0}s > 1800s — F0 correction over-recovered (stealing Speaker 2)", cyn_late_e);
+        // Early-half guard: UserB's early-half not reduced >10%.
+        if cyn_early_d > 0.0 {
+            assert!(cyn_early_e >= cyn_early_d * 0.90,
+                "EARLY-HALF GUARD: UserB early-half dropped {:.0}s→{:.0}s (>10%)", cyn_early_d, cyn_early_e);
+        }
+
+        // Absorber guard: Speaker 2 = the cluster with the most late-half
+        // duration that is NOT UserB. Its late-half must not drop >15%.
+        let spk2_cluster_d = centroids_d
+            .keys()
+            .copied()
+            .filter(|&c| c != cyn_cluster_d)
+            .max_by(|a, b| {
+                let da = speaker_dur_split(&segments_d, *a, false);
+                let db = speaker_dur_split(&segments_d, *b, false);
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap_or(cyn_cluster_d);
+        let spk2_late_d = speaker_dur_split(&segments_d, spk2_cluster_d, false);
+        // In corrected output, Speaker 2's cluster may have been renumbered.
+        // Find the cluster closest to spk2_cluster_d's centroid.
+        let spk2_centroid = centroids_d.get(&spk2_cluster_d).cloned().unwrap_or_default();
+        let spk2_cluster_e = if spk2_centroid.is_empty() {
+            cyn_cluster_e
+        } else {
+            *centroids_e
+                .iter()
+                .max_by(|a, b| {
+                    let ca = cosine_similarity_centroids(&spk2_centroid, a.1);
+                    let cb = cosine_similarity_centroids(&spk2_centroid, b.1);
+                    ca.partial_cmp(&cb).unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .map(|(k, _)| k)
+                .unwrap_or(&cyn_cluster_e)
+        };
+        let spk2_late_e = speaker_dur_split(&segments_e, spk2_cluster_e, false);
+        eprintln!(
+            "RAILS: Speaker2 late D={:.0}s E={:.0}s (cluster D={} E={})",
+            spk2_late_d, spk2_late_e, spk2_cluster_d, spk2_cluster_e,
+        );
+        if spk2_late_d > 0.0 {
+            assert!(spk2_late_e >= spk2_late_d * 0.85,
+                "ABSORBER GUARD: Speaker 2 late-half dropped {:.0}s→{:.0}s (>15%)", spk2_late_d, spk2_late_e);
+        }
+
+        // Per-chunk F0-register: chunks moved TO UserB's cluster by F0
+        // correction must have F0 within 30 Hz of UserB's median F0.
+        let cyn_voiced_f0s: Vec<f32> = chunks
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| labels_b[*i] == cyn_cluster_d || labels_e[*i] == cyn_cluster_e)
+            .filter_map(|(_, c)| {
+                let end = c.end_sample.min(samples_ref.len());
+                if end <= c.start_sample { return None; }
+                detect_f0(&samples_ref[c.start_sample..end], DIARIZATION_SAMPLE_RATE)
+            })
+            .collect();
+        if cyn_voiced_f0s.len() >= 3 {
+            let mut sorted = cyn_voiced_f0s.clone();
+            sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+            let cyn_median_f0 = sorted[sorted.len() / 2];
+            let mut moved_ok = 0usize;
+            let mut moved_total = 0usize;
+            for (i, c) in chunks.iter().enumerate() {
+                let moved_to_cyn = labels_b[i] != cyn_cluster_e && labels_e[i] == cyn_cluster_e;
+                if !moved_to_cyn { continue; }
+                moved_total += 1;
+                let end = c.end_sample.min(samples_ref.len());
+                if end <= c.start_sample { continue; }
+                if let Some(f0) = detect_f0(&samples_ref[c.start_sample..end], DIARIZATION_SAMPLE_RATE) {
+                    if (f0 - cyn_median_f0).abs() < 30.0 { moved_ok += 1; }
+                }
+            }
+            eprintln!(
+                "RAILS: F0-register — moved {} chunks to UserB, {} within 30Hz of median {:.0}Hz",
+                moved_total, moved_ok, cyn_median_f0,
+            );
+            if moved_total > 0 {
+                assert!(moved_ok as f64 / moved_total as f64 >= 0.5,
+                    "F0-REGISTER: only {}/{} moved chunks have F0 within 30Hz of UserB's median", moved_ok, moved_total);
+            }
+        }
+
+        // Contamination diagnostic: <40% of UserB's late chunks have
+        // cos<0.3 to her centroid (embedding-level contamination measure).
+        let cyn_centroid_e = centroids_e.get(&cyn_cluster_e).cloned().unwrap_or_default();
+        if !cyn_centroid_e.is_empty() {
+            let late_cyn: Vec<_> = chunks
+                .iter()
+                .enumerate()
+                .filter(|(i, c)| {
+                    labels_e[*i] == cyn_cluster_e && (c.start_sample as f64 / sr_f) >= 1800.0
+                })
+                .map(|(_, c)| c)
+                .collect();
+            let contaminated = late_cyn
+                .iter()
+                .filter(|c| cosine_similarity_centroids(&c.embedding, &cyn_centroid_e) < 0.3)
+                .count();
+            let pct = if late_cyn.is_empty() { 0.0 } else { contaminated as f64 / late_cyn.len() as f64 * 100.0 };
+            eprintln!(
+                "RAILS: contamination — {}/{} ({:.0}%) of UserB's late chunks have cos<0.3 to her centroid",
+                contaminated, late_cyn.len(), pct,
+            );
+            assert!(pct < 40.0,
+                "CONTAMINATION: {:.0}% of UserB's late chunks have cos<0.3 — F0 correction is stealing garbage", pct);
+        }
+    }
+
+    fn trace_chunk_stage(
+        stage: &str,
+        labels: &[u32],
+        timestamps: &[f64],
+        durations: &[f64],
+        centroids: &std::collections::HashMap<u32, Vec<f32>>,
+        fingerprint: &[f32],
+    ) {
+        let clusters: std::collections::HashSet<u32> = labels.iter().copied().collect();
+        let (cyn_cluster, cyn_cos) = clusters
+            .iter()
+            .map(|&c| {
+                let cos = centroids
+                    .get(&c)
+                    .map(|v| cosine_similarity_centroids(fingerprint, v))
+                    .unwrap_or(-1.0);
+                (c, cos)
+            })
+            .max_by(|a, b| {
+                a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap_or((0, -1.0));
+        let mut early = 0.0f64;
+        let mut late = 0.0f64;
+        let mut cyn_chunks = 0usize;
+        for (i, &lab) in labels.iter().enumerate() {
+            if lab == cyn_cluster {
+                cyn_chunks += 1;
+                if timestamps[i] < 1800.0 {
+                    early += durations[i];
+                } else {
+                    late += durations[i];
+                }
+            }
+        }
+        let mut all_early = 0.0f64;
+        let mut all_late = 0.0f64;
+        for (i, _) in labels.iter().enumerate() {
+            if timestamps[i] < 1800.0 {
+                all_early += durations[i];
+            } else {
+                all_late += durations[i];
+            }
+        }
+        eprintln!(
+            "STAGE-TRACE [{}]: {} clusters | UserB→{} (cos {:.3}): {} chunks, early {:.0}s late {:.0}s (ratio {:.2}) | total early {:.0}s late {:.0}s",
+            stage,
+            clusters.len(),
+            cyn_cluster,
+            cyn_cos,
+            cyn_chunks,
+            early,
+            late,
+            if early > 0.0 { late / early } else { f64::INFINITY },
+            all_early,
+            all_late,
+        );
+    }
+
+    fn trace_segment_stage(
+        stage: &str,
+        segments: &[SpeakerSegment],
+        centroids: &std::collections::HashMap<u32, Vec<f32>>,
+        fingerprint: &[f32],
+    ) {
+        use std::collections::HashSet;
+        let speakers: HashSet<u32> = segments.iter().map(|s| s.speaker_id).collect();
+        let (cyn_spk, cyn_cos) = speakers
+            .iter()
+            .map(|&s| {
+                let cos = centroids
+                    .get(&s)
+                    .map(|v| cosine_similarity_centroids(fingerprint, v))
+                    .unwrap_or(-1.0);
+                (s, cos)
+            })
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .unwrap_or((0, -1.0));
+        let mut early = 0.0f64;
+        let mut late = 0.0f64;
+        let mut all_early = 0.0f64;
+        let mut all_late = 0.0f64;
+        for s in segments {
+            let dur = s.end_seconds - s.start_seconds;
+            let mid = (s.start_seconds + s.end_seconds) / 2.0;
+            if mid < 1800.0 {
+                all_early += dur;
+                if s.speaker_id == cyn_spk {
+                    early += dur;
+                }
+            } else {
+                all_late += dur;
+                if s.speaker_id == cyn_spk {
+                    late += dur;
+                }
+            }
+        }
+        let merged = cyn_cos < 0.3;
+        eprintln!(
+            "STAGE-TRACE [{}]: {} speakers, {} segments | UserB→{} (cos {:.3}){}: early {:.0}s late {:.0}s (ratio {:.2}) | total early {:.0}s late {:.0}s",
+            stage,
+            speakers.len(),
+            segments.len(),
+            cyn_spk,
+            cyn_cos,
+            if merged { " *** MERGED ***" } else { "" },
+            early,
+            late,
+            if early > 0.0 { late / early } else { f64::INFINITY },
+            all_early,
+            all_late,
+        );
+    }
+
+    /// §4.2: Regression guard — meeting 95db is a known-good 3-speaker meeting.
+    /// F0 correction must not regress it: speaker count stays 3, no speaker
+    /// collapses by >15% between halves (late-half ≥ 15% of early-half).
+    ///
+    /// NOTE (2026-07-10): F0 correction is gated off in `process()`
+    /// (`F0_CORRECTION_ENABLED = false`) after it collapsed 95db 3→2. This test
+    /// now guards the baseline (3 speakers WITHOUT F0 correction). The
+    /// F0-induced regression is documented in design.md "⚠ REAL-DATA
+    /// VALIDATION FAILED".
+    #[tokio::test]
+    #[ignore]
+    async fn test_f0_correction_no_regression_95db() {
+        let _ = env_logger::builder().is_test(true).try_init();
+        let db_path = r"C:\Users\UserA\AppData\Roaming\com.meetily.ai\meeting_minutes.sqlite";
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite:{}?mode=ro", db_path))
+            .await
+            .expect("DB connect (read-only)");
+        let meeting_id = "meeting-95db7d8e-8ed2-42e2-90f4-5e5203b52930";
+
+        let row = sqlx::query("SELECT folder_path FROM meetings WHERE id = ?")
+            .bind(meeting_id)
+            .fetch_optional(&pool)
+            .await
+            .expect("fetch meeting");
+        let folder = row
+            .and_then(|r| sqlx::Row::get::<Option<String>, _>(&r, "folder_path"))
+            .expect("95db folder_path missing");
+        let audio_path = find_audio_in_folder(std::path::Path::new(&folder)).expect("audio file");
+        let decoded = crate::audio::decoder::decode_audio_file(&audio_path).expect("decode audio");
+        let samples = decoded.to_whisper_format();
+        let audio_duration = decoded.duration_seconds.max(0.001);
+
+        let models_dir = dirs::home_dir().unwrap_or_default().join(".meetily-models");
+        let embedding_path = models_dir.join(crate::audio::speaker::model_download::embedding_filename());
+        let segmentation_path = models_dir.join("pyannote-segmentation.onnx");
+        assert!(embedding_path.exists(), "embedding model missing");
+
+        let threshold_fp = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(
+            (0.40f32 * 65536.0) as u32,
+        ));
+        let adapter =
+            crate::audio::speaker::sherpa_adapter::SherpaOnnxDiarizationAdapter::with_shared_threshold(
+                embedding_path.to_str().unwrap(),
+                segmentation_path.to_str().unwrap(),
+                std::sync::Arc::clone(&threshold_fp),
+            )
+            .expect("create adapter");
+
+        let transcript_segments = fetch_transcript_timestamps(&pool, meeting_id, audio_duration)
+            .await
+            .expect("fetch transcript timestamps");
+
+        let output = adapter
+            .process(&samples, DIARIZATION_SAMPLE_RATE, &transcript_segments)
+            .expect("diarization");
+
+        let speakers: std::collections::HashSet<u32> =
+            output.segments.iter().map(|s| s.speaker_id).collect();
+        eprintln!(
+            "95db F0-regression: {} speakers, {} segments, {:.0}s audio",
+            speakers.len(),
+            output.segments.len(),
+            audio_duration,
+        );
+        assert_eq!(speakers.len(), 3, "95db must keep 3 speakers (got {})", speakers.len());
+
+        let midpoint = audio_duration / 2.0;
+        let mut early_dur: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
+        let mut late_dur: std::collections::HashMap<u32, f64> = std::collections::HashMap::new();
+        for s in &output.segments {
+            let early = (midpoint.min(s.end_seconds) - s.start_seconds).max(0.0);
+            let late = (s.end_seconds - midpoint.max(s.start_seconds)).max(0.0);
+            *early_dur.entry(s.speaker_id).or_insert(0.0) += early;
+            *late_dur.entry(s.speaker_id).or_insert(0.0) += late;
+        }
+        for &sid in speakers.iter() {
+            let e = early_dur.get(&sid).copied().unwrap_or(0.0);
+            let l = late_dur.get(&sid).copied().unwrap_or(0.0);
+            eprintln!("95db speaker {}: early {:.0}s, late {:.0}s", sid, e, l);
+            if e > 30.0 {
+                assert!(l >= e * 0.15,
+                    "95db speaker {} collapsed: late {:.0}s < 15% of early {:.0}s", sid, l, e);
+            }
         }
     }
 
