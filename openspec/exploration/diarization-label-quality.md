@@ -274,6 +274,69 @@ needs either <2s granularity or token-level alignment (lever 1, wire
    sidesteps by making fine chunking a *second* pass, not the clustering input.
 4. **NEW: AHC threshold (0.65) fragments at 2s** — two-pass sidesteps this too.
 
+## Resolving spike — actual two-pass end-to-end (2026-07-16, `spike_twopass_actual.py`)
+
+Shark-tank round 1 flagged that two-pass was only *inferred* from component spikes
+(embedding separability + smoothing survival + AHC fragmentation), never run as an
+actual two-pass. This spike runs it for real, plus the AHC threshold sweep the
+reviewers asked for. All three Critical findings resolved.
+
+**Pass 1 — coarse AHC on the FULL meeting (8s, threshold 0.65), 621 chunks:**
+30 raw clusters, but only **3 dominant** (94% of audio):
+
+| cluster | cos_cyn | cos_abs | chunks | identity |
+|---|---|---|---|---|
+| 5 | **0.925** | 0.031 | 227 | UserB |
+| 7 | 0.031 | **0.896** | 214 | UserC |
+| 3 | 0.217 | 0.191 | 144 | UserA (low on both refs; dominant 0–30min) |
+
+The other 27 are noise singletons (1–8 chunks) that the existing
+`merge_short_speakers` + `enforce_max_speakers_cap` already collapse. **Resolves
+shark-tank C2**: all three speakers have clean, separable meeting-derived
+voice-prints — not just UserB.
+
+**Pass 2 — assign 2s chunks to nearest Pass-1 centroid → smooth → coalesce:**
+- **LATE 46:00–49:30 (primary target):** `[46:42–47:00]` resolves as an **18s
+  UserC segment**. Production currently swallows [46:58] into UserB. **Target
+  resolved.** Smoothing flipped 21/105 — inflated because this spike fed the 27
+  raw noise centroids to Pass 2; the real implementation derives centroids
+  post-merge/post-cap (3 clean prints), so flip rate and noise would be lower.
+- **EARLY 10:00–13:30 (UserA + UserB):** clean 7-segment alternation, 8% flips.
+  Not a 3-speaker region (UserC doesn't appear until 17:37, per facet-2
+  narrative) — confirms two-pass produces clean multi-turn structure for the
+  local-mic speaker vs UserB.
+
+**Spike B — AHC threshold sweep on 2s, LATE region (the simpler alternative):**
+`0.40→11 clusters · 0.45→15 · 0.50→20 · 0.55→30 · 0.65→57`. Lower thresholds
+reduce fragmentation but never reach the 2–3 needed even on a 210s window. **Resolves
+shark-tank C5/scope-F2**: lowering the AHC threshold is not a viable simpler
+alternative; two-pass (nearest stable centroid) is structurally sounder.
+
+**Design refinement surfaced:** Pass-2 centroids MUST come from the speaker set
+*after* `merge_short_speakers` + `enforce_max_speakers_cap` (3 clean prints), not
+the raw 30-cluster AHC output. This spike used raw output, so its late-region
+labels include noise singletons (cluster18/10/15/24) that the real implementation
+would not produce. The spike therefore slightly *under*-represents the real
+implementation's quality, yet still resolves the primary target.
+
+**[47:32] reframe confirmed.** Even the actual two-pass resolves [47:02–47:58] as
+one UserB block — [47:32]'s short exclamations live inside UserB-dominated 2s
+windows. Token-level alignment does NOT recover this (token alignment distributes
+words *within* a diarization segment; it cannot create a speaker split where
+diarization found no boundary). [47:32] is an **accepted limitation**, not
+token-deferred.
+
+### 3-centroid confirmation (`spike_3centroid.py`, shark-tank R2 I1)
+
+Re-ran Pass 2 on the late region assigning to ONLY the top-3 clusters by duration (the post-`merge_short_speakers`/post-`enforce_max_speakers_cap` equivalent — for cde5c264, max_speakers=3, so post-merge == post-cap == these 3):
+
+- cluster 5: CYN (1816s, cos 0.925), cluster 7: RIC (1712s, cos 0.896), cluster 3: UserA (1152s).
+- **Pass 2 LATE: `[46:42–47:02]` resolves as a 20s RIC segment. TARGET SURVIVES.**
+- Smoothing flipped **13/105 (12%)** — *lower* than the raw-30-centroid spike's 21/105 (20%).
+- Output: 9 segments (vs 22 with raw centroids), **zero noise singletons** — the late region is clean `CYN 46:00–46:42 · RIC 46:42–47:02 · CYN 47:02–47:58`.
+
+Resolves shark-tank R2 I1: the configured design is not only valid, it is *cleaner* than the raw-centroid spike. The worry that removing singleton "escape valves" would force ambiguous 2s chunks to mis-attribute did not materialize — `[46:58]` still snaps to UserC. The raw-30-centroid spike therefore under-represented quality, as claimed.
+
 ## Disposition of prior changes (revised)
 
 - `diarization-segmentation-windows`: absorption rationale **disproven**, but its
