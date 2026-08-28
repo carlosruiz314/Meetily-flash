@@ -546,6 +546,100 @@ impl SpeakerRepository {
         Ok(result.rows_affected())
     }
 
+    /// Merge same-speaker neighbor rows of a meeting into sentence-readable
+    /// turns (turns.rs rules), in one transaction: the first absorbed row is
+    /// updated in place (id stable), the rest are deleted; content-less rows
+    /// are dropped. Idempotent — a second pass changes nothing. Manual
+    /// (user-renamed) rows are never merged so revert semantics stay intact.
+    pub async fn consolidate_meeting_turns(
+        pool: &SqlitePool,
+        meeting_id: &str,
+    ) -> Result<(usize, usize)> {
+        #[derive(sqlx::FromRow)]
+        struct Frag {
+            id: String,
+            speaker_label: Option<String>,
+            speaker_source: Option<String>,
+            audio_start_time: f64,
+            audio_end_time: f64,
+            transcript: String,
+        }
+        let frags = sqlx::query_as::<_, Frag>(
+            "SELECT id, speaker_label, speaker_source, audio_start_time, audio_end_time, transcript FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time, audio_end_time",
+        )
+        .bind(meeting_id)
+        .fetch_all(pool)
+        .await?;
+
+        // Manual rows are isolated into singleton groups via a unique group
+        // key so the turn predicate can never merge them.
+        let group_keys: Vec<String> = frags
+            .iter()
+            .map(|f| {
+                if f.speaker_source.as_deref() == Some("manual") {
+                    format!("manual:{}", f.id)
+                } else {
+                    f.speaker_label.clone().unwrap_or_else(|| "Unknown Speaker".into())
+                }
+            })
+            .collect();
+        let refs: Vec<crate::audio::speaker::turns::RowRef<'_>> = frags
+            .iter()
+            .zip(&group_keys)
+            .map(|(f, key)| crate::audio::speaker::turns::RowRef {
+                speaker: key,
+                start_ms: (f.audio_start_time * 1000.0).round() as i64,
+                end_ms: (f.audio_end_time * 1000.0).round() as i64,
+                text: &f.transcript,
+            })
+            .collect();
+        let groups = crate::audio::speaker::turns::assemble_groups(&refs);
+        let grouped: std::collections::HashSet<usize> = groups
+            .iter()
+            .flat_map(|g| g.row_indexes.iter().copied())
+            .collect();
+
+        let mut tx = pool.begin().await?;
+        let mut deleted = 0usize;
+        for g in &groups {
+            let t = &g.turn;
+            let first = &frags[g.row_indexes[0]];
+            let unchanged = g.row_indexes.len() == 1
+                && first.transcript == t.text
+                && (first.audio_end_time * 1000.0).round() as i64 == t.end_ms;
+            if !unchanged {
+                sqlx::query(
+                    "UPDATE transcripts SET transcript = ?, audio_start_time = ?, audio_end_time = ?, duration = ?, token_timestamps = NULL WHERE id = ?",
+                )
+                .bind(&t.text)
+                .bind(t.start_ms as f64 / 1000.0)
+                .bind(t.end_ms as f64 / 1000.0)
+                .bind((t.end_ms - t.start_ms) as f64 / 1000.0)
+                .bind(&first.id)
+                .execute(&mut *tx)
+                .await?;
+            }
+            for &idx in &g.row_indexes[1..] {
+                sqlx::query("DELETE FROM transcripts WHERE id = ?")
+                    .bind(&frags[idx].id)
+                    .execute(&mut *tx)
+                    .await?;
+                deleted += 1;
+            }
+        }
+        for (i, f) in frags.iter().enumerate() {
+            if !grouped.contains(&i) {
+                sqlx::query("DELETE FROM transcripts WHERE id = ?")
+                    .bind(&f.id)
+                    .execute(&mut *tx)
+                    .await?;
+                deleted += 1;
+            }
+        }
+        tx.commit().await?;
+        Ok((groups.len(), deleted))
+    }
+
     pub async fn revert_speaker_label(
         pool: &SqlitePool,
         meeting_id: &str,
@@ -1602,7 +1696,7 @@ mod tests {
         let pool = SqlitePool::connect(":memory:").await.unwrap();
         sqlx::query("CREATE TABLE speakers (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT 'now', updated_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE speaker_embeddings (id TEXT PRIMARY KEY, speaker_id TEXT, embedding BLOB NOT NULL, source_meeting_id TEXT NOT NULL, cluster_label TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
-        sqlx::query("CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, transcript TEXT NOT NULL, timestamp TEXT NOT NULL, audio_start_time REAL NOT NULL, audio_end_time REAL NOT NULL, duration REAL NOT NULL, speaker_label TEXT, speaker_source TEXT, previous_label TEXT)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, transcript TEXT NOT NULL, timestamp TEXT NOT NULL, audio_start_time REAL NOT NULL, audio_end_time REAL NOT NULL, duration REAL NOT NULL, speaker_label TEXT, speaker_source TEXT, previous_label TEXT, token_timestamps TEXT)").execute(&pool).await.unwrap();
         pool
     }
 
@@ -1688,5 +1782,82 @@ mod tests {
             .execute(&pool).await.unwrap();
         SpeakerRepository::revert_speaker_label(&pool, "m1", "Alice").await.unwrap();
         assert_eq!(link_of(&pool, "emb-sp0").await, None, "under-unlink fixed");
+    }
+    // --- Sentence-aware consolidation (turn-assembly 2.2) ---
+
+    async fn seed_fragments(pool: &SqlitePool) {
+        for (id, label, s, e, txt) in [
+            ("f1", "Speaker 0", 1.0, 2.0, ". Okay . I have updates"),
+            ("f2", "Speaker 0", 2.0, 2.5, "to , let 's"),
+            ("f3", "Speaker 1", 2.6, 3.0, "Yeah , fine"),
+            ("f4", "Speaker 0", 30.0, 31.0, "New topic"),
+            ("f5", "Speaker 0", 31.5, 31.6, ","),
+        ] {
+            sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker_label, speaker_source) VALUES (?, 'm1', ?, '00:00', ?, ?, ?, ?, 'auto')")
+                .bind(id).bind(txt).bind(s).bind(e).bind(e - s).bind(label)
+                .execute(pool).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn consolidation_merges_fragments_drops_junk_keeps_flip() {
+        let pool = embeddings_test_pool().await;
+        seed_fragments(&pool).await;
+        let (turns, absorbed) = SpeakerRepository::consolidate_meeting_turns(&pool, "m1").await.unwrap();
+        assert_eq!(turns, 3, "sp0-turn, sp1-turn, sp0-turn: {:?}", turns);
+        assert_eq!(absorbed, 2, "f2 merged into f1; f5 comma row deleted");
+        let rows: Vec<(String, f64, f64)> = sqlx::query_as(
+            "SELECT transcript, audio_start_time, audio_end_time FROM transcripts WHERE meeting_id = 'm1' ORDER BY audio_start_time")
+        .fetch_all(&pool).await.unwrap();
+        assert_eq!(rows[0].0, "Okay. I have updates to, let's");
+        assert_eq!(rows[0].1, 1.0);
+        assert_eq!(rows[0].2, 2.5);
+        assert_eq!(rows[1].0, "Yeah, fine");
+        assert_eq!(rows[2].0, "New topic");
+    }
+
+    #[tokio::test]
+    async fn consolidation_is_idempotent() {
+        let pool = embeddings_test_pool().await;
+        seed_fragments(&pool).await;
+        SpeakerRepository::consolidate_meeting_turns(&pool, "m1").await.unwrap();
+        let first: Vec<(String, String, f64, f64)> = sqlx::query_as(
+            "SELECT id, transcript, audio_start_time, audio_end_time FROM transcripts WHERE meeting_id = 'm1' ORDER BY audio_start_time")
+        .fetch_all(&pool).await.unwrap();
+        let (turns, absorbed) = SpeakerRepository::consolidate_meeting_turns(&pool, "m1").await.unwrap();
+        assert_eq!(absorbed, 0, "second pass deletes nothing");
+        let second: Vec<(String, String, f64, f64)> = sqlx::query_as(
+            "SELECT id, transcript, audio_start_time, audio_end_time FROM transcripts WHERE meeting_id = 'm1' ORDER BY audio_start_time")
+        .fetch_all(&pool).await.unwrap();
+        assert_eq!(first, second, "ids, texts and spans unchanged");
+        assert_eq!(turns, first.len());
+    }
+
+    // --- Live one-shot (turn-assembly 3.1): env-gated, --ignored ---
+
+    #[tokio::test]
+    #[ignore = "live DB pass: MEETIFY_LIVE_CONSOLIDATE=1 cargo test --lib consolidation_live -- --ignored --nocapture"]
+    async fn consolidation_live_cde5c264() {
+        if std::env::var("MEETIFY_LIVE_CONSOLIDATE").is_err() {
+            return;
+        }
+        let db = format!(
+            "{}{}{}{}{}{}{}{}{}",
+            std::env::var("USERPROFILE").unwrap(),
+            std::path::MAIN_SEPARATOR, "AppData",
+            std::path::MAIN_SEPARATOR, "Roaming",
+            std::path::MAIN_SEPARATOR, "com.meetily.ai",
+            std::path::MAIN_SEPARATOR, "meeting_minutes.sqlite"
+        );
+        let opts = sqlx::sqlite::SqliteConnectOptions::new().filename(&db);
+        let pool = SqlitePool::connect_with(opts).await.unwrap();
+        let mid = "meeting-cde5c264-1c4a-49d9-97c5-6a7e69bb9323";
+        let sql = "SELECT COUNT(*), SUM(CASE WHEN transcript NOT LIKE '%.' AND transcript NOT LIKE '%?' AND transcript NOT LIKE '%!' THEN 1 ELSE 0 END), SUM(CASE WHEN trim(transcript, ' .,!?') = '' THEN 1 ELSE 0 END) FROM transcripts WHERE meeting_id = ?";
+        let (rows, frag, junk): (i64, i64, i64) = sqlx::query_as(sql).bind(mid).fetch_one(&pool).await.unwrap();
+        println!("BEFORE rows={rows} fragments={frag} junk={junk}");
+        let (turns, absorbed) = SpeakerRepository::consolidate_meeting_turns(&pool, mid).await.unwrap();
+        println!("CONSOLIDATED turns={turns} absorbed={absorbed}");
+        let (rows2, frag2, junk2): (i64, i64, i64) = sqlx::query_as(sql).bind(mid).fetch_one(&pool).await.unwrap();
+        println!("AFTER rows={rows2} fragments={frag2} junk={junk2}");
     }
 }
