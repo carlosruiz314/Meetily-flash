@@ -47,6 +47,13 @@ fn pick_color(index: usize) -> String {
     format!("hsl({}, 65%, 55%)", hue.round() as u16)
 }
 
+/// Cross-meeting match threshold from the settings knob (Q16 fixed-point).
+/// The spec range is [0.35, 0.70] with a 0.40 default; out-of-range settings
+/// are clamped rather than trusted (the old hard-coded 0.60 ignored the knob).
+fn match_threshold_from_fp(threshold_fp: u32) -> f32 {
+    (threshold_fp as f32 / 65536.0).clamp(0.35, 0.70)
+}
+
 #[tauri::command]
 pub async fn label_speaker(
     app_state: tauri::State<'_, AppState>,
@@ -124,9 +131,21 @@ pub async fn label_speaker(
     .await
     .map_err(|e| e.to_string())?;
 
+    // Identity: link this cluster's embeddings to the named speaker so the
+    // label becomes cross-meeting identity, not just a display string.
+    let relinked = SpeakerRepository::relink_meeting_embeddings(
+        pool,
+        &meeting_id,
+        &cluster_label,
+        &final_speaker_id,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
     log::info!(
-        "label_speaker: labeled {} transcripts in meeting {} cluster '{}' as '{}'",
+        "label_speaker: labeled {} transcripts and relinked {} embeddings in meeting {} cluster '{}' as '{}'",
         updated,
+        relinked,
         meeting_id,
         cluster_label,
         name
@@ -155,6 +174,88 @@ pub async fn remove_speaker_cmd(
     SpeakerRepository::remove_speaker(pool, &speaker_id)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// Stamp + persist this run's centroid embeddings in ONE transaction: the
+/// meeting's previous embedding set is deleted and the freshly stamped rows
+/// inserted atomically, so a failure mid-run rolls back to the previous set
+/// and fails the run instead of logging and continuing.
+///
+/// Matching is against NAMED speakers only (registry keys are speaker ids;
+/// auto rows and unlinked NULL rows are never candidates — see
+/// `list_stamped_embeddings`). Matched clusters link to the named speaker's
+/// id and adopt its name; unmatched clusters create and link a fresh
+/// meeting-local auto row (`speaker-auto-{meeting_id}-{sid}`), so cross-
+/// meeting identity is never anchored to a row that a re-run would delete.
+async fn persist_stamped_centroids(
+    pool: &SqlitePool,
+    registry: &Arc<Mutex<Option<CosineRegistryAdapter>>>,
+    match_threshold: f32,
+    meeting_id: &str,
+    centroids: &std::collections::HashMap<u32, Vec<f32>>,
+) -> Result<std::collections::HashMap<u32, String>, String> {
+    let mut tx = pool.begin().await.map_err(|e| format!("begin embedding tx: {}", e))?;
+
+    SpeakerRepository::delete_embeddings_by_meeting(&mut *tx, meeting_id)
+        .await
+        .map_err(|e| format!("clear stale embeddings: {}", e))?;
+
+    let mut label_map: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
+    let mut sorted: Vec<(&u32, &Vec<f32>)> = centroids.iter().collect();
+    sorted.sort_by_key(|(sid, _)| **sid);
+
+    for (idx, (&sid, centroid)) in sorted.iter().enumerate() {
+        let emb = EmbeddingVector::from_slice(centroid, centroid.len())
+            .map_err(|e| format!("embedding for Speaker {}: {}", sid, e))?;
+
+        let matched = registry
+            .lock()
+            .map_err(|_| "speaker registry lock poisoned".to_string())?
+            .as_ref()
+            .and_then(|r| r.search(&emb, match_threshold).ok().flatten());
+
+        let (stamped_speaker_id, display_label) = match matched {
+            Some(named_id) => {
+                let name = SpeakerRepository::get_speaker(&mut *tx, &named_id)
+                    .await
+                    .map_err(|e| format!("load matched speaker: {}", e))?
+                    .map(|row| row.name)
+                    .unwrap_or_else(|| format!("Speaker {}", sid));
+                log::info!("DIARIZATION: matched Speaker {} → {} ({})", sid, name, named_id);
+                (named_id, name)
+            }
+            None => {
+                let auto_id = format!("speaker-auto-{}-{}", meeting_id, sid);
+                let cluster_label = format!("Speaker {}", sid);
+                SpeakerRepository::ensure_speaker(
+                    &mut *tx,
+                    &auto_id,
+                    &cluster_label,
+                    &pick_color(idx),
+                )
+                .await
+                .map_err(|e| format!("create auto speaker for Speaker {}: {}", sid, e))?;
+                (auto_id, cluster_label)
+            }
+        };
+
+        let emb_id = format!("emb-{}", Uuid::new_v4());
+        SpeakerRepository::store_embedding(
+            &mut *tx,
+            &emb_id,
+            Some(&stamped_speaker_id),
+            centroid,
+            meeting_id,
+            &format!("Speaker {}", sid),
+        )
+        .await
+        .map_err(|e| format!("store embedding for Speaker {}: {}", sid, e))?;
+
+        label_map.insert(sid, display_label);
+    }
+
+    tx.commit().await.map_err(|e| format!("commit embedding tx: {}", e))?;
+    Ok(label_map)
 }
 
 #[tauri::command]
@@ -309,15 +410,9 @@ pub async fn run_diarization_for_meeting(
         meeting_id
     );
 
-    let deleted = SpeakerRepository::delete_embeddings_by_meeting(pool, meeting_id)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    log::info!(
-        "run_diarization_for_meeting: deleted {} stale embeddings for meeting {}",
-        deleted,
-        meeting_id
-    );
+    // Reload the match pool from the stamped DB rows at run start (not just
+    // the startup snapshot) so renames and prior runs this session are visible.
+    crate::database::setup::reload_speaker_registry(pool, &registry).await;
 
     let removed = SpeakerRepository::remove_auto_speakers_for_meeting(pool, meeting_id)
         .await
@@ -482,6 +577,11 @@ pub async fn run_diarization_for_meeting(
 
     if segments.is_empty() {
         log::info!("run_diarization_for_meeting: 0 speakers detected for meeting {}", meeting_id);
+        // The stamped set is replaced only via the transactional persist; a
+        // 0-speaker run explicitly clears the meeting's previous set.
+        SpeakerRepository::delete_embeddings_by_meeting(pool, meeting_id)
+            .await
+            .map_err(|e| e.to_string())?;
         return Ok(DiarizationResult { segments_labeled: cleared, speaker_count: 0 });
     }
 
@@ -494,51 +594,17 @@ pub async fn run_diarization_for_meeting(
     );
 
     // Create speaker rows with colors so the frontend can render them.
-    let sorted_speakers: Vec<&u32> = num_speakers.iter().collect();
-    for (idx, &sid) in sorted_speakers.iter().enumerate() {
-        let cluster_label = format!("Speaker {}", sid);
-        let color = pick_color(idx);
-        if let Err(e) = SpeakerRepository::create_speaker(
-            pool,
-            &format!("speaker-auto-{}-{}", meeting_id, sid),
-            &cluster_label,
-            &color,
-        )
-        .await
-        {
-            log::warn!("DIARIZATION: failed to create speaker {}: {}", cluster_label, e);
-        }
-    }
-
-    // Step 5: Voice fingerprinting — store embeddings + cross-meeting matching.
-    let mut label_map: std::collections::HashMap<u32, String> = std::collections::HashMap::new();
-    for (speaker_id, centroid) in &centroids {
-        let emb_id = format!("emb-{}", Uuid::new_v4());
-        let cluster_label = format!("Speaker {}", speaker_id);
-        if let Err(e) = SpeakerRepository::store_embedding(
-            pool,
-            &emb_id,
-            None,
-            centroid,
-            meeting_id,
-            &cluster_label,
-        )
-        .await
-        {
-            log::warn!("DIARIZATION: failed to store embedding for {}: {}", cluster_label, e);
-        }
-
-        // Cross-meeting matching via registry.
-        if let Ok(emb) = EmbeddingVector::from_slice(centroid, centroid.len()) {
-            let matched_name = registry.lock().ok().and_then(|guard| {
-                guard.as_ref().and_then(|r| r.search(&emb, 0.60).ok().flatten())
-            });
-            if let Some(name) = matched_name {
-                log::info!("DIARIZATION: matched Speaker {} → {}", speaker_id, name);
-                label_map.insert(*speaker_id, name);
-            }
-        }
-    }
+    // Step 5: Voice fingerprinting — match against named speakers, then stamp
+    // and persist the whole embedding set in one transaction.
+    let match_threshold = match_threshold_from_fp(threshold_fp);
+    let label_map = persist_stamped_centroids(
+        pool,
+        &registry,
+        match_threshold,
+        meeting_id,
+        &centroids,
+    )
+    .await?;
 
     // Step 6: Fetch full transcripts for alignment.
     let transcripts = fetch_transcripts_for_alignment(pool, meeting_id).await
@@ -2429,5 +2495,105 @@ mod tests {
             .expect("second diarize did not proceed within 2s of first releasing")
             .expect("spawned task panicked");
         assert_eq!(result, "proceeded");
+    }
+    // --- Match threshold sourced from settings (1.4) ---
+
+    #[test]
+    fn match_threshold_uses_configured_value_in_range() {
+        let fp = (0.50f32 * 65536.0) as u32;
+        assert!((match_threshold_from_fp(fp) - 0.50).abs() < 1e-4);
+    }
+
+    #[test]
+    fn match_threshold_clamped_to_035_070() {
+        assert!((match_threshold_from_fp((0.20f32 * 65536.0) as u32) - 0.35).abs() < 1e-4);
+        assert!((match_threshold_from_fp((0.90f32 * 65536.0) as u32) - 0.70).abs() < 1e-4);
+    }
+    // --- Transactional stamped persistence (2.1-2.3) ---
+
+    const TEST_DIM: usize = 128;
+
+    async fn stamp_pool() -> SqlitePool {
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+        sqlx::query("CREATE TABLE speakers (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT 'now', updated_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE speaker_embeddings (id TEXT PRIMARY KEY, speaker_id TEXT, embedding BLOB NOT NULL, source_meeting_id TEXT NOT NULL, cluster_label TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
+        pool
+    }
+
+    fn empty_registry() -> Arc<Mutex<Option<CosineRegistryAdapter>>> {
+        Arc::new(Mutex::new(None))
+    }
+
+    fn registry_with(id: &str, v: &[f32]) -> Arc<Mutex<Option<CosineRegistryAdapter>>> {
+        let adapter = CosineRegistryAdapter::new(TEST_DIM).unwrap();
+        let ev = EmbeddingVector::from_slice(v, TEST_DIM).unwrap();
+        adapter.add_list(id, &[ev]).unwrap();
+        Arc::new(Mutex::new(Some(adapter)))
+    }
+
+    #[tokio::test]
+    async fn persist_unmatched_creates_auto_rows_and_stamps_all() {
+        let pool = stamp_pool().await;
+        let cents = std::collections::HashMap::from([
+            (0u32, vec![0.5f32; TEST_DIM]),
+            (1u32, vec![0.25f32; TEST_DIM]),
+        ]);
+        let labels = persist_stamped_centroids(&pool, &empty_registry(), 0.40, "m1", &cents).await.unwrap();
+        assert_eq!(labels[&0], "Speaker 0");
+        assert_eq!(labels[&1], "Speaker 1");
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as(
+            "SELECT id, speaker_id FROM speaker_embeddings WHERE source_meeting_id = 'm1'")
+        .fetch_all(&pool).await.unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(rows.iter().all(|(_, sid)| sid.is_some()), "every row stamped: {:?}", rows);
+        assert!(rows.iter().all(|(_, sid)| sid.as_deref().unwrap().starts_with("speaker-auto-m1-")));
+        let autos: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM speakers WHERE id LIKE 'speaker-auto-m1-%'").fetch_one(&pool).await.unwrap();
+        assert_eq!(autos.0, 2, "one meeting-local auto row per unmatched cluster");
+    }
+
+    #[tokio::test]
+    async fn persist_matched_links_named_speaker_and_skips_auto_row() {
+        let pool = stamp_pool().await;
+        SpeakerRepository::create_speaker(&pool, "speaker-alice-1", "Alice", "#101010").await.unwrap();
+        let v = vec![0.75f32; TEST_DIM];
+        SpeakerRepository::store_embedding(&pool, "emb-alice", Some("speaker-alice-1"), &v, "other-meeting", "Speaker 0").await.unwrap();
+        let reg = registry_with("speaker-alice-1", &v);
+        let cents = std::collections::HashMap::from([(3u32, v.clone())]);
+        let labels = persist_stamped_centroids(&pool, &reg, 0.99, "m2", &cents).await.unwrap();
+        assert_eq!(labels[&3], "Alice");
+        let (sid,): (Option<String>,) = sqlx::query_as("SELECT speaker_id FROM speaker_embeddings WHERE source_meeting_id = 'm2'").fetch_one(&pool).await.unwrap();
+        assert_eq!(sid.as_deref(), Some("speaker-alice-1"), "linked to the named speaker, not an auto row");
+        let autos: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM speakers WHERE id LIKE 'speaker-auto-m2-%'").fetch_one(&pool).await.unwrap();
+        assert_eq!(autos.0, 0, "matched cluster must not mint an auto row");
+        let alices: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM speakers WHERE name = 'Alice'").fetch_one(&pool).await.unwrap();
+        assert_eq!(alices.0, 1, "no duplicate speaker row for a match");
+    }
+
+    #[tokio::test]
+    async fn persist_failure_rolls_back_to_previous_set() {
+        let pool = stamp_pool().await;
+        SpeakerRepository::store_embedding(&pool, "emb-old", Some("speaker-x"), &[0.1f32; TEST_DIM], "m1", "Speaker 0").await.unwrap();
+        let cents = std::collections::HashMap::from([
+            (0u32, vec![0.5f32; TEST_DIM]),
+            (1u32, vec![f32::NAN; TEST_DIM]),
+        ]);
+        let result = persist_stamped_centroids(&pool, &empty_registry(), 0.40, "m1", &cents).await;
+        assert!(result.is_err(), "NaN centroid must fail the run");
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT id FROM speaker_embeddings WHERE source_meeting_id = 'm1'").fetch_all(&pool).await.unwrap();
+        assert_eq!(rows, vec![("emb-old".to_string(),)], "previous set intact after rollback");
+    }
+
+    #[tokio::test]
+    async fn persist_rerun_replaces_previous_set() {
+        let pool = stamp_pool().await;
+        let cents = std::collections::HashMap::from([(0u32, vec![0.5f32; TEST_DIM])]);
+        persist_stamped_centroids(&pool, &empty_registry(), 0.40, "m1", &cents).await.unwrap();
+        let first: Vec<(String,)> = sqlx::query_as("SELECT id FROM speaker_embeddings").fetch_all(&pool).await.unwrap();
+        persist_stamped_centroids(&pool, &empty_registry(), 0.40, "m1", &cents).await.unwrap();
+        let second: Vec<(String,)> = sqlx::query_as("SELECT id FROM speaker_embeddings").fetch_all(&pool).await.unwrap();
+        assert_eq!(second.len(), 1, "no duplicate centroids for the meeting");
+        assert_ne!(first, second, "old row replaced, not duplicated");
+        let nulls: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM speaker_embeddings WHERE speaker_id IS NULL").fetch_one(&pool).await.unwrap();
+        assert_eq!(nulls.0, 0);
     }
 }

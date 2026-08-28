@@ -62,6 +62,11 @@ pub async fn run_startup_gc(db: &DatabaseManager, recordings_dir: &Path) -> GcRe
                                 folder
                             );
                             report.orphan_rows_deleted += 1;
+                            // Embeddings cascaded with the meeting; prune its
+                            // meeting-local auto speaker rows too (no meeting FK).
+                            if let Err(e) = crate::database::repositories::speaker::SpeakerRepository::remove_auto_speakers_for_meeting(pool, &meeting.id).await {
+                                log::warn!("gc: failed to prune auto speakers for {}: {}", meeting.id, e);
+                            }
                         }
                         Err(e) => {
                             report.errors.push(format!(
