@@ -665,9 +665,11 @@ pub async fn run_diarization_for_meeting(
     }
 
     // Step 8: Persist aligned per-speaker splits. Resolve registry labels, then
-    // group by source row and persist each group in one transaction. The prior
-    // per-segment UPDATE-by-id loop collapsed N splits onto the shared source
-    // id (last-writer-wins) and discarded the split text.
+    // group by source row and persist each group in one transaction. Right
+    // after, consolidate same-speaker neighbors into sentence-readable turns —
+    // the raw aligned fragments read as chopped text (77% of rows on the
+    // reference meeting were sentence fragments). The consolidation pass is
+    // the same one used to fix already-persisted meetings.
     let aligned: Vec<AlignedSegment> = aligned
         .into_iter()
         .map(|mut s| {
@@ -679,6 +681,15 @@ pub async fn run_diarization_for_meeting(
         .await
         .map_err(|e| e.to_string())?
         as u64;
+
+    let (turns, absorbed) = SpeakerRepository::consolidate_meeting_turns(pool, meeting_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    log::info!(
+        "DIARIZATION: consolidated {} fragments into {} speaker turns",
+        absorbed,
+        turns
+    );
 
     log::info!(
         "run_diarization_for_meeting: labeled {} segments for meeting {}",

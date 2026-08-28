@@ -7,6 +7,7 @@ pub mod sherpa_adapter;
 pub mod nemo_extractor;
 pub mod pyannote_segmentation;
 pub mod token_timestamps;
+pub mod turns;
 pub mod commands;
 pub mod model_download;
 
