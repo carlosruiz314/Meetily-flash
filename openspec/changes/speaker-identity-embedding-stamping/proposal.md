@@ -1,13 +1,14 @@
 ## Why
 
-Every diarization run persists speaker centroids to `speaker_embeddings` with `speaker_id = NULL` (hard-coded in `diarization_processor.rs`), so the cross-meeting matcher pools vectors by per-meeting cluster label — "Speaker 0" of one meeting is pooled with "Speaker 0" of every other meeting. Identity matching is therefore meaningless today, and rename-based identification ("host is Cynthia") can never carry across meetings.
+Every diarization run persists speaker centroid embeddings with `speaker_id = NULL` (`run_diarization_for_meeting`, `commands.rs:518` — the only live store path; the queue-wired `DiarizationProcessor` is production-dead). The cross-meeting matcher is an in-memory registry hydrated once at startup from `list_all_embeddings`, keyed by `COALESCE(speakers.name, cluster_label)` — a name string. Result: meeting A's auto row "Speaker 0" and meeting B's auto row "Speaker 0" pool into one identity, renames after startup are invisible until relaunch, and rename-based identification can never carry across meetings.
 
 ## What Changes
 
-- Diarization persists each centroid embedding stamped with a real `speakers.id`: after cross-meeting matching, matched clusters link to the matched speaker; unmatched clusters create a new `speakers` row and link to it. The unused `link_embedding_to_speaker` repository method becomes the (wired-in) linking step.
-- The cross-meeting matcher consumes only stamped embeddings (`speaker_id IS NOT NULL`); NULL rows are ignored, not pooled by cluster label.
-- **BREAKING** (data semantics, not API): previously stored NULL-speaker_id embeddings are dead weight — a one-time sweep delete of `speaker_embeddings WHERE speaker_id IS NULL` runs as part of rollout, and regeneration happens by re-running Speakers per meeting (the run already deletes and rewrites that meeting's rows).
-- No change to transcript labels, the Speakers button flow, or the rename UI; names written through the rename UI become the identity that future runs match against.
+- The live store path (`run_diarization_for_meeting`) persists every centroid embedding stamped with a concrete `speakers.id`: clusters matched to a named speaker link to it; unmatched clusters link to a meeting-local auto row (`speaker-auto-{meeting_id}-*`). Delete + insert of a meeting's embeddings becomes one transaction; store errors propagate instead of being logged and swallowed.
+- The matcher pool becomes stamped embeddings of **named speakers only**, keyed by speaker id (not name), reloaded from the DB at the start of every Speakers run instead of the startup-frozen snapshot. Auto rows never anchor cross-meeting identity. The hard-coded 0.60 registry threshold is replaced by the configured threshold (default 0.40, [0.35, 0.70]).
+- `label_speaker` performs the embedding linking the spec already mandates (today it touches only transcript labels): relink by speaker id for renamed/re-matched clusters; `revert_speaker_label` unlinks symmetrically, replacing the corrupt `cluster_label NOT IN (...)` SQL.
+- **BREAKING** (data semantics): a migration sweeps `speaker_embeddings WHERE speaker_id IS NULL`. NULL rows remain a legitimate steady-state value for deliberately unlinked embeddings (revert, speaker deletion) — the matcher ignores them permanently, so no further sweeps are needed. Regeneration of legacy identity data = re-running Speakers per meeting.
+- No change to transcript labels, clustering, the Speakers-button flow, or rename UI mechanics.
 
 ## Capabilities
 
@@ -15,12 +16,12 @@ Every diarization run persists speaker centroids to `speaker_embeddings` with `s
 
 ### Modified Capabilities
 
-- `speaker-diarization`: new requirement covering embedding persistence — centroids must be stamped with a concrete speaker id at write time, the matcher must ignore unstamped rows, and re-running Speakers on a meeting replaces that meeting's embeddings atomically.
+- `speaker-diarization`: two requirement-level changes — (1) new requirement for identity-stamped persistence (non-null ids, transactional replacement, auto-row lifecycle); (2) MODIFIED "Cross-meeting speaker matching uses embedding similarity" — pool composition, keying, refresh timing, and threshold source all change.
 
 ## Impact
 
-- `frontend/src-tauri/src/use_cases/diarization_processor.rs` (store path: stamp after `match_speakers`; today it passes `None` hard-coded)
-- `frontend/src-tauri/src/database/repositories/speaker.rs` (`link_embedding_to_speaker` wiring; NULL-ignoring variant of `list_all_embeddings` for the matcher)
-- `frontend/src-tauri/src/audio/speaker/commands.rs` (per-meeting delete already exists — unchanged)
-- `speakers` table gains auto-created rows for unmatched clusters (naming them stays a UI/rename action)
-- One-time SQL sweep for legacy NULL rows; user-facing regeneration = clicking Speakers per meeting
+- `frontend/src-tauri/src/audio/speaker/commands.rs` — live store path stamping, transactional replace, `label_speaker`/`revert_speaker_label` linking, threshold from settings, prune auto rows on meeting deletion
+- `frontend/src-tauri/src/database/setup.rs` — registry hydration keyed by speaker id; refresh hook reused per run
+- `frontend/src-tauri/src/database/repositories/speaker.rs` — stamped-pool query, relink/unlink by id, transactional store
+- `frontend/src-tauri/migrations/` — NULL sweep migration
+- `frontend/src-tauri/src/use_cases/diarization_processor.rs` — untouched (production-dead; doc comment updated to say so)
