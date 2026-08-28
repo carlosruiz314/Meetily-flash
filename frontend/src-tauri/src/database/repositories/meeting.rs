@@ -42,6 +42,13 @@ impl MeetingsRepository {
                         meeting_id
                     );
 
+                    // The embeddings cascade left no rows behind, but the
+                    // meeting-local auto speaker rows have no meeting FK and
+                    // would otherwise leak into the speakers list forever.
+                    if let Err(e) = crate::database::repositories::speaker::SpeakerRepository::remove_auto_speakers_for_meeting(pool, meeting_id).await {
+                        error!("Failed to prune auto speakers for deleted meeting {}: {}", meeting_id, e);
+                    }
+
                     if let Some(ref path) = folder_path {
                         let p = std::path::Path::new(path);
                         if !path.contains("meetily-recordings") {
@@ -303,6 +310,8 @@ async fn delete_meeting_with_transaction(
 
 #[cfg(test)]
 mod tests {
+    use super::MeetingsRepository;
+    use sqlx::SqlitePool;
     use std::fs;
 
     fn unique_dir(name: &str) -> std::path::PathBuf {
@@ -389,5 +398,30 @@ mod tests {
         let evil = "/etc/passwd";
         let result = cleanup_folder(Some(evil));
         assert!(result.is_err(), "path traversal must be rejected");
+    }
+    // --- Meeting delete prunes meeting-local auto speaker rows (4.1) ---
+
+    #[tokio::test]
+    async fn delete_meeting_prunes_auto_speaker_rows() {
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+        for ddl in [
+            "CREATE TABLE meetings (id TEXT PRIMARY KEY, folder_path TEXT, created_at TEXT DEFAULT 'now')",
+            "CREATE TABLE transcript_chunks (id TEXT PRIMARY KEY, meeting_id TEXT)",
+            "CREATE TABLE summary_processes (id TEXT PRIMARY KEY, meeting_id TEXT)",
+            "CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT)",
+            "CREATE TABLE speakers (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT 'now', updated_at TEXT DEFAULT 'now')",
+            "CREATE TABLE speaker_embeddings (id TEXT PRIMARY KEY, speaker_id TEXT, embedding BLOB NOT NULL, source_meeting_id TEXT NOT NULL, cluster_label TEXT NOT NULL, created_at TEXT DEFAULT 'now')",
+        ] { sqlx::query(ddl).execute(&pool).await.unwrap(); }
+        sqlx::query("INSERT INTO meetings (id, folder_path) VALUES ('m1', NULL)").execute(&pool).await.unwrap();
+        crate::database::repositories::speaker::SpeakerRepository::ensure_speaker(&pool, "speaker-auto-m1-0", "Speaker 0", "#111").await.unwrap();
+        crate::database::repositories::speaker::SpeakerRepository::ensure_speaker(&pool, "speaker-named-1", "Alice", "#222").await.unwrap();
+
+        let deleted = MeetingsRepository::delete_meeting(&pool, "m1").await.unwrap();
+        assert!(deleted);
+
+        let autos: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM speakers WHERE id LIKE 'speaker-auto-m1-%'").fetch_one(&pool).await.unwrap();
+        assert_eq!(autos.0, 0, "deleted meeting's auto rows must be pruned");
+        let named: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM speakers WHERE id = 'speaker-named-1'").fetch_one(&pool).await.unwrap();
+        assert_eq!(named.0, 1, "named speakers survive meeting deletion");
     }
 }

@@ -35,8 +35,8 @@ pub struct TranscriptSourceRow {
 pub struct SpeakerRepository;
 
 impl SpeakerRepository {
-    pub async fn create_speaker(
-        pool: &SqlitePool,
+    pub async fn create_speaker<'a, E: sqlx::Executor<'a, Database = sqlx::Sqlite>>(
+        pool: E,
         id: &str,
         name: &str,
         color: &str,
@@ -69,7 +69,30 @@ impl SpeakerRepository {
         Ok(())
     }
 
-    pub async fn get_speaker(pool: &SqlitePool, id: &str) -> Result<Option<SpeakerRow>> {
+    /// Create the speaker row if absent; an existing row is left untouched.
+    /// Used for meeting-local auto rows, which can survive a previous run when
+    /// persistence is invoked outside the full run path.
+    pub async fn ensure_speaker<'a, E: sqlx::Executor<'a, Database = sqlx::Sqlite>>(
+        pool: E,
+        id: &str,
+        name: &str,
+        color: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO speakers (id, name, color) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(color)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn get_speaker<'a, E: sqlx::Executor<'a, Database = sqlx::Sqlite>>(
+        pool: E,
+        id: &str,
+    ) -> Result<Option<SpeakerRow>> {
         let row = sqlx::query_as::<_, SpeakerRow>(
             "SELECT id, name, color, created_at, updated_at FROM speakers WHERE id = ?",
         )
@@ -149,8 +172,8 @@ impl SpeakerRepository {
         Ok(count)
     }
 
-    pub async fn store_embedding(
-        pool: &SqlitePool,
+    pub async fn store_embedding<'a, E: sqlx::Executor<'a, Database = sqlx::Sqlite>>(
+        pool: E,
         id: &str,
         speaker_id: Option<&str>,
         embedding: &[f32],
@@ -189,8 +212,8 @@ impl SpeakerRepository {
         Ok(())
     }
 
-    pub async fn delete_embeddings_by_meeting(
-        pool: &SqlitePool,
+    pub async fn delete_embeddings_by_meeting<'a, E: sqlx::Executor<'a, Database = sqlx::Sqlite>>(
+        pool: E,
         meeting_id: &str,
     ) -> Result<u64> {
         let result = sqlx::query(
@@ -221,17 +244,22 @@ impl SpeakerRepository {
         Ok(rows)
     }
 
-    pub async fn list_all_embeddings(pool: &SqlitePool) -> Result<Vec<(String, Vec<f32>)>> {
+    /// Embeddings stamped to a NAMED speaker, keyed by speaker id.
+    /// NULL-speaker rows are deliberately unlinked and auto-created
+    /// meeting-local rows (`speaker-auto-*`) are never cross-meeting match
+    /// candidates, so both are excluded from the matcher pool.
+    pub async fn list_stamped_embeddings(pool: &SqlitePool) -> Result<Vec<(String, Vec<f32>)>> {
         #[derive(sqlx::FromRow)]
-        struct EmbeddingWithName {
+        struct EmbeddingWithSpeaker {
             embedding: Vec<u8>,
-            name: String,
+            speaker_id: String,
         }
 
-        let rows = sqlx::query_as::<_, EmbeddingWithName>(
-            "SELECT e.embedding, COALESCE(s.name, e.cluster_label) as name \
+        let rows = sqlx::query_as::<_, EmbeddingWithSpeaker>(
+            "SELECT e.embedding, e.speaker_id \
              FROM speaker_embeddings e \
-             LEFT JOIN speakers s ON e.speaker_id = s.id",
+             JOIN speakers s ON e.speaker_id = s.id \
+             WHERE e.speaker_id IS NOT NULL AND s.id NOT LIKE 'speaker-auto-%'",
         )
         .fetch_all(pool)
         .await?;
@@ -239,7 +267,7 @@ impl SpeakerRepository {
         let mut result = Vec::with_capacity(rows.len());
         for row in rows {
             let embedding = Self::deserialize_embedding(&row.embedding)?;
-            result.push((row.name, embedding));
+            result.push((row.speaker_id, embedding));
         }
         Ok(result)
     }
@@ -492,13 +520,52 @@ impl SpeakerRepository {
         Ok(result.rows_affected())
     }
 
+    /// Link a meeting's cluster embeddings to a named speaker (identity
+    /// stamping task 3.1). Candidates cover all three badge states: the
+    /// original diarization label (unrenamed cluster), a renamed cluster
+    /// (embeddings keep the original cluster_label), and an auto-matched
+    /// badge (embeddings already linked to the matched speaker's id, found
+    /// by the badge's display name).
+    pub async fn relink_meeting_embeddings<'a, E: sqlx::Executor<'a, Database = sqlx::Sqlite>>(
+        pool: E,
+        meeting_id: &str,
+        from_cluster_label: &str,
+        to_speaker_id: &str,
+    ) -> Result<u64> {
+        let result = sqlx::query(
+            "UPDATE speaker_embeddings SET speaker_id = ? 
+             WHERE source_meeting_id = ? 
+             AND (cluster_label = ? OR speaker_id = (SELECT id FROM speakers WHERE name = ?))"
+        )
+        .bind(to_speaker_id)
+        .bind(meeting_id)
+        .bind(from_cluster_label)
+        .bind(from_cluster_label)
+        .execute(pool)
+        .await?;
+        Ok(result.rows_affected())
+    }
+
     pub async fn revert_speaker_label(
         pool: &SqlitePool,
         meeting_id: &str,
         manual_label: &str,
     ) -> Result<u64> {
+        // Original cluster labels of the rows being reverted — captured BEFORE
+        // the reset below nulls previous_label.
+        let originals: Vec<String> = sqlx::query_as(
+            "SELECT DISTINCT previous_label FROM transcripts WHERE meeting_id = ? AND speaker_label = ? AND previous_label IS NOT NULL"
+        )
+        .bind(meeting_id)
+        .bind(manual_label)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .map(|(l,): (String,)| l)
+        .collect();
+
         let result = sqlx::query(
-            "UPDATE transcripts SET speaker_label = previous_label, speaker_source = NULL, previous_label = NULL WHERE meeting_id = ? AND speaker_label = ? AND previous_label IS NOT NULL",
+            "UPDATE transcripts SET speaker_label = previous_label, speaker_source = NULL, previous_label = NULL WHERE meeting_id = ? AND speaker_label = ? AND previous_label IS NOT NULL"
         )
         .bind(meeting_id)
         .bind(manual_label)
@@ -506,14 +573,23 @@ impl SpeakerRepository {
         .await?;
 
         if result.rows_affected() > 0 {
-            sqlx::query(
-                "UPDATE speaker_embeddings SET speaker_id = NULL WHERE source_meeting_id = ? AND cluster_label NOT IN (SELECT DISTINCT speaker_label FROM transcripts WHERE meeting_id = ? AND speaker_label IS NOT NULL)",
-            )
-            .bind(meeting_id)
-            .bind(meeting_id)
-            .execute(pool)
-            .await?;
-
+            // Symmetric unlink: exactly the embeddings that labeling linked
+            // for these clusters — their ORIGINAL cluster labels (from
+            // previous_label, captured before the reset above) or the speaker
+            // id the badge displayed. The old `cluster_label NOT IN (current
+            // labels)` form both over-unlinked unrelated clusters and missed
+            // the reverted one.
+            let placeholders = originals.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let sql = format!(
+                "UPDATE speaker_embeddings SET speaker_id = NULL WHERE source_meeting_id = ? AND (cluster_label IN ({}) OR speaker_id = (SELECT id FROM speakers WHERE name = ?))",
+                placeholders
+            );
+            let mut unlink = sqlx::query(&sql).bind(meeting_id);
+            for original in &originals {
+                unlink = unlink.bind(original);
+            }
+            unlink = unlink.bind(manual_label);
+            unlink.execute(pool).await?;
             info!(
                 "Reverted {} transcript rows from '{}' in meeting {}",
                 result.rows_affected(),
@@ -1519,5 +1595,98 @@ mod tests {
         let rows = read_rows(&pool, "meet-1").await;
         assert_eq!(rows.len(), 4, "both sources split independently");
         assert!(rows.iter().all(|r| r.id != "c-1" && r.id != "c-2"), "source ids gone");
+    }
+    // --- Identity-stamped embedding pool (speaker-identity-embedding-stamping) ---
+
+    async fn embeddings_test_pool() -> SqlitePool {
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+        sqlx::query("CREATE TABLE speakers (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT 'now', updated_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE speaker_embeddings (id TEXT PRIMARY KEY, speaker_id TEXT, embedding BLOB NOT NULL, source_meeting_id TEXT NOT NULL, cluster_label TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, transcript TEXT NOT NULL, timestamp TEXT NOT NULL, audio_start_time REAL NOT NULL, audio_end_time REAL NOT NULL, duration REAL NOT NULL, speaker_label TEXT, speaker_source TEXT, previous_label TEXT)").execute(&pool).await.unwrap();
+        pool
+    }
+
+    const DIM: usize = 128;
+
+    async fn seed_identity_fixture(pool: &SqlitePool) {
+        SpeakerRepository::create_speaker(pool, "speaker-named-1", "Alice", "#111111").await.unwrap();
+        SpeakerRepository::create_speaker(pool, "speaker-auto-m1-0", "Speaker 0", "#222222").await.unwrap();
+        let v = vec![0.5f32; DIM];
+        SpeakerRepository::store_embedding(pool, "emb-named", Some("speaker-named-1"), &v, "m1", "Speaker 0").await.unwrap();
+        SpeakerRepository::store_embedding(pool, "emb-auto", Some("speaker-auto-m1-0"), &v, "m1", "Speaker 0").await.unwrap();
+        SpeakerRepository::store_embedding(pool, "emb-null", None, &v, "m1", "Speaker 0").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stamped_pool_returns_only_named_speaker_rows_keyed_by_id() {
+        let pool = embeddings_test_pool().await;
+        seed_identity_fixture(&pool).await;
+        let pool_ref = &pool;
+        let stamped = SpeakerRepository::list_stamped_embeddings(pool_ref).await.unwrap();
+        assert_eq!(stamped.len(), 1, "only the named speaker row survives: {:?}", stamped.iter().map(|(k,_)|k).collect::<Vec<_>>());
+        assert_eq!(stamped[0].0, "speaker-named-1", "key is the speaker id, not a name");
+        assert_eq!(stamped[0].1.len(), DIM);
+    }
+
+    #[tokio::test]
+    async fn stamped_pool_is_empty_when_nothing_is_stamped() {
+        let pool = embeddings_test_pool().await;
+        let v = vec![0.5f32; DIM];
+        SpeakerRepository::store_embedding(&pool, "emb-null", None, &v, "m1", "Speaker 0").await.unwrap();
+        let stamped = SpeakerRepository::list_stamped_embeddings(&pool).await.unwrap();
+        assert!(stamped.is_empty(), "NULL-speaker rows must never enter the match pool");
+    }
+    // --- Rename/revert identity linking (3.1-3.3) ---
+
+    async fn relink_fixture() -> SqlitePool {
+        let pool = embeddings_test_pool().await;
+        SpeakerRepository::create_speaker(&pool, "speaker-a", "Alice", "#111").await.unwrap();
+        SpeakerRepository::create_speaker(&pool, "speaker-b", "Bob", "#222").await.unwrap();
+        let v = vec![0.5f32; DIM];
+        SpeakerRepository::store_embedding(&pool, "emb-sp0", Some("speaker-a"), &v, "m1", "Speaker 0").await.unwrap();
+        SpeakerRepository::store_embedding(&pool, "emb-sp1", Some("speaker-b"), &v, "m1", "Speaker 1").await.unwrap();
+        pool
+    }
+
+    async fn link_of(pool: &SqlitePool, emb: &str) -> Option<String> {
+        sqlx::query_as::<_, (Option<String>,)>("SELECT speaker_id FROM speaker_embeddings WHERE id = ?")
+            .bind(emb).fetch_one(pool).await.unwrap().0
+    }
+
+    #[tokio::test]
+    async fn relink_moves_cluster_embedding_by_original_label() {
+        let pool = relink_fixture().await;
+        let moved = SpeakerRepository::relink_meeting_embeddings(&pool, "m1", "Speaker 1", "speaker-a").await.unwrap();
+        assert_eq!(moved, 1);
+        assert_eq!(link_of(&pool, "emb-sp1").await.as_deref(), Some("speaker-a"));
+    }
+
+    #[tokio::test]
+    async fn relink_finds_cluster_by_current_badge_name() {
+        let pool = relink_fixture().await;
+        let moved = SpeakerRepository::relink_meeting_embeddings(&pool, "m1", "Alice", "speaker-b").await.unwrap();
+        assert_eq!(moved, 1, "emb-sp0 is linked to Alice, matched by badge name");
+        assert_eq!(link_of(&pool, "emb-sp0").await.as_deref(), Some("speaker-b"));
+    }
+
+    #[tokio::test]
+    async fn revert_unlinks_only_the_reverted_cluster() {
+        let pool = relink_fixture().await;
+        for (id, label, prev) in [("t0","Alice","Speaker 0"),("t1","Bob","Speaker 1")] {
+            sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker_label, previous_label) VALUES (?, 'm1', 'x', '00:00', 0.0, 1.0, 1.0, ?, ?)")
+                .bind(id).bind(label).bind(prev).execute(&pool).await.unwrap();
+        }
+        SpeakerRepository::revert_speaker_label(&pool, "m1", "Bob").await.unwrap();
+        assert_eq!(link_of(&pool, "emb-sp1").await, None, "reverted cluster unlinked");
+        assert_eq!(link_of(&pool, "emb-sp0").await.as_deref(), Some("speaker-a"), "unrelated cluster untouched (over-unlink fixed)");
+    }
+
+    #[tokio::test]
+    async fn revert_unlinks_the_reverted_cluster_itself() {
+        let pool = relink_fixture().await;
+        sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker_label, previous_label) VALUES ('t0', 'm1', 'x', '00:00', 0.0, 1.0, 1.0, 'Alice', 'Speaker 0')")
+            .execute(&pool).await.unwrap();
+        SpeakerRepository::revert_speaker_label(&pool, "m1", "Alice").await.unwrap();
+        assert_eq!(link_of(&pool, "emb-sp0").await, None, "under-unlink fixed");
     }
 }
