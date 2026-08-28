@@ -53,21 +53,11 @@ function formatRecordingTime(seconds: number | undefined): string {
     return `[${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}]`;
 }
 
-// Helper function to remove filler words and repetitions
-function cleanStopWords(text: string): string {
-    const stopWords = ['uh', 'um', 'er', 'ah', 'hmm', 'hm', 'eh', 'oh'];
-
-    let cleanedText = text;
-    stopWords.forEach(word => {
-        const pattern = new RegExp(`\\b${word}\\b[,\\s]*`, 'gi');
-        cleanedText = cleanedText.replace(pattern, ' ');
-    });
-
-    return cleanedText.replace(/\s+/g, ' ').trim();
-}
-
+// The view renders the transcript VERBATIM. An earlier version silently
+// stripped "filler words" (oh, uh, um…) here, which deleted spoken words from
+// the user's record — a view must never rewrite transcript content.
 export function computeDisplayText(text: string): string {
-    return cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
+    return text.trim() === '' ? '[Silence]' : text;
 }
 
 // Build a stable speaker → index map in first-appearance order. Drives badge
