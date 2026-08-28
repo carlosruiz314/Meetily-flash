@@ -10,7 +10,7 @@
 - [ ] 2.1 RED→GREEN: `run_diarization_for_meeting` stores every centroid with non-null `speaker_id` — matched clusters link to the named speaker's id, unmatched link to the meeting-local auto row
 - [ ] 2.2 RED→GREEN: delete-stale + insert-stamped runs in one sqlx transaction; an injected insert failure rolls back to the previous stamped set and fails the run (no more `log::warn`-and-continue)
 - [ ] 2.3 RED→GREEN: second run on the same meeting replaces the stamped set 1:1 (old ids gone, every new row non-null)
-- [ ] 2.4 Update `DiarizationProcessor` doc comment: production-dead, live path is `run_diarization_for_meeting` (no behavior change)
+- [ ] 2.4 Confirm zero references to the dead `DiarizationProcessor` remain (deleted by `decommission-queue-diarization-phase`)
 
 ## 3. Rename and revert link identity
 
