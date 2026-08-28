@@ -34,7 +34,7 @@ pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), Strin
         let app_state = AppState::new(db_manager);
         let pool = app_state.db_manager.pool().clone();
 
-        hydrate_speaker_registry(&pool, &app_state.speaker_registry).await;
+        reload_speaker_registry(&pool, &app_state.speaker_registry).await;
         app_state.sync_threshold_from_db().await;
 
         app.manage(app_state);
@@ -44,14 +44,20 @@ pub async fn initialize_database_on_startup(app: &AppHandle) -> Result<(), Strin
     Ok(())
 }
 
-async fn hydrate_speaker_registry(
+/// (Re)load the matcher registry from the stamped pool. Called on startup AND
+/// at the start of every diarization run so renames and prior runs from this
+/// session are visible (the old startup-frozen snapshot went stale).
+pub(crate) async fn reload_speaker_registry(
     pool: &sqlx::SqlitePool,
     registry: &std::sync::Mutex<Option<CosineRegistryAdapter>>,
 ) {
-    let embeddings = match SpeakerRepository::list_all_embeddings(pool).await {
+    // Registry keys are SPEAKER IDS of named speakers (never names, never
+    // auto-created meeting-local rows, never unlinked NULL rows) so that two
+    // meetings' auto rows named "Speaker 0" cannot pool into one identity.
+    let embeddings = match SpeakerRepository::list_stamped_embeddings(pool).await {
         Ok(e) => e,
         Err(e) => {
-            warn!("Speaker registry hydration failed (query): {}", e);
+            warn!("Speaker registry reload failed (query): {}", e);
             return;
         }
     };
@@ -68,7 +74,8 @@ async fn hydrate_speaker_registry(
 
 /// Pure core of hydration, split out so the dim-192 regression (task 4.4) is
 /// testable without a database fixture. Returns None when there is nothing to
-/// load.
+/// load. Keys are speaker ids (opaque to this function); a speaker id may own
+/// several vectors.
 fn build_hydrated_registry(
     embeddings: Vec<(String, Vec<f32>)>,
 ) -> Option<(CosineRegistryAdapter, usize)> {
@@ -145,5 +152,23 @@ mod tests {
     #[test]
     fn registry_hydration_empty_input_is_none() {
         assert!(build_hydrated_registry(Vec::new()).is_none());
+    }
+    #[test]
+    fn hydration_keys_by_speaker_id_not_name() {
+        // Two different speaker ids that happen to share display vectors must
+        // never pool into one registry identity merely because a NAME collides.
+        let dim = crate::audio::speaker::nemo_extractor::NEMO_EMBEDDING_DIM;
+        let v = |x: f32| {
+            let mut vec = vec![0.0f32; dim];
+            vec[0] = x;
+            vec
+        };
+        let embeddings = vec![
+            ("speaker-auto-m1-0".to_string(), v(1.0)),
+            ("speaker-auto-m2-0".to_string(), v(0.9)),
+        ];
+        let (adapter, count) = build_hydrated_registry(embeddings).expect("loads");
+        assert_eq!(count, 2, "same auto NAME on two meetings must stay two identities");
+        assert_eq!(adapter.list_speakers().unwrap().len(), 2);
     }
 }
