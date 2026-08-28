@@ -9,10 +9,10 @@ import { computeDisplayText } from '@/components/VirtualizedTranscriptView';
 // and (b) no dangerouslySetInnerHTML appears in the render path (guarded by
 // the separate dangerouslySetInnerHTML lint/test in task 8.4).
 //
-// This test exercises the real `computeDisplayText` (the exact function
-// TranscriptSegment calls) with §4 adversarial payloads to prove property (a):
-// the processing layer is pass-through for HTML — it only strips filler words,
-// never sanitizes or restructures markup. XSS protection is React's job.
+// computeDisplayText must also be content-preserving: the view renders the
+// transcript VERBATIM. It used to silently strip "filler words" (oh, uh, um…)
+// which deleted spoken words from the user's record — a view must never
+// rewrite the transcript.
 describe('computeDisplayText — adversarial payloads pass through unchanged (§4)', () => {
   const adversarial: Array<{ label: string; payload: string }> = [
     { label: '<script> tag', payload: '<script>alert(1)</script>' },
@@ -27,9 +27,6 @@ describe('computeDisplayText — adversarial payloads pass through unchanged (§
 
   for (const { label, payload } of adversarial) {
     it(`does not sanitize or restructure ${label} — passes through for React to escape`, () => {
-      // No filler words in any payload → cleanStopWords is a no-op → text is
-      // returned verbatim (modulo whitespace collapse/trim). This is the
-      // property that matters: the processing layer never touches HTML.
       expect(computeDisplayText(payload)).toBe(payload.replace(/\s+/g, ' ').trim());
     });
   }
@@ -39,13 +36,14 @@ describe('computeDisplayText — adversarial payloads pass through unchanged (§
     expect(computeDisplayText('   ')).toBe('[Silence]');
   });
 
-  it('strips filler words from normal speech but keeps the substance', () => {
-    expect(computeDisplayText('uh hello world um')).toBe('hello world');
-    expect(computeDisplayText('uh, let me think')).toBe('let me think');
+  it('renders spoken words verbatim — filler words are content, not noise', () => {
+    expect(computeDisplayText('uh hello world um')).toBe('uh hello world um');
+    expect(computeDisplayText("That's right. Oh, man")).toBe("That's right. Oh, man");
   });
 
-  it('preserves adversarial payload even when surrounded by filler words', () => {
-    // Filler words are stripped, the adversarial fragment survives intact.
-    expect(computeDisplayText('uh <script>alert(1)</script> um')).toBe('<script>alert(1)</script>');
+  it('never drops words around adversarial payload', () => {
+    expect(computeDisplayText('uh <script>alert(1)</script> um')).toBe(
+      'uh <script>alert(1)</script> um'
+    );
   });
 });
