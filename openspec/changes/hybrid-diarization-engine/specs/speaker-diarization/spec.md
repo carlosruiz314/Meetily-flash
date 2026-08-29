@@ -105,11 +105,20 @@ A gate test SHALL run the turn-derivation engine on the real meeting audio and a
 
 The engine SHALL persist, per derived turn, whether it continues the previous turn's sentence (`continues_previous`): true when the turn resulted from a backward-attached ambiguous piece or same-label adjacency across an absorbed gap, false at corroborated voice changes. The flag SHALL be stored on the turn's FIRST persisted row (a nullable `transcripts` column added by migration); the UI resolves a turn's flag from its first row. The transcript UI SHALL render the engine fact as the continuation marker when present and fall back to the existing text heuristic (`isContinuation`) only when the flag is null; when both exist and disagree, the engine fact wins. A false continuation marker SHALL be treated as an attribution defect: the fixture gate SHALL assert marker correctness on its pinned `voice_change_at` entries.
 
+**No unmarked mid-sentence cuts (hard invariant):** every persisted turn whose text begins mid-sentence (lowercase-initial after stripping leading punctuation/symbols/whitespace) SHALL carry `continues_previous = true`. A mid-sentence-initial turn without the flag is an attribution defect, and the gate test SHALL enforce this over the ENTIRE meeting output — every turn, not only pinned fixture spans — failing with the offending turn's time and text on violation. A turn may only begin mid-sentence if it is a declared continuation; silence, gaps, and voice changes do not excuse an unmarked one.
+
 #### Scenario: Engine fact drives the marker
 
 - **GIVEN** a turn produced by backward attachment of an ambiguous piece
 - **WHEN** the transcript renders
 - **THEN** the turn is marked as continuing the previous sentence from the persisted flag, regardless of the text heuristic
+
+#### Scenario: No unmarked mid-sentence-initial turn survives the gate
+
+- **GIVEN** the full persisted output of a diarization run
+- **WHEN** the gate scan runs over every turn
+- **THEN** every turn starting mid-sentence carries `continues_previous = true`
+- **AND** any violation fails the gate naming the turn's start time and leading text
 
 #### Scenario: Marker correctness is gated
 
