@@ -950,3 +950,195 @@ async fn hybrid_engine_sim_cde5c264() {
     std::fs::write(&out_path, serde_json::to_string_pretty(&dump).unwrap()).expect("write dump");
     eprintln!("SIM: dump at {}", out_path);
 }
+
+// ============================================================================
+// Test 4: FLIP PROBE — is the 02:12-02:50 speaker flip (the user's example)
+// a real voice change or a model error? Embeddings of sub-slices across the
+// flip, compared against far-away reference runs of each cluster. Also:
+// per-second pyannote overlap mass over the same window to check whether the
+// "crosstalk 83%" flag is real signal or threshold artifact.
+//
+// MEETIFY_LIVE_DIAG=1 cargo test --release --test pyannote_activity_diag
+//   -- --ignored --nocapture flip_probe
+// ============================================================================
+
+#[tokio::test]
+#[ignore = "live pass: MEETIFY_LIVE_DIAG=1 cargo test --release --test pyannote_activity_diag -- --ignored --nocapture flip_probe"]
+async fn flip_probe_cde5c264() {
+    if std::env::var("MEETIFY_LIVE_DIAG").is_err() {
+        return;
+    }
+    let audio_path = format!("{}/{}", home(), AUDIO);
+    let model_path = format!("{}/.meetily-models/pyannote-segmentation.onnx", home());
+    let emb_path = format!(
+        "{}/{}/{}",
+        home(),
+        MODELS_DIR,
+        app_lib::audio::speaker::model_download::embedding_filename()
+    );
+
+    let decoded = app_lib::audio::decoder::decode_audio_file(std::path::Path::new(&audio_path))
+        .expect("decode audio");
+    let samples = decoded.to_whisper_format();
+
+    let extractor = app_lib::audio::speaker::nemo_extractor::NemoEmbeddingExtractor::new(&emb_path)
+        .expect("extractor");
+    let slice = |a: f64, b: f64| -> Vec<f32> {
+        let i0 = (a * 16_000.0) as usize;
+        let i1 = ((b * 16_000.0) as usize).min(samples.len());
+        samples[i0..i1].to_vec()
+    };
+
+    // (name, start, end) — the disputed window plus far-away references.
+    // R1 = sim turn [02:12-02:39] labeled Sp0; R2 = [02:39-02:50] labeled Sp1.
+    // "And I | was like" straddles the 159s boundary per the user (one voice).
+    let windows: Vec<(&str, f64, f64)> = vec![
+        ("R1_a", 133.0, 141.5),
+        ("R1_b", 141.5, 150.0),
+        ("R1_c", 150.0, 158.5),
+        ("R1_tail_AndI", 155.0, 158.8),
+        ("R2_head_wasLike", 159.3, 163.0),
+        ("R2_b", 163.0, 166.5),
+        ("R2_c", 166.5, 169.5),
+        ("ref_Sp0_a", 58.5, 70.0),    // "Okay we can start..." (sim Sp0)
+        ("ref_Sp0_b", 104.0, 127.0),  // "your image search..." (sim Sp0)
+        ("ref_Sp1_a", 36.5, 52.0),    // "is Ricardo I don't know..." (sim Sp1)
+        ("ref_Sp1_b", 69.6, 73.6),    // "there so we should be okay" (sim Sp1)
+        ("ref_Sp2", 2803.0, 2819.5),  // "I can still analyze..." (sim Sp2)
+    ];
+
+    let mut embs: Vec<(&str, Vec<f32>)> = Vec::new();
+    for (name, a, b) in &windows {
+        match extractor.extract_embedding(&slice(*a, *b), 16_000) {
+            Some(e) => embs.push((name, e)),
+            None => eprintln!("FLIP: {} extract failed", name),
+        }
+    }
+
+    eprintln!("\n--- all-pairs cosine: disputed window vs references ---");
+    let mut header = String::from("                ");
+    for (n, _, _) in &windows {
+        header.push_str(&format!("{:>8}", n.chars().take(7).collect::<String>()));
+    }
+    eprintln!("{}", header);
+    for (ni, ei) in embs.iter() {
+        let mut row = format!("{:>16}", ni.chars().take(15).collect::<String>());
+        for (_, ej) in embs.iter() {
+            let dot: f32 = ei.iter().zip(ej).map(|(x, y)| x * y).sum();
+            let na: f32 = ei.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let nb: f32 = ej.iter().map(|x| x * x).sum::<f32>().sqrt();
+            let c = if na <= 0.0 || nb <= 0.0 { 0.0 } else { dot / (na * nb) };
+            row.push_str(&format!("{:>8.3}", c));
+        }
+        eprintln!("{}", row);
+    }
+
+    // Mean cosine of each disputed slice to each reference family.
+    let fam = |pred: &dyn Fn(&str) -> bool| -> Vec<Vec<f32>> {
+        embs.iter()
+            .filter(|(n, _)| pred(n))
+            .map(|(_, e)| e.clone())
+            .collect()
+    };
+    let mean_to = |e: &[f32], famv: &Vec<Vec<f32>>| -> f32 {
+        if famv.is_empty() {
+            return 0.0;
+        }
+        famv.iter()
+            .map(|f| {
+                let dot: f32 = f.iter().zip(e).map(|(x, y)| x * y).sum();
+                let nf: f32 = f.iter().map(|x| x * x).sum::<f32>().sqrt();
+                let ne: f32 = e.iter().map(|x| x * x).sum::<f32>().sqrt();
+                if nf <= 0.0 || ne <= 0.0 { 0.0 } else { dot / (nf * ne) }
+            })
+            .sum::<f32>()
+            / famv.len() as f32
+    };
+    let sp0 = fam(&|n| n.starts_with("ref_Sp0"));
+    let sp1 = fam(&|n| n.starts_with("ref_Sp1"));
+    let sp2 = fam(&|n| n.starts_with("ref_Sp2"));
+    eprintln!("\n--- mean affinity per slice ---");
+    for (n, e) in &embs {
+        eprintln!(
+            "  {:>16}  Sp0={:.3}  Sp1={:.3}  Sp2={:.3}",
+            n,
+            mean_to(e, &sp0),
+            mean_to(e, &sp1),
+            mean_to(e, &sp2)
+        );
+    }
+
+    // Per-second pyannote activity over the disputed window: real overlap or
+    // threshold artifact?
+    let providers = vec![CPUExecutionProvider::default().build()];
+    let session = Session::builder()
+        .expect("builder")
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .expect("opt level")
+        .with_execution_providers(providers)
+        .expect("providers")
+        .with_intra_threads(1)
+        .expect("intra threads")
+        .commit_from_file(&model_path)
+        .expect("load pyannote");
+    let input_name = session.inputs[0].name.to_string();
+    let output_name = session.outputs[0].name.to_string();
+    let mut session = session;
+
+    const ROI_A: f64 = 118.0;
+    const ROI_B: f64 = 184.0;
+    let mut frames: Vec<FrameProbs> = Vec::new();
+    let first_win = (ROI_A - 10.0).max(0.0) as usize;
+    let last_win = (ROI_B as usize).min((samples.len() / SAMPLE_RATE) - 1);
+    for w in first_win..=last_win {
+        let start = w * STEP_SAMPLES;
+        let end = (start + WINDOW_SAMPLES).min(samples.len());
+        if end - start < SAMPLE_RATE {
+            break;
+        }
+        let mut window = vec![0.0f32; WINDOW_SAMPLES];
+        window[..end - start].copy_from_slice(&samples[start..end]);
+        let input_3d: Array3<f32> = Array1::from(window)
+            .into_shape_with_order([1, 1, WINDOW_SAMPLES])
+            .unwrap();
+        let tensor_ref = TensorRef::from_array_view(input_3d.view()).expect("tensor");
+        let inputs = ort::inputs![input_name.as_str() => tensor_ref];
+        let outputs = session.run(inputs).expect("forward");
+        let out = outputs.get(output_name.as_str()).expect("output");
+        let arr = out.try_extract_array::<f32>().expect("extract");
+        let shape = arr.shape();
+        let slice_out = arr.as_slice().unwrap_or_else(|| arr.to_slice().unwrap());
+        let decoded_frames = decode_probs(slice_out, shape[1], shape[2]);
+        let first_frame = (w as f64 / FRAME_SHIFT_SECS).round() as usize;
+        while frames.len() <= first_frame + decoded_frames.len() {
+            frames.push(FrameProbs::default());
+        }
+        for (i, fp) in decoded_frames.into_iter().enumerate() {
+            frames[first_frame + i] = fp;
+        }
+    }
+    eprintln!("\n--- per-second pyannote activity 130-172s (spk masses / overlap) ---");
+    let f0 = (130.0 / FRAME_SHIFT_SECS).round() as usize;
+    let f1 = ((172.0 / FRAME_SHIFT_SECS).round() as usize).min(frames.len());
+    let per = (1.0 / FRAME_SHIFT_SECS).round() as usize;
+    let mut sec = 130;
+    let mut i = f0;
+    while i + per <= f1 {
+        let chunk = &frames[i..i + per];
+        let m = |get: &dyn Fn(&FrameProbs) -> f32| -> f32 {
+            chunk.iter().map(get).sum::<f32>() / per as f32
+        };
+        eprintln!(
+            "  {:>4}s  spk0={:.2} spk1={:.2} spk2={:.2}  ov>0.25: {:>2}/{:>2}  ov_mean={:.2}",
+            sec,
+            m(&|f: &FrameProbs| f.speaker[0]),
+            m(&|f: &FrameProbs| f.speaker[1]),
+            m(&|f: &FrameProbs| f.speaker[2]),
+            chunk.iter().filter(|f| f.overlap > 0.25).count(),
+            per,
+            m(&|f: &FrameProbs| f.overlap),
+        );
+        i += per;
+        sec += 1;
+    }
+}
