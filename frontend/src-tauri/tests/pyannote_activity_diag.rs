@@ -506,3 +506,447 @@ async fn pyannote_activity_as_primary_label_cde5c264() {
     }
     eprintln!("\nACT: done (runs above feed the RUNS table in pyannote_runs_vs_embeddings)");
 }
+
+// ============================================================================
+// Test 3: HYBRID ENGINE SIMULATION — the engine the arbitration numbers
+// support: pyannote speech-runs are the turn units, ONE TitaNet embedding
+// per run >=1.4s (reliable regime) carries all identity, sub-1.4s runs
+// attach to their acoustically nearer neighbor, overlap mass is reported
+// per turn. Full-meeting pass (production-parity geometry), no production
+// code touched.
+//
+// MEETIFY_LIVE_DIAG=1 cargo test --release --test pyannote_activity_diag
+//   -- --ignored --nocapture hybrid_engine_sim
+// ============================================================================
+
+const EMBED_MIN_SECS: f64 = 1.4;
+const MERGE_THRESHOLD: f32 = 0.40; // production default
+const SPEAKER_CAP: usize = 3; // cde5c264 meeting override
+
+struct SimTurn {
+    start: f64,
+    end: f64,
+    cluster: usize,
+    overlap_frac: f32,
+}
+
+fn counts_merge(assign: &[usize], c: usize) -> usize {
+    assign.iter().filter(|&&a| a == c).count()
+}
+
+#[tokio::test]
+#[ignore = "live full-meeting pass (~15 min): MEETIFY_LIVE_DIAG=1 cargo test --release --test pyannote_activity_diag -- --ignored --nocapture hybrid_engine_sim"]
+async fn hybrid_engine_sim_cde5c264() {
+    if std::env::var("MEETIFY_LIVE_DIAG").is_err() {
+        return;
+    }
+    let audio_path = format!("{}/{}", home(), AUDIO);
+    let model_path = format!("{}/.meetily-models/pyannote-segmentation.onnx", home());
+    let emb_path = format!(
+        "{}/{}/{}",
+        home(),
+        MODELS_DIR,
+        app_lib::audio::speaker::model_download::embedding_filename()
+    );
+
+    let decoded = app_lib::audio::decoder::decode_audio_file(std::path::Path::new(&audio_path))
+        .expect("decode audio");
+    let samples = decoded.to_whisper_format();
+    eprintln!("SIM: decoded {:.1}s", decoded.duration_seconds);
+
+    let providers = vec![CPUExecutionProvider::default().build()];
+    let session = Session::builder()
+        .expect("builder")
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .expect("opt level")
+        .with_execution_providers(providers)
+        .expect("providers")
+        .with_intra_threads(1)
+        .expect("intra threads")
+        .commit_from_file(&model_path)
+        .expect("load pyannote");
+    let input_name = session.inputs[0].name.to_string();
+    let output_name = session.outputs[0].name.to_string();
+    let mut session = session;
+
+    // ---- Phase A: full-meeting per-frame activity (production geometry) ----
+    let total_windows = if samples.len() > WINDOW_SAMPLES {
+        (samples.len() - WINDOW_SAMPLES) / STEP_SAMPLES + 1
+    } else {
+        1
+    };
+    let t0 = std::time::Instant::now();
+    let mut frames: Vec<FrameProbs> = Vec::new();
+    for win_idx in 0..total_windows {
+        let start = win_idx * STEP_SAMPLES;
+        let end = (start + WINDOW_SAMPLES).min(samples.len());
+        if end - start < SAMPLE_RATE {
+            break;
+        }
+        let mut window = vec![0.0f32; WINDOW_SAMPLES];
+        window[..end - start].copy_from_slice(&samples[start..end]);
+        let input_3d: Array3<f32> = Array1::from(window)
+            .into_shape_with_order([1, 1, WINDOW_SAMPLES])
+            .unwrap();
+        let tensor_ref = TensorRef::from_array_view(input_3d.view()).expect("tensor");
+        let inputs = ort::inputs![input_name.as_str() => tensor_ref];
+        let outputs = session.run(inputs).expect("forward");
+        let out = outputs.get(output_name.as_str()).expect("output");
+        let arr = out.try_extract_array::<f32>().expect("extract");
+        let shape = arr.shape();
+        let slice = arr.as_slice().unwrap_or_else(|| arr.to_slice().unwrap());
+        let decoded_frames = decode_probs(slice, shape[1], shape[2]);
+        let first_frame = (win_idx as f64 / FRAME_SHIFT_SECS).round() as usize;
+        while frames.len() <= first_frame + decoded_frames.len() {
+            frames.push(FrameProbs::default());
+        }
+        for (i, fp) in decoded_frames.into_iter().enumerate() {
+            frames[first_frame + i] = fp;
+        }
+        if win_idx % 500 == 0 {
+            eprintln!(
+                "SIM: window {}/{} ({:.0}s elapsed)",
+                win_idx,
+                total_windows,
+                t0.elapsed().as_secs_f64()
+            );
+        }
+    }
+    eprintln!(
+        "SIM: inference done: {} windows, {} frames, {:.0}s",
+        total_windows,
+        frames.len(),
+        t0.elapsed().as_secs_f64()
+    );
+
+    // ---- Speech runs (pause-delimited sentence units) ----
+    let all_runs = argmax_runs(&frames, 0, frames.len(), 0.3);
+    let speech_runs: Vec<&Run> = all_runs.iter().filter(|r| r.speaker >= 0).collect();
+    let total_speech: f64 = speech_runs.iter().map(|r| r.end - r.start).sum();
+    let n_long = speech_runs
+        .iter()
+        .filter(|r| r.end - r.start >= EMBED_MIN_SECS)
+        .count();
+    let n_long_gt10 = speech_runs.iter().filter(|r| r.end - r.start >= 10.0).count();
+    eprintln!(
+        "SIM: {} speech runs ({} >=1.4s embeddable, {} >=10s need-split candidates), {:.0}s speech",
+        speech_runs.len(),
+        n_long,
+        n_long_gt10,
+        total_speech
+    );
+
+    // ---- Phase B: identity — one embedding per reliable run ----
+    let extractor = app_lib::audio::speaker::nemo_extractor::NemoEmbeddingExtractor::new(&emb_path)
+        .expect("extractor");
+    let slice = |a: f64, b: f64| -> Vec<f32> {
+        let i0 = (a * 16_000.0) as usize;
+        let i1 = ((b * 16_000.0) as usize).min(samples.len());
+        samples[i0..i1].to_vec()
+    };
+
+    // (run index in speech_runs, embedding) — ordered by run index.
+    let mut reliable: Vec<(usize, Vec<f32>)> = Vec::new();
+    for (ri, r) in speech_runs.iter().enumerate() {
+        if r.end - r.start < EMBED_MIN_SECS {
+            continue;
+        }
+        // Long runs: embed the middle 12s (mixed-run blends are surfaced via
+        // the >=10s need-split count, not hidden).
+        let (a, b) = if r.end - r.start > 12.0 {
+            let mid = (r.start + r.end) / 2.0;
+            (mid - 6.0, mid + 6.0)
+        } else {
+            (r.start, r.end)
+        };
+        if let Some(e) = extractor.extract_embedding(&slice(a, b), 16_000) {
+            reliable.push((ri, e));
+        }
+    }
+    eprintln!("SIM: {} reliable-run embeddings", reliable.len());
+
+    // Greedy online clustering at a threshold.
+    let cluster_at = |thr: f32| -> (Vec<usize>, Vec<Vec<f32>>) {
+        let mut assign: Vec<usize> = Vec::new();
+        let mut centroids: Vec<Vec<f32>> = Vec::new();
+        let mut counts: Vec<usize> = Vec::new();
+        for (_, e) in &reliable {
+            let mut best: Option<(usize, f32)> = None;
+            for (ci, c) in centroids.iter().enumerate() {
+                let s = cosine(c, e);
+                if s >= thr && best.map(|(_, bs)| s > bs).unwrap_or(true) {
+                    best = Some((ci, s));
+                }
+            }
+            match best {
+                Some((ci, _)) => {
+                    let n = counts[ci] as f32;
+                    for (d, &v) in centroids[ci].iter_mut().zip(e.iter()) {
+                        *d = (*d * n + v) / (n + 1.0);
+                    }
+                    counts[ci] += 1;
+                    assign.push(ci);
+                }
+                None => {
+                    centroids.push(e.clone());
+                    counts.push(1);
+                    assign.push(centroids.len() - 1);
+                }
+            }
+        }
+        (assign, centroids)
+    };
+
+    let (mut assign, mut centroids) = cluster_at(MERGE_THRESHOLD);
+    let (assign55, _) = cluster_at(0.55);
+    eprintln!(
+        "SIM: greedy clusters at thr {:.2} = {}, at 0.55 = {}",
+        MERGE_THRESHOLD,
+        centroids.len(),
+        assign55.iter().max().map(|m| m + 1).unwrap_or(0)
+    );
+
+    // Merge-to-cap: repeatedly fuse the closest centroid pair.
+    while centroids.len() > SPEAKER_CAP {
+        let mut best = (0usize, 1usize, -1.0f32);
+        for i in 0..centroids.len() {
+            for j in (i + 1)..centroids.len() {
+                let s = cosine(&centroids[i], &centroids[j]);
+                if s > best.2 {
+                    best = (i, j, s);
+                }
+            }
+        }
+        let (i, j, _) = best;
+        let (keep, gone) = if counts_merge(&assign, i) >= counts_merge(&assign, j) {
+            (i, j)
+        } else {
+            (j, i)
+        };
+        for a in assign.iter_mut() {
+            if *a == gone {
+                *a = keep;
+            }
+        }
+        centroids.remove(gone);
+        // Indices above `gone` shifted down — remap before any centroid access.
+        for a in assign.iter_mut() {
+            if *a > gone {
+                *a -= 1;
+            }
+        }
+        // Recompute the kept centroid as the mean of its members.
+        let dim = centroids[keep].len();
+        let mut mean = vec![0.0f32; dim];
+        let mut n = 0usize;
+        for (k, ci) in assign.iter().enumerate() {
+            if *ci == keep {
+                n += 1;
+                for d in 0..dim {
+                    mean[d] += reliable[k].1[d];
+                }
+            }
+        }
+        for d in 0..dim {
+            mean[d] /= n.max(1) as f32;
+        }
+        centroids[keep] = mean;
+    }
+    eprintln!("SIM: after merge-to-cap {} clusters", centroids.len());
+
+    // Refine: reassign every reliable run to the nearest final centroid.
+    for k in 0..assign.len() {
+        let mut best = (0usize, -1.0f32);
+        for (ci, c) in centroids.iter().enumerate() {
+            let s = cosine(c, &reliable[k].1);
+            if s > best.1 {
+                best = (ci, s);
+            }
+        }
+        assign[k] = best.0;
+    }
+
+    // ---- Phase C: turns — reliable runs keep their cluster; short runs attach
+    // to the adjacent reliable run whose cluster centroid is nearest (noise-
+    // regime embeddings are only ever compared to the two neighbors, never
+    // trusted alone). Same-cluster neighbors separated only by absorbed
+    // silence coalesce.
+    let mut sim_turns: Vec<SimTurn> = Vec::new();
+    for (ri, r) in speech_runs.iter().enumerate() {
+        let cluster = match reliable.iter().position(|(k, _)| *k == ri) {
+            Some(k) => assign[k],
+            None => {
+                // prev/next are RELIABLE POSITIONS (indices into `assign`),
+                // not run indexes — reliable is sorted by run index, so a
+                // scan gives the nearest neighbors on each side.
+                let prev = (0..reliable.len()).rev().find(|&k| reliable[k].0 < ri);
+                let next = (0..reliable.len()).find(|&k| reliable[k].0 > ri);
+                let my_emb = extractor
+                    .extract_embedding(&slice(r.start, r.end), 16_000)
+                    .unwrap_or_else(|| vec![0.0; centroids[0].len()]);
+                let dist = |k: usize| -> f32 {
+                    centroids[assign[k]]
+                        .iter()
+                        .zip(my_emb.iter())
+                        .map(|(c, v)| (c - v).powi(2))
+                        .sum()
+                };
+                match (prev, next) {
+                    (Some(p), Some(n)) => {
+                        if dist(p) <= dist(n) {
+                            assign[p]
+                        } else {
+                            assign[n]
+                        }
+                    }
+                    (Some(p), None) => assign[p],
+                    (None, Some(n)) => assign[n],
+                    (None, None) => 0,
+                }
+            }
+        };
+        let f0 = (r.start / FRAME_SHIFT_SECS).round() as usize;
+        let f1 = ((r.end / FRAME_SHIFT_SECS).round() as usize).min(frames.len());
+        let n = (f1.saturating_sub(f0)).max(1);
+        let ov = frames[f0..f1].iter().filter(|fp| fp.overlap > 0.25).count() as f32 / n as f32;
+        sim_turns.push(SimTurn { start: r.start, end: r.end, cluster, overlap_frac: ov });
+        if sim_turns.len() >= 2 {
+            let len = sim_turns.len();
+            let (a, b) = (sim_turns[len - 2].cluster, sim_turns[len - 1].cluster);
+            if a == b {
+                let start = sim_turns[len - 2].start;
+                let end = sim_turns[len - 1].end;
+                let ov = sim_turns[len - 2]
+                    .overlap_frac
+                    .max(sim_turns[len - 1].overlap_frac);
+                sim_turns[len - 2] = SimTurn { start, end, cluster: a, overlap_frac: ov };
+                sim_turns.pop();
+            }
+        }
+    }
+    eprintln!("SIM: {} hybrid turns total", sim_turns.len());
+
+    // ---- DB turns for naming + text ----
+    let pool = sqlx::SqlitePool::connect(&format!("sqlite:{}/{}?mode=ro", home(), DB_PATH))
+        .await
+        .expect("db connect");
+    let db_rows = sqlx::query(
+        "SELECT audio_start_time, audio_end_time, speaker_label, transcript FROM transcripts \
+         WHERE meeting_id = ? ORDER BY audio_start_time ASC",
+    )
+    .bind(MEETING_ID)
+    .fetch_all(&pool)
+    .await
+    .expect("fetch transcripts");
+    drop(pool);
+    let db_turns: Vec<(f64, f64, String, String)> = db_rows
+        .into_iter()
+        .filter_map(|r| {
+            let s: Option<f64> = sqlx::Row::get(&r, "audio_start_time");
+            let e: Option<f64> = sqlx::Row::get(&r, "audio_end_time");
+            let l: Option<String> = sqlx::Row::get(&r, "speaker_label");
+            let t: String = sqlx::Row::get(&r, "transcript");
+            Some((s?, e?, l.unwrap_or_else(|| "?".into()), t))
+        })
+        .collect();
+
+    // Map hybrid cluster -> DB label by maximum mid-overlap (naming only).
+    let mut votes: std::collections::HashMap<(usize, String), f64> = std::collections::HashMap::new();
+    for t in &sim_turns {
+        let mid = (t.start + t.end) / 2.0;
+        if let Some((_, _, l, _)) = db_turns.iter().find(|(s, e, _, _)| mid >= *s && mid < *e) {
+            *votes.entry((t.cluster, l.clone())).or_default() += t.end - t.start;
+        }
+    }
+    let mut cluster_names: std::collections::HashMap<usize, String> = std::collections::HashMap::new();
+    let mut cids: Vec<usize> = votes.keys().map(|(c, _)| *c).collect();
+    cids.sort();
+    for c in cids {
+        let best = votes
+            .iter()
+            .filter(|((cc, _), _)| *cc == c)
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .map(|((_, l), _)| l.clone())
+            .unwrap_or_else(|| "?".into());
+        cluster_names.insert(c, best);
+    }
+
+    // ---- Report: the two ear-truth ROIs ----
+    for &(ws, we, label) in ROIS {
+        eprintln!("\n===== SIM ROI: {} [{:.0}-{:.0}s] =====", label, ws, we);
+        for t in sim_turns.iter().filter(|t| t.start < we && t.end > ws) {
+            let text: String = db_turns
+                .iter()
+                .filter(|(s, e, _, _)| (s + e) / 2.0 >= t.start && (s + e) / 2.0 < t.end)
+                .map(|(_, _, _, tx)| tx.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            eprintln!(
+                "  {:8.2}-{:8.2} C{}({}) ov={:.2} {}",
+                t.start,
+                t.end,
+                t.cluster,
+                cluster_names.get(&t.cluster).map(|s| s.as_str()).unwrap_or("?"),
+                t.overlap_frac,
+                &text.chars().take(90).collect::<String>()
+            );
+        }
+    }
+
+    // ---- Anchor acceptance ----
+    let covering: Vec<&SimTurn> = sim_turns
+        .iter()
+        .filter(|t| t.start < 12.8 && t.end > 9.5)
+        .collect();
+    let boundary_near_13 = sim_turns.iter().filter(|t| t.start > 12.8 && t.start < 14.2).count();
+    let boundary_at_1207 = sim_turns.iter().filter(|t| t.start > 11.5 && t.start < 12.7).count();
+    eprintln!("\n===== SIM ANCHOR =====");
+    eprintln!(
+        "  turns covering 9.5-12.8s: {} (labels: {:?})",
+        covering.len(),
+        covering
+            .iter()
+            .map(|t| cluster_names.get(&t.cluster).map(|s| s.as_str()).unwrap_or("?"))
+            .collect::<Vec<_>>()
+    );
+    eprintln!("  boundaries in 11.5-12.7s (pipeline flip point): {}", boundary_at_1207);
+    eprintln!(
+        "  boundaries in 12.8-14.2s (real change, missed by pipeline): {}",
+        boundary_near_13
+    );
+
+    // ---- Whole-meeting agreement with DB labels (naming-level) ----
+    let mut agree = 0usize;
+    let mut total_mid = 0usize;
+    for t in &sim_turns {
+        let mid = (t.start + t.end) / 2.0;
+        if let Some((_, _, l, _)) = db_turns.iter().find(|(s, e, _, _)| mid >= *s && mid < *e) {
+            total_mid += 1;
+            if cluster_names.get(&t.cluster).map(|s| s.as_str()) == Some(l.as_str()) {
+                agree += 1;
+            }
+        }
+    }
+    eprintln!(
+        "SIM: hybrid-vs-DB label agreement on turn midpoints: {}/{} ({:.0}%)",
+        agree,
+        total_mid,
+        100.0 * agree as f64 / total_mid.max(1) as f64
+    );
+    let high_ov = sim_turns.iter().filter(|t| t.overlap_frac >= 0.2).count();
+    eprintln!("SIM: turns with >=20% overlap frames: {}", high_ov);
+
+    // ---- Dump ----
+    let dump = serde_json::json!({
+        "turns": sim_turns.iter().map(|t| serde_json::json!({
+            "start": t.start, "end": t.end, "cluster": t.cluster,
+            "db_label": cluster_names.get(&t.cluster),
+            "overlap_frac": t.overlap_frac,
+        })).collect::<Vec<_>>(),
+        "n_speech_runs": speech_runs.len(),
+        "n_reliable": reliable.len(),
+    });
+    let out_path = std::env::var("TEMP").unwrap() + "/cde5c264_hybrid_sim.json";
+    std::fs::write(&out_path, serde_json::to_string_pretty(&dump).unwrap()).expect("write dump");
+    eprintln!("SIM: dump at {}", out_path);
+}
