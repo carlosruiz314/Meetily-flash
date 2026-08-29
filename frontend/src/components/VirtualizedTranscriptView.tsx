@@ -60,6 +60,28 @@ export function computeDisplayText(text: string): string {
     return text.trim() === '' ? '[Silence]' : text;
 }
 
+const SENTENCE_END = /[.!?…]["')\]]?\s*$/;
+
+export function endsSentence(text: string): boolean {
+    return SENTENCE_END.test(text.trim());
+}
+
+export function startsMidSentence(text: string): boolean {
+    const t = text.trimStart().replace(/^[\p{P}\p{S}\s]+/u, '');
+    if (t.length === 0) return false;
+    const first = t[0];
+    return first === first.toLowerCase() && first !== first.toUpperCase();
+}
+
+/// True when `nextText` reads as the continuation of `prevText`: the previous
+/// turn ended without sentence-final punctuation and the next resumes
+/// mid-sentence (lowercase start). This is how an interruption/co-constructed
+/// sentence looks when rendered truthfully — the view marks it instead of
+/// letting it read as a random break.
+export function isContinuation(prevText: string, nextText: string): boolean {
+    return !endsSentence(prevText) && startsMidSentence(nextText);
+}
+
 // Build a stable speaker → index map in first-appearance order. Drives badge
 // color assignment. Extracted so the split-persistence invariant (one source
 // row → N rows with distinct speakers → distinct indices) is unit-testable
@@ -91,6 +113,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     knownSpeakers,
     canRevertSpeaker,
     onSpeakerRevert,
+    continuesPrevious,
 }: {
     id: string;
     timestamp: number;
@@ -106,6 +129,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     knownSpeakers?: string[];
     canRevertSpeaker?: boolean;
     onSpeakerRevert?: () => void;
+    continuesPrevious?: boolean;
 }) {
     const displayText = computeDisplayText(text);
 
@@ -145,7 +169,17 @@ const TranscriptSegment = memo(function TranscriptSegment({
                             )}
                         </div>
                     )}
-                    <p className="text-base text-gray-800 leading-relaxed">{displayText}</p>
+                    <p className="text-base text-gray-800 leading-relaxed">
+                        {continuesPrevious && (
+                            <span
+                                className="text-gray-400 mr-1 select-none"
+                                title="continues the previous speaker's sentence"
+                            >
+                                …
+                            </span>
+                        )}
+                        {displayText}
+                    </p>
                 </div>
             </div>
         </div>
@@ -345,6 +379,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         knownSpeakers={knownSpeakers}
                                         canRevertSpeaker={!!segment.speaker && !segment.speaker.startsWith("Speaker ") && !segment.speaker.startsWith("Unknown")}
                                         onSpeakerRevert={segment.speaker ? () => handleSpeakerRevert(segment.speaker!) : undefined}
+                                        continuesPrevious={virtualRow.index > 0 && isContinuation(segments[virtualRow.index - 1].text, segment.text)}
                                     />
                                 </div>
                             );
@@ -384,7 +419,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                 // Simple rendering for small lists (better animations)
                 <>
                     <div className="space-y-1">
-                        {segments.map((segment) => {
+                        {segments.map((segment, segIdx) => {
                             return (
                                 <motion.div
                                     key={segment.id}
@@ -407,6 +442,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         knownSpeakers={knownSpeakers}
                                         canRevertSpeaker={!!segment.speaker && !segment.speaker.startsWith("Speaker ") && !segment.speaker.startsWith("Unknown")}
                                         onSpeakerRevert={segment.speaker ? () => handleSpeakerRevert(segment.speaker!) : undefined}
+                                        continuesPrevious={segIdx > 0 && isContinuation(segments[segIdx - 1].text, segment.text)}
                                     />
                                 </motion.div>
                             );

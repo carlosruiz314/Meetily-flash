@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { computeDisplayText } from '@/components/VirtualizedTranscriptView';
+import {
+    computeDisplayText,
+    isContinuation,
+    endsSentence,
+    startsMidSentence,
+} from '@/components/VirtualizedTranscriptView';
 
 // §4 adversarial category: prompt injection / XSS via transcript text.
 //
@@ -45,5 +50,33 @@ describe('computeDisplayText — adversarial payloads pass through unchanged (§
     expect(computeDisplayText('uh <script>alert(1)</script> um')).toBe(
       'uh <script>alert(1)</script> um'
     );
+  });
+});
+
+// Interruption rendering: when people finish each other's sentences, one
+// sentence spans two speaker rows. The view marks the continuation instead of
+// letting it read as a random break.
+describe('isContinuation — marks interrupted sentences across speakers', () => {
+  it('detects an interrupted previous turn followed by a lowercase resume', () => {
+    expect(isContinuation("I don't like you've aged like", 'five years. Yeah.')).toBe(true);
+  });
+
+  it('does not mark a completed previous turn', () => {
+    expect(isContinuation('That is a lesson I have learned.', 'Yeah. So for search,')).toBe(false);
+  });
+
+  it('does not mark a capitalized resume even if previous turn is open', () => {
+    expect(isContinuation('and then he said', 'Wait, no way.')).toBe(false);
+  });
+
+  it('handles trailing quotes and brackets on the sentence end', () => {
+    expect(endsSentence('He said "stop."')).toBe(true);
+    expect(endsSentence('He said "stop')).toBe(false);
+  });
+
+  it('lowercase detection ignores leading punctuation and whitespace', () => {
+    expect(startsMidSentence('  ... to, let\'s')).toBe(true);
+    expect(startsMidSentence('Okay. I have updates')).toBe(false);
+    expect(startsMidSentence('')).toBe(false);
   });
 });
