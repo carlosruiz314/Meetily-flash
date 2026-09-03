@@ -7,9 +7,9 @@
 
 ## 2. Frame-level activity source (production code path)
 
-- [ ] 2.1 RED→GREEN: expose per-frame speaker/overlap probability masses from `PyannoteSegmentation` (production geometry: 10s/1s windows, last-writer-wins, zero-padded final window) without changing `change_points` behavior — RED state is the new mass-output assertions (run/overlap values on the recorded fixture arrays); existing `change_points` tests stay green
-- [ ] 2.2 RED→GREEN: pure run derivation on synthetic frame arrays: silence gate 0.5, min run 0.3s absorbing silence/same-label fragments only, different-label short runs retained as pieces, mode filter over the label track
-- [ ] 2.3 RED→GREEN: cross-window split corroboration on a synthetic two-window fixture (seam permutation rejected; corroborated change split)
+- [x] 2.1 RED→GREEN: expose per-frame speaker/overlap probability masses from `PyannoteSegmentation` (production geometry: 10s/1s windows, last-writer-wins, zero-padded final window) without changing `change_points` behavior — RED state is the new mass-output assertions (run/overlap values on the recorded fixture arrays); existing `change_points` tests stay green
+- [x] 2.2 RED→GREEN: pure run derivation on synthetic frame arrays: silence gate 0.5, min run 0.3s absorbing silence/same-label fragments only, different-label short runs retained as pieces, mode filter over the label track
+- [x] 2.3 RED→GREEN: cross-window split corroboration on a synthetic two-window fixture (seam permutation rejected; corroborated change split)
 
 ## 3. Run assembly engine
 

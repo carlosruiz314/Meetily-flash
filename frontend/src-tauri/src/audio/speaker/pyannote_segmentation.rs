@@ -33,6 +33,9 @@ const STEP_SAMPLES: usize = 16_000; // 1s step (90% overlap)
 /// Frame shift: 270 samples @16kHz ≈ 16.875ms.
 const FRAME_SHIFT_SECS: f64 = 270.0 / 16000.0;
 
+/// Frame grid step in seconds (pub for the run-assembly engine and diagnostics).
+pub const FRAME_SHIFT: f64 = FRAME_SHIFT_SECS;
+
 /// Powerset class → 3-speaker multilabel (per pyannote-audio powerset.py).
 /// Index 0 = no speech; 1–3 = solo speakers; 4–6 = overlap pairs.
 fn powerset_to_multilabel(class: usize) -> [bool; 3] {
@@ -91,6 +94,84 @@ fn decode_multilabel_with_hysteresis(
         out.push(active);
     }
     out
+}
+
+/// Per-frame decoded speaker-activity probabilities (the run-assembly engine's
+/// input). `speaker` masses sum overlap-pair classes into their constituents;
+/// `overlap` is the raw powerset classes 4–6 mass; everything sums to 1 with
+/// `silence` (class 0).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct FrameMasses {
+    pub speaker: [f32; 3],
+    pub overlap: f32,
+    pub silence: f32,
+}
+
+/// Decode per-frame powerset LOG-softmax rows into per-frame masses (the
+/// engine path — distinct from the hysteresis decode that feeds
+/// `change_points`, whose behavior is pinned by existing tests).
+pub fn decode_masses(
+    frame_logits: &[f32],
+    num_frames: usize,
+    num_classes: usize,
+) -> Vec<FrameMasses> {
+    let mut out = Vec::with_capacity(num_frames);
+    for frame in 0..num_frames {
+        let row = &frame_logits[frame * num_classes..(frame + 1) * num_classes];
+        let mut fp = FrameMasses::default();
+        for (class, &log_p) in row.iter().enumerate() {
+            let p = log_p.exp();
+            match class {
+                0 => fp.silence += p,
+                1 | 2 | 3 => fp.speaker[class - 1] += p,
+                4 | 5 | 6 => {
+                    fp.overlap += p;
+                    let ml = powerset_to_multilabel(class);
+                    for spk in 0..3 {
+                        if ml[spk] {
+                            fp.speaker[spk] += p;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        out.push(fp);
+    }
+    out
+}
+
+/// One window's local argmax label track: 0..=2 speaker index, 255 silence
+/// (speech mass ≤ gate). Window-local indices are permutation-ambiguous by
+/// design — never compared across windows except as change EVENTS.
+pub const SILENCE_LABEL: u8 = 255;
+
+pub fn local_labels(masses: &[FrameMasses], speech_gate: f32) -> Vec<u8> {
+    masses
+        .iter()
+        .map(|fp| {
+            let speech = fp.speaker[0] + fp.speaker[1] + fp.speaker[2];
+            if speech <= speech_gate {
+                SILENCE_LABEL
+            } else {
+                let mut best = 0usize;
+                for s in 1..3 {
+                    if fp.speaker[s] > fp.speaker[best] {
+                        best = s;
+                    }
+                }
+                best as u8
+            }
+        })
+        .collect()
+}
+
+/// Per-frame masses plus the per-window local label tracks the split
+/// corroboration needs (each window's track is in that window's OWN labeling).
+pub struct FrameMassesOutput {
+    pub frames: Vec<FrameMasses>,
+    /// (window start seconds, local label track — one entry per window frame).
+    pub window_label_tracks: Vec<(f64, Vec<u8>)>,
 }
 
 /// Per-speaker median filter (majority vote over a 2*rad+1 kernel, clamped
@@ -436,6 +517,70 @@ impl PyannoteSegmentation {
         })
     }
 
+    /// Per-frame probability masses over the full recording (run-assembly
+    /// engine input). Production window geometry (10s/1s step,
+    /// last-writer-wins merge) with one difference from `change_points`: the
+    /// FINAL partial window is zero-padded and decoded, so trailing speech
+    /// (<1s) is not dropped. Frame i maps to `i * FRAME_SHIFT` seconds.
+    pub fn frame_masses(&self, samples: &[f32]) -> Result<FrameMassesOutput> {
+        let mut frames: Vec<FrameMasses> = Vec::new();
+        let mut window_label_tracks: Vec<(f64, Vec<u8>)> = Vec::new();
+        let mut session = self
+            .session
+            .lock()
+            .map_err(|_| anyhow!("session lock poisoned"))?;
+        let mut win_start = 0usize;
+        let mut windows_done = 0usize;
+        while win_start < samples.len() {
+            let end = (win_start + WINDOW_SAMPLES).min(samples.len());
+            let mut window = vec![0.0f32; WINDOW_SAMPLES];
+            window[..end - win_start].copy_from_slice(&samples[win_start..end]);
+
+            let input_3d: Array3<f32> = Array1::from(window)
+                .into_shape_with_order([1, 1, WINDOW_SAMPLES])
+                .map_err(|e| anyhow!("window shape: {}", e))?;
+            let audio_ref =
+                TensorRef::from_array_view(input_3d.view()).map_err(|e| anyhow!("tensor: {}", e))?;
+            let inputs = ort::inputs![self.audio_input_name.as_str() => audio_ref];
+
+            let (decoded_masses, local_labels): (Vec<FrameMasses>, Vec<u8>) = {
+                let outputs = session.run(inputs).map_err(|e| anyhow!("forward: {}", e))?;
+                let out = outputs
+                    .get(self.output_name.as_str())
+                    .ok_or_else(|| anyhow!("output missing"))?;
+                let arr = out
+                    .try_extract_array::<f32>()
+                    .map_err(|e| anyhow!("extract: {}", e))?;
+                let slice: &[f32] =
+                    arr.as_slice().unwrap_or_else(|| arr.to_slice().unwrap());
+                let shape = arr.shape();
+                let masses = decode_masses(slice, shape[1], shape[2]);
+                let labels = local_labels(&masses, 0.5);
+                (masses, labels)
+            };
+
+            let win_start_secs = win_start as f64 / SAMPLE_RATE as f64;
+            let first_frame = (win_start_secs / FRAME_SHIFT_SECS).round() as usize;
+            while frames.len() <= first_frame + decoded_masses.len() {
+                frames.push(FrameMasses::default());
+            }
+            for (i, fp) in decoded_masses.into_iter().enumerate() {
+                frames[first_frame + i] = fp;
+            }
+            window_label_tracks.push((win_start_secs, local_labels));
+
+            win_start += STEP_SAMPLES;
+            windows_done += 1;
+            if windows_done % 500 == 0 {
+                log::info!("frame_masses: {} windows decoded", windows_done);
+            }
+        }
+        Ok(FrameMassesOutput {
+            frames,
+            window_label_tracks,
+        })
+    }
+
     /// Full-recording smoothed change-points (seconds). Slides a 10s window at
     /// a 1s step over the 16kHz mono samples, decodes powerset activity per
     /// window, last-writer-wins merge (probe parity), then smooths.
@@ -585,6 +730,44 @@ mod tests {
         let mut probs = vec![(1.0f32 - active_prob) / (num_classes as f32 - 1.0); num_classes];
         probs[1] = active_prob; // speaker 1 solo
         probs.iter().map(|p| p.ln()).collect()
+    }
+
+    #[test]
+    fn decode_masses_exposes_probabilities_and_overlap() {
+        // Exact row: 0.9 on solo speaker 0 (class 1), 0.1 silence (class 0),
+        // everything else zero. Masses must reconstruct those probabilities.
+        let mut row = vec![-14.0f32; 7];
+        row[0] = (0.1f32).ln();
+        row[1] = (0.9f32).ln();
+        let frames = decode_masses(&row, 1, 7);
+        assert!((frames[0].speaker[0] - 0.9).abs() < 1e-4);
+        assert!(frames[0].overlap.abs() < 1e-4);
+        assert!((frames[0].silence - 0.1).abs() < 1e-4);
+
+        // An overlap row (class 4 = spk0+spk1): both speaker masses include it
+        // and the overlap mass is the class's own probability. exp(-20) ≈ 2e-9
+        // filler keeps the other classes negligible.
+        let mut overlap_row = vec![-20.0f32; 7];
+        overlap_row[4] = (0.5f32).ln(); // log-softmax style: dominant class
+        let frames = decode_masses(&overlap_row, 1, 7);
+        assert!(frames[0].overlap > 0.49);
+        assert!(frames[0].speaker[0] > 0.49 && frames[0].speaker[1] > 0.49);
+        assert!(frames[0].speaker[2].abs() < 1e-6);
+    }
+
+    #[test]
+    fn local_labels_gate_silence_and_argmax_speaker() {
+        let mut solo = FrameMasses::default();
+        solo.speaker[1] = 0.9;
+        solo.silence = 0.1;
+        let mut quiet = FrameMasses::default();
+        quiet.silence = 1.0;
+        let mut borderline = FrameMasses::default();
+        borderline.speaker[2] = 0.5;
+        borderline.silence = 0.5;
+        let labels = local_labels(&[solo, quiet, borderline], 0.5);
+        assert_eq!(labels, vec![1, SILENCE_LABEL, SILENCE_LABEL],
+            "speech ≤ gate is silence; borderline (≤, not <) stays silent");
     }
 
     #[test]
