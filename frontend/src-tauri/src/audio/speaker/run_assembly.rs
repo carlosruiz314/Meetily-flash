@@ -35,6 +35,10 @@ pub const ABSORPTION_CAP_SECS: f64 = 5.0;
 pub const OVERLAP_THRESHOLD: f32 = 0.25;
 /// Piece shed-to-cap before embedding (spec: bounded clustering cost).
 pub const PIECE_CAP: usize = 2000;
+/// Whisper-timestamp skew tolerance for textless-run detection (spec step 5):
+/// a piece counts as text-covered if any transcript row reaches within this
+/// of it. Calibration-gated under the fixture-gate rule (design D8).
+pub const TEXT_SKEW_TOLERANCE_SECS: f64 = 0.25;
 
 pub fn frame_time(frame: usize, frame_shift: f64) -> f64 {
     frame as f64 * frame_shift
@@ -365,11 +369,14 @@ pub struct PieceIn {
 }
 
 /// A derived turn. `low_confidence` = carries attached material or was forced
-/// by the absorption cap.
+/// by the absorption cap. `continues_previous` = the engine's continuation
+/// fact (spec: same-cluster adjacency ⇒ true; voice change / meeting start ⇒
+/// false) — persisted on the turn's first row.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TurnOut {
     pub cluster: usize,
     pub low_confidence: bool,
+    pub continues_previous: bool,
     pub dur_secs: f64,
     pub attached_secs: f64,
 }
@@ -393,20 +400,23 @@ pub fn resolve_turns(pieces: &[PieceIn]) -> Vec<TurnOut> {
         };
         if !attach {
             let c = p.cluster.expect("labeled piece has cluster");
-            let mut t = TurnOut {
-                cluster: c,
-                low_confidence: pending_forward > 0.0,
-                dur_secs: p.dur_secs + pending_forward,
-                attached_secs: pending_forward,
-            };
-            pending_forward = 0.0;
             if let Some(prev) = turns.last_mut() {
-                if prev.cluster == t.cluster {
-                    prev.dur_secs += t.dur_secs;
+                if prev.cluster == c {
+                    prev.dur_secs += p.dur_secs + pending_forward;
+                    prev.attached_secs += pending_forward;
+                    pending_forward = 0.0;
                     continue;
                 }
             }
-            turns.push(t);
+            let continues = turns.last().map_or(false, |prev| prev.cluster == c);
+            turns.push(TurnOut {
+                cluster: c,
+                low_confidence: pending_forward > 0.0,
+                continues_previous: continues,
+                dur_secs: p.dur_secs + pending_forward,
+                attached_secs: pending_forward,
+            });
+            pending_forward = 0.0;
             continue;
         }
         let over_cap = matches!(
@@ -426,11 +436,13 @@ pub fn resolve_turns(pieces: &[PieceIn]) -> Vec<TurnOut> {
         } else if over_cap {
             // Contiguous attached material would exceed the cap: it opens its
             // own turn instead (same cluster, low-confidence; spec step 4).
-            // Further attachments flow into this new turn.
+            // Further attachments flow into this new turn. Same cluster as
+            // the previous turn ⇒ it continues that turn's speech.
             let c = turns.last().expect("non-empty").cluster;
             turns.push(TurnOut {
                 cluster: c,
                 low_confidence: true,
+                continues_previous: true,
                 dur_secs: p.dur_secs,
                 attached_secs: p.dur_secs,
             });
@@ -451,6 +463,277 @@ pub fn overlap_fraction(frames: &[FrameMasses]) -> f32 {
         .filter(|fp| fp.overlap > OVERLAP_THRESHOLD)
         .count() as f32
         / frames.len() as f32
+}
+
+// ---------------------------------------------------------------------------
+// Piece extraction (task 3.1) and textless-run detection (task 3.4)
+// ---------------------------------------------------------------------------
+
+/// A piece time span, in seconds from meeting start.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PieceSpan {
+    pub start_secs: f64,
+    pub end_secs: f64,
+}
+
+/// Pieces from speech runs with corroborated sub-run splits (spec steps 1–2):
+/// a run's label-track change candidates split the run ONLY where
+/// [`corroborate_split`] accepts them; uncorroborated changes leave the run
+/// whole.
+pub fn derive_pieces(
+    labels: &[u8],
+    runs: &[SpeechRun],
+    window_tracks: &[(f64, Vec<u8>)],
+    frame_shift: f64,
+    radius: usize,
+) -> Vec<PieceSpan> {
+    let mut out = Vec::new();
+    for run in runs {
+        let mut bounds = vec![run.start_frame];
+        for cand in label_change_candidates(labels, run, radius) {
+            let t = frame_time(cand, frame_shift);
+            if corroborate_split(window_tracks, t, frame_shift, SPLIT_TOLERANCE_SECS, radius) {
+                bounds.push(cand);
+            }
+        }
+        bounds.push(run.end_frame);
+        for pair in bounds.windows(2) {
+            if pair[1] > pair[0] {
+                out.push(PieceSpan {
+                    start_secs: frame_time(pair[0], frame_shift),
+                    end_secs: frame_time(pair[1], frame_shift),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// True when no transcript text span overlaps the piece within the whisper
+/// skew tolerance — a breath, laugh, or untranscribed voiced noise (spec
+/// step 5). Such pieces are dropped BEFORE labeling, clustering, and
+/// same-cluster coalescing.
+pub fn is_textless(piece: &PieceSpan, text_spans: &[(f64, f64)], skew_secs: f64) -> bool {
+    text_spans.iter().all(|&(a, b)| {
+        b + skew_secs <= piece.start_secs || a - skew_secs >= piece.end_secs
+    })
+}
+
+/// Drop textless pieces (spec step 5), preserving order.
+pub fn drop_textless(
+    pieces: &[PieceSpan],
+    text_spans: &[(f64, f64)],
+    skew_secs: f64,
+) -> Vec<PieceSpan> {
+    pieces
+        .iter()
+        .filter(|p| !is_textless(p, text_spans, skew_secs))
+        .copied()
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
+// Text alignment (task 3.6)
+// ---------------------------------------------------------------------------
+
+/// One token-level timestamp of a whisper row.
+#[derive(Clone, Debug)]
+pub struct TokenIn {
+    pub text: String,
+    pub start_secs: f64,
+}
+
+/// One transcript row. `tokens` empty = legacy consolidated row (proportional
+/// split); non-empty = token-level alignment.
+#[derive(Clone, Debug)]
+pub struct RowIn {
+    pub text: String,
+    pub start_secs: f64,
+    pub end_secs: f64,
+    pub tokens: Vec<TokenIn>,
+}
+
+/// A derived turn's time span and cluster, as the alignment input.
+#[derive(Clone, Copy, Debug)]
+pub struct TurnSpan {
+    pub start_secs: f64,
+    pub end_secs: f64,
+    pub cluster: usize,
+}
+
+/// Part of row `row_idx` attributed to turn `turn_idx`. Concatenating every
+/// fragment's text of a row reproduces the row's content exactly (spec
+/// content-preservation invariant).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AlignedFragment {
+    pub row_idx: usize,
+    pub turn_idx: usize,
+    pub text: String,
+}
+
+/// The turn-aligned transcript: one entry per turn, text = its fragments.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AlignedTurn {
+    pub cluster: usize,
+    pub start_secs: f64,
+    pub end_secs: f64,
+    pub text: String,
+}
+
+/// The turn covering time `t` (start ≤ t < end); outside all turns → nearest
+/// (before the first / in a gap → the following turn; after the last → it).
+/// None only when `turns` is empty.
+fn turn_index_for_time(turns: &[TurnSpan], t: f64) -> Option<usize> {
+    if turns.is_empty() {
+        return None;
+    }
+    for (i, turn) in turns.iter().enumerate() {
+        if t < turn.end_secs {
+            return Some(i);
+        }
+    }
+    Some(turns.len() - 1)
+}
+
+/// Nearest-in-time turn by interval distance; ties → earlier turn.
+fn nearest_turn(turns: &[TurnSpan], row: &RowIn) -> usize {
+    let mut best = (0usize, f64::INFINITY);
+    for (i, t) in turns.iter().enumerate() {
+        let d = if row.end_secs <= t.start_secs {
+            t.start_secs - row.end_secs
+        } else if row.start_secs >= t.end_secs {
+            row.start_secs - t.end_secs
+        } else {
+            0.0
+        };
+        if d < best.1 {
+            best = (i, d);
+        }
+    }
+    best.0
+}
+
+/// Split `text` into whitespace-free word chunks so chunk `i` holds roughly
+/// `shares[i]` of the characters (last chunk takes the remainder). Every word
+/// lands in exactly one chunk — content-preserving by construction.
+fn split_words_proportional(text: &str, shares: &[f64]) -> Vec<String> {
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let total_chars: usize = words.iter().map(|w| w.chars().count() + 1).sum();
+    let mut out = Vec::with_capacity(shares.len());
+    let mut consumed = 0usize;
+    for (si, &share) in shares.iter().enumerate() {
+        let target = if si + 1 == shares.len() {
+            usize::MAX
+        } else {
+            (share * total_chars as f64).round() as usize
+        };
+        let mut seg_chars = 0usize;
+        let mut chunk: Vec<&str> = Vec::new();
+        while consumed < words.len() && seg_chars < target {
+            chunk.push(words[consumed]);
+            seg_chars += words[consumed].chars().count() + 1;
+            consumed += 1;
+        }
+        out.push(chunk.join(" "));
+    }
+    out
+}
+
+/// Align transcript rows to the derived turns (spec step 6):
+/// - token-timestamped rows split at turn boundaries (token times decide);
+/// - token-less rows split proportionally at any boundary inside them
+///   (word-boundary cuts, time-weighted);
+/// - a row with zero overlap with every turn (shed span) attaches to the
+///   nearest-in-time turn.
+/// With no turns at all the output is empty (zero-label meetings).
+pub fn align_rows_to_turns(rows: &[RowIn], turns: &[TurnSpan]) -> Vec<AlignedFragment> {
+    let mut out = Vec::new();
+    for (row_idx, row) in rows.iter().enumerate() {
+        if turns.is_empty() {
+            break;
+        }
+        if !row.tokens.is_empty() {
+            // Group consecutive tokens by target turn, preserving order.
+            let mut groups: Vec<(usize, Vec<&str>)> = Vec::new();
+            for tok in &row.tokens {
+                let ti = turn_index_for_time(turns, tok.start_secs).expect("turns non-empty");
+                match groups.last_mut() {
+                    Some((prev_ti, texts)) if *prev_ti == ti => texts.push(&tok.text),
+                    _ => groups.push((ti, vec![&tok.text])),
+                }
+            }
+            for (ti, texts) in groups {
+                out.push(AlignedFragment {
+                    row_idx,
+                    turn_idx: ti,
+                    text: texts.join(""),
+                });
+            }
+        } else {
+            // Per-turn time overlap with the row.
+            let overlaps: Vec<(usize, f64)> = turns
+                .iter()
+                .enumerate()
+                .map(|(i, t)| {
+                    let ov = row.end_secs.min(t.end_secs) - row.start_secs.max(t.start_secs);
+                    (i, ov.max(0.0))
+                })
+                .collect();
+            let total: f64 = overlaps.iter().map(|(_, ov)| *ov).sum();
+            if total > 0.0 {
+                let shares: Vec<f64> = overlaps.iter().map(|(_, ov)| ov / total).collect();
+                for (text, (ti, _)) in split_words_proportional(&row.text, &shares)
+                    .into_iter()
+                    .zip(overlaps)
+                {
+                    if !text.is_empty() {
+                        out.push(AlignedFragment { row_idx, turn_idx: ti, text });
+                    }
+                }
+            } else {
+                let ti = nearest_turn(turns, row);
+                out.push(AlignedFragment {
+                    row_idx,
+                    turn_idx: ti,
+                    text: row.text.clone(),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Group fragments into per-turn transcript entries (time order preserved).
+pub fn group_fragments_by_turn(
+    turns: &[TurnSpan],
+    fragments: &[AlignedFragment],
+) -> Vec<AlignedTurn> {
+    turns
+        .iter()
+        .enumerate()
+        .map(|(i, t)| AlignedTurn {
+            cluster: t.cluster,
+            start_secs: t.start_secs,
+            end_secs: t.end_secs,
+            text: fragments
+                .iter()
+                .filter(|f| f.turn_idx == i)
+                .map(|f| f.text.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "),
+        })
+        .collect()
+}
+
+/// The gate's mid-sentence detector (hard invariant): true when the text
+/// begins mid-sentence — first non-punctuation/symbol/whitespace character is
+/// a lowercase letter.
+pub fn is_mid_sentence_start(text: &str) -> bool {
+    text.chars()
+        .skip_while(|c| !c.is_alphanumeric())
+        .next()
+        .map_or(false, |c| c.is_alphabetic() && c.is_lowercase())
 }
 
 #[cfg(test)]
@@ -723,5 +1006,248 @@ mod tests {
         frames[11].overlap = 0.3;
         assert!((overlap_fraction(&frames) - 0.02).abs() < 1e-9);
         assert_eq!(overlap_fraction(&[]), 0.0);
+    }
+
+    // ---- piece extraction (3.1) ----
+
+    #[test]
+    fn derive_pieces_split_only_at_corroborated_changes() {
+        let shift = 270.0 / 16000.0;
+        // Corroborated change at ≈5.5s (windows 4.0/5.0 both show it);
+        // uncorroborated change at ≈8.44s (frame 500) must NOT split.
+        let change = (5.5f64 / shift).round() as usize;
+        let mut labels = vec![0u8; 600];
+        labels[change..].fill(1);
+        labels[500..].fill(0);
+        let mut w4 = vec![0u8; 591];
+        w4[89..].fill(1);
+        let mut w5 = vec![1u8; 591];
+        w5[30..].fill(0);
+        let tracks = vec![(4.0f64, w4), (5.0f64, w5)];
+        let run = SpeechRun { start_frame: 0, end_frame: 600 };
+        let pieces = derive_pieces(&labels, &[run], &tracks, shift, 0);
+        assert_eq!(pieces.len(), 2, "{:?}", pieces);
+        assert!((pieces[0].end_secs - 5.5).abs() < 0.1, "{:?}", pieces);
+        assert!(pieces[1].end_secs > pieces[1].start_secs);
+    }
+
+    // ---- phantom centroids (3.2) ----
+
+    #[test]
+    fn merge_to_cap_leaves_no_phantom_centroids() {
+        let embs = vec![e(1.0), e(0.9), e(-1.0), e(-0.9), e(0.0), e(0.05)];
+        let (mut assign, mut cents) = cluster_pieces(&embs, 0.3);
+        merge_to_cap(&mut assign, &mut cents, &embs, 2);
+        let mut counts = vec![0usize; cents.len()];
+        for a in &assign {
+            counts[*a] += 1;
+        }
+        assert!(counts.iter().all(|&c| c > 0), "every persisted centroid has ≥1 labeled piece");
+        assert_eq!(cents.len(), 2);
+    }
+
+    // ---- textless runs (3.4) ----
+
+    #[test]
+    fn textless_run_dropped_before_coalescing_where_is_ricardo() {
+        // A (text-covered), T (voiced laugh, no text — different pyannote
+        // label), B (text-covered). Undropped, the laugh dices the speaker's
+        // stretch; dropped before coalescing, the surrounding same-speaker
+        // text is ONE turn.
+        let skew = TEXT_SKEW_TOLERANCE_SECS;
+        let text = vec![(34.9, 36.5), (38.6, 39.3)];
+        let pieces = vec![
+            PieceSpan { start_secs: 34.9, end_secs: 36.9 },
+            PieceSpan { start_secs: 37.0, end_secs: 37.4 },
+            PieceSpan { start_secs: 38.4, end_secs: 39.3 },
+        ];
+        let kept = drop_textless(&pieces, &text, skew);
+        assert_eq!(kept.len(), 2, "the laugh is textless: {:?}", kept);
+        assert!(!is_textless(&pieces[0], &text, skew));
+        assert!(!is_textless(&pieces[2], &text, skew));
+
+        let undropped = vec![
+            PieceIn { dur_secs: 2.0, cluster: Some(0), margin: Some(0.3) },
+            PieceIn { dur_secs: 0.4, cluster: Some(1), margin: Some(0.3) },
+            PieceIn { dur_secs: 0.9, cluster: Some(0), margin: Some(0.3) },
+        ];
+        assert_eq!(resolve_turns(&undropped).len(), 3, "control: the undropped laugh dices the stretch");
+        let dropped = vec![
+            PieceIn { dur_secs: 2.0, cluster: Some(0), margin: Some(0.3) },
+            PieceIn { dur_secs: 0.9, cluster: Some(0), margin: Some(0.3) },
+        ];
+        let turns = resolve_turns(&dropped);
+        assert_eq!(turns.len(), 1, "surrounding same-speaker text is ONE turn");
+        assert!(!turns[0].continues_previous);
+    }
+
+    // ---- text alignment (3.6) ----
+
+    fn tok(text: &str, t: f64) -> TokenIn {
+        TokenIn { text: text.to_string(), start_secs: t }
+    }
+
+    fn alphanumeric(s: &str) -> String {
+        s.chars().filter(|c| c.is_alphanumeric()).collect()
+    }
+
+    #[test]
+    fn token_row_splits_at_boundary_tail_lands_on_earlier_turn() {
+        // The 02:12–02:50 fixture shape: one whisper row straddling the
+        // ≈163s corroborated boundary; the "And I was like … one" tail
+        // (tokens before 163.0) belongs to the EARLIER speaker's turn; the
+        // later-speaker text (tokens from 163.0) opens the next turn.
+        let turns = vec![
+            TurnSpan { start_secs: 159.0, end_secs: 163.0, cluster: 0 },
+            TurnSpan { start_secs: 163.0, end_secs: 170.0, cluster: 1 },
+        ];
+        let row = RowIn {
+            text: " And I was like, oh, when you put a that one Is Min jian. Really".to_string(),
+            start_secs: 160.0,
+            end_secs: 164.0,
+            tokens: vec![
+                tok(" And", 162.1), tok(" I", 162.4), tok(" was", 162.7),
+                tok(" like,", 162.85), tok(" oh,", 162.9), tok(" when", 162.95),
+                tok(" you", 162.97), tok(" put", 162.98), tok(" a", 162.99),
+                tok(" that", 162.995), tok(" one", 162.999),
+                tok(" Is", 163.05), tok(" Min", 163.2), tok(" jian.", 163.4),
+                tok(" Really", 163.6),
+            ],
+        };
+        let frags = align_rows_to_turns(&[row.clone()], &turns);
+        assert_eq!(frags.len(), 2, "{:?}", frags);
+        assert_eq!(frags[0].turn_idx, 0);
+        assert_eq!(frags[1].turn_idx, 1);
+        assert_eq!(
+            alphanumeric(&frags[0].text),
+            "AndIwaslikeohwhenyouputathatone",
+            "the tail lands on the earlier turn: {:?}",
+            frags[0].text
+        );
+        assert_eq!(alphanumeric(&frags[1].text), "IsMinjianReally");
+        // Content preservation for the straddling row.
+        let combined: String = frags.iter().map(|f| alphanumeric(&f.text)).collect();
+        assert_eq!(combined, alphanumeric(&row.text));
+    }
+
+    #[test]
+    fn tokenless_row_splits_proportionally_at_word_boundaries() {
+        let turns = vec![
+            TurnSpan { start_secs: 0.0, end_secs: 8.0, cluster: 0 },
+            TurnSpan { start_secs: 8.0, end_secs: 20.0, cluster: 1 },
+        ];
+        let row = RowIn {
+            text: "alpha bravo charlie delta echo foxtrot golf hotel".to_string(),
+            start_secs: 4.0,
+            end_secs: 16.0,
+            tokens: vec![],
+        };
+        let frags = align_rows_to_turns(&[row.clone()], &turns);
+        assert_eq!(frags.len(), 2, "{:?}", frags);
+        // 4s of 12s in turn 0 → the first third of the words.
+        assert_eq!(frags[0].text, "alpha bravo charlie");
+        assert_eq!(frags[1].text, "delta echo foxtrot golf hotel");
+        let combined: String = frags.iter().map(|f| alphanumeric(&f.text)).collect();
+        assert_eq!(combined, alphanumeric(&row.text));
+    }
+
+    #[test]
+    fn zero_overlap_row_attaches_nearest_in_time() {
+        let turns = vec![
+            TurnSpan { start_secs: 0.0, end_secs: 10.0, cluster: 0 },
+            TurnSpan { start_secs: 30.0, end_secs: 40.0, cluster: 1 },
+        ];
+        let row = RowIn {
+            text: "shed span words here".to_string(),
+            start_secs: 18.0,
+            end_secs: 20.0,
+            tokens: vec![],
+        };
+        let frags = align_rows_to_turns(&[row], &turns);
+        assert_eq!(frags.len(), 1);
+        assert_eq!(frags[0].turn_idx, 0, "turn 0 is nearer (8s vs 10s)");
+    }
+
+    #[test]
+    fn content_preservation_invariant_end_to_end() {
+        // Mixed rows — token-timestamped straddler, token-less straddler,
+        // clean row, zero-overlap row. Nothing dropped, nothing doubled.
+        let turns = vec![
+            TurnSpan { start_secs: 0.0, end_secs: 8.0, cluster: 0 },
+            TurnSpan { start_secs: 8.0, end_secs: 20.0, cluster: 1 },
+        ];
+        let rows = vec![
+            RowIn {
+                text: " Okay. I have some updates".to_string(),
+                start_secs: 1.0,
+                end_secs: 4.0,
+                tokens: vec![tok(" Okay.", 1.0), tok(" I", 2.0), tok(" have", 3.0), tok(" some", 3.5), tok(" updates", 3.9)],
+            },
+            RowIn {
+                text: "one two three four five six".to_string(),
+                start_secs: 6.0,
+                end_secs: 12.0,
+                tokens: vec![],
+            },
+            RowIn {
+                text: " roadmap, hopefully.".to_string(),
+                start_secs: 14.0,
+                end_secs: 16.0,
+                tokens: vec![tok(" roadmap,", 14.0), tok(" hopefully.", 15.0)],
+            },
+            RowIn {
+                text: "shed leftovers".to_string(),
+                start_secs: 25.0,
+                end_secs: 26.0,
+                tokens: vec![],
+            },
+        ];
+        let frags = align_rows_to_turns(&rows, &turns);
+        let aligned = group_fragments_by_turn(&turns, &frags);
+        assert_eq!(aligned.len(), 2);
+        for (ri, row) in rows.iter().enumerate() {
+            let want = alphanumeric(&row.text);
+            let got: String = frags
+                .iter()
+                .filter(|f| f.row_idx == ri)
+                .map(|f| alphanumeric(&f.text))
+                .collect();
+            assert_eq!(got, want, "row {:?} content preserved exactly once", row.text);
+        }
+    }
+
+    // ---- continuation fact + gate helper ----
+
+    #[test]
+    fn resolve_turns_marks_continuation_facts() {
+        // Voice change → false; forced same-cluster continuation → true;
+        // meeting start → false.
+        let pieces = vec![
+            PieceIn { dur_secs: 3.0, cluster: Some(0), margin: Some(0.3) },
+            PieceIn { dur_secs: 3.0, cluster: Some(1), margin: Some(0.01) }, // attached back
+            PieceIn { dur_secs: 3.0, cluster: Some(1), margin: Some(0.01) }, // over cap → forced turn
+            PieceIn { dur_secs: 3.0, cluster: Some(0), margin: Some(0.3) },  // coalesces
+        ];
+        let turns = resolve_turns(&pieces);
+        assert_eq!(turns.len(), 2);
+        assert!(!turns[0].continues_previous, "meeting start is not a continuation");
+        assert!(turns[1].continues_previous, "forced same-cluster turn continues the previous");
+
+        let voice_change = resolve_turns(&[
+            PieceIn { dur_secs: 3.0, cluster: Some(0), margin: Some(0.3) },
+            PieceIn { dur_secs: 3.0, cluster: Some(1), margin: Some(0.3) },
+        ]);
+        assert_eq!(voice_change.len(), 2);
+        assert!(!voice_change[1].continues_previous, "corroborated voice change is NOT a continuation");
+    }
+
+    #[test]
+    fn mid_sentence_start_detection() {
+        assert!(is_mid_sentence_start("and I was like"));
+        assert!(is_mid_sentence_start("  -- (five years of it"));
+        assert!(!is_mid_sentence_start("Okay. I have some updates."));
+        assert!(!is_mid_sentence_start("5 years ago"));
+        assert!(!is_mid_sentence_start(""));
+        assert!(!is_mid_sentence_start("…?!"));
     }
 }

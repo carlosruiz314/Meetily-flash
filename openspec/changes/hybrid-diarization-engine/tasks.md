@@ -13,12 +13,12 @@
 
 ## 3. Run assembly engine
 
-- [ ] 3.1 RED→GREEN: piece extraction from corroborated splits; pieces ≥1.5s are labeling candidates; >12s pieces slice to middle-12s; sub-1.5s pieces are attachment-only
-- [ ] 3.2 RED→GREEN: threshold clustering + most-isolated merge-to-cap (production `enforce_max_speakers_cap` policy, cap received from caller) + nearest-centroid refine; deterministic index/time-ordered ties (no HashMap-order effects); CI determinism unit test on synthetic embeddings; phantom-centroid invariant (persisted centroids ⊆ labeled pieces)
-- [ ] 3.3 RED→GREEN: margin-gated backward attachment (margin vs final centroids, post-refine), sub-floor attachment (previous turn; following turn only at meeting start), 5s contiguous-absorption cap forcing a low-confidence turn
-- [ ] 3.4 RED→GREEN: textless-run detection (whisper skew tolerance) dropped BEFORE same-cluster coalescing; coalescing across absorbed silence; "Where | is Ricardo" regression test
-- [ ] 3.5 RED→GREEN: overlap flag recomputed from raw per-frame overlap-pair mass over the FINAL post-merge span; regression test proving a fragment maximum cannot surface as the span flag
-- [ ] 3.6 RED→GREEN: text alignment — token-timestamped rows split at turn boundaries, token-less rows split proportionally, zero-overlap rows attach nearest-in-time; content-preservation invariant asserted end-to-end (every input row's alphanumeric content appears in exactly one output turn); "And I was like..." tail lands on the earlier turn at the ≈163s fixture boundary
+- [x] 3.1 RED→GREEN: piece extraction from corroborated splits; pieces ≥1.5s are labeling candidates; >12s pieces slice to middle-12s; sub-1.5s pieces are attachment-only
+- [x] 3.2 RED→GREEN: threshold clustering + most-isolated merge-to-cap (production `enforce_max_speakers_cap` policy, cap received from caller) + nearest-centroid refine; deterministic index/time-ordered ties (no HashMap-order effects); CI determinism unit test on synthetic embeddings; phantom-centroid invariant (persisted centroids ⊆ labeled pieces)
+- [x] 3.3 RED→GREEN: margin-gated backward attachment (margin vs final centroids, post-refine), sub-floor attachment (previous turn; following turn only at meeting start), 5s contiguous-absorption cap forcing a low-confidence turn
+- [x] 3.4 RED→GREEN: textless-run detection (whisper skew tolerance) dropped BEFORE same-cluster coalescing; coalescing across absorbed silence; "Where | is Ricardo" regression test
+- [x] 3.5 RED→GREEN: overlap flag recomputed from raw per-frame overlap-pair mass over the FINAL post-merge span; regression test proving a fragment maximum cannot surface as the span flag
+- [x] 3.6 RED→GREEN: text alignment — token-timestamped rows split at turn boundaries, token-less rows split proportionally, zero-overlap rows attach nearest-in-time; content-preservation invariant asserted end-to-end (every input row's alphanumeric content appears in exactly one output turn); "And I was like..." tail lands on the earlier turn at the ≈163s fixture boundary
 
 ## 4. Pipeline wiring and data
 
