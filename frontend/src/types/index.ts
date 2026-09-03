@@ -14,6 +14,7 @@ export interface Transcript {
   audio_end_time?: number;   // Seconds from recording start (e.g., 128.6)
   duration?: number;          // Segment duration in seconds (e.g., 3.3)
   speaker?: string;           // Diarization label (e.g., "Speaker 0", "Alice")
+  continues_previous?: boolean | null; // Engine continuation fact; null = legacy row
 }
 
 export interface Block {
@@ -95,4 +96,5 @@ export interface TranscriptSegmentData {
   text: string;
   confidence?: number;
   speaker?: string; // Diarization label
+  continuesPrevious?: boolean | null; // Engine fact; null = legacy row (text heuristic fallback)
 }
