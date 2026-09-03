@@ -37,6 +37,10 @@ pub struct Transcript {
     pub duration: Option<f64>,
     #[serde(rename = "speaker")]
     pub speaker_label: Option<String>,
+    /// Engine continuation fact (change `hybrid-diarization-engine`): true =
+    /// the turn continues the previous turn's sentence. Null = legacy row
+    /// (predates the engine); the UI falls back to its text heuristic.
+    pub continues_previous: Option<bool>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
