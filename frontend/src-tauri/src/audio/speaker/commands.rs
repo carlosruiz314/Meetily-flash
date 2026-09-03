@@ -277,13 +277,14 @@ pub async fn rediarize_meeting<R: tauri::Runtime>(
     // awaits to clear its isRediarizing spinner never fires, and the spinner
     // hangs indefinitely.
     let join_result = tokio::spawn(async move {
-        let result = run_diarization_for_meeting(&pool, &mid, threshold_fp, registry).await;
+        let result = run_diarization_for_meeting(&pool, &mid, threshold_fp, registry, ManualNamesPolicy::Enumerate).await;
         match &result {
             Ok(r) => {
                 let _ = app_clone.emit("diarization-complete", serde_json::json!({
                     "meeting_id": mid,
                     "speaker_count": r.speaker_count,
                     "segments_labeled": r.segments_labeled,
+                        "unmatched_names": r.unmatched_manual_names,
                 }));
                 log::warn!("rediarize_meeting: DONE for {}, {} speakers, {} segments", mid, r.speaker_count, r.segments_labeled);
             }
@@ -313,6 +314,12 @@ pub async fn reset_speaker_labels<R: tauri::Runtime>(
     let threshold_fp = app_state.speaker_merge_threshold_fp.load(Ordering::Relaxed);
     let registry = app_state.speaker_registry.clone();
 
+    // Enumerate the manual labels the full reset is about to delete, so the
+    // run can report which user names failed to re-match.
+    let pre_run_manual_labels = SpeakerRepository::list_manual_speaker_labels(&pool, &meeting_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
     SpeakerRepository::clear_all_speaker_labels(&pool, &meeting_id)
         .await
         .map_err(|e| e.to_string())?;
@@ -322,13 +329,14 @@ pub async fn reset_speaker_labels<R: tauri::Runtime>(
     // Return Err on diarization failure so the frontend's isRediarizing spinner
     // clears (its catch block runs) instead of hanging on a silent Ok(0).
     let join_result = tokio::spawn(async move {
-        let result = run_diarization_for_meeting(&pool, &mid, threshold_fp, registry).await;
+        let result = run_diarization_for_meeting(&pool, &mid, threshold_fp, registry, ManualNamesPolicy::PreCleared(pre_run_manual_labels)).await;
         match &result {
             Ok(r) => {
                 let _ = app_clone.emit("diarization-complete", serde_json::json!({
                     "meeting_id": mid,
                     "speaker_count": r.speaker_count,
                     "segments_labeled": r.segments_labeled,
+                        "unmatched_names": r.unmatched_manual_names,
                 }));
                 log::warn!("reset_speaker_labels: DONE for {}, {} speakers, {} segments", mid, r.speaker_count, r.segments_labeled);
             }
@@ -391,18 +399,79 @@ pub(crate) async fn diarization_lock_for(meeting_id: &str) -> Arc<tokio::sync::M
         .clone()
 }
 
+/// Model-absent gate for the diarization run: BOTH model files must exist.
+/// Anything else is the "speaker models not found" skip branch (no labels
+/// produced). Factored out so the gate itself is pinned by test.
+pub(crate) fn speaker_models_present(models_dir: &std::path::Path) -> bool {
+    models_dir
+        .join(super::model_download::embedding_filename())
+        .exists()
+        && models_dir.join("pyannote-segmentation.onnx").exists()
+}
+
+/// Unmatched-names report (re-diarization requirement): manually-applied
+/// labels that no cluster adopted in the new run, preserving the (already
+/// deterministic) input order.
+fn unmatched_manual_names(manual: &[String], new_labels: &std::collections::HashMap<u32, String>) -> Vec<String> {
+    manual
+        .iter()
+        .filter(|name| !new_labels.values().any(|l| l == *name))
+        .cloned()
+        .collect()
+}
+
+/// How the run treats manually-labeled (renamed) rows — the re-diarization
+/// semantics (change `hybrid-diarization-engine`):
+/// - `None`: automatic write paths — the manual-row guard stays, no report.
+/// - `Enumerate`: the explicit re-run that preserves labels (`rediarize_meeting`)
+///   — enumerate pre-run manual labels BEFORE stale-state cleanup, re-derive
+///   manual rows too, and report names that no cluster re-adopted.
+/// - `PreCleared`: the full-reset variant (`reset_speaker_labels`) — the caller
+///   already cleared ALL labels itself (after enumerating the manual ones) and
+///   hands them in purely for the unmatched-names report.
+#[derive(Debug, Clone)]
+pub(crate) enum ManualNamesPolicy {
+    None,
+    Enumerate,
+    PreCleared(Vec<String>),
+}
+
 pub async fn run_diarization_for_meeting(
     pool: &SqlitePool,
     meeting_id: &str,
     threshold_fp: u32,
     registry: Arc<Mutex<Option<CosineRegistryAdapter>>>,
+    manual_policy: ManualNamesPolicy,
 ) -> Result<DiarizationResult, String> {
     let meeting_lock = diarization_lock_for(meeting_id).await;
     let _diarization_guard = meeting_lock.lock().await;
 
-    let cleared = SpeakerRepository::clear_auto_speaker_labels(pool, meeting_id)
-        .await
-        .map_err(|e| e.to_string())?;
+    // Enumerate pre-run manual labels BEFORE any stale-state cleanup, so the
+    // unmatched-names report is complete even when the cleanup deletes their
+    // only evidence.
+    let (manual_labels, manual_rederive) = match &manual_policy {
+        ManualNamesPolicy::None => (Vec::new(), false),
+        ManualNamesPolicy::Enumerate => (
+            SpeakerRepository::list_manual_speaker_labels(pool, meeting_id)
+                .await
+                .map_err(|e| e.to_string())?,
+            true,
+        ),
+        ManualNamesPolicy::PreCleared(labels) => (labels.clone(), false),
+    };
+
+    let cleared = if manual_rederive {
+        // Explicit re-run: manual rows re-derive too; names re-apply via the
+        // stamped-embedding match, and names whose voice evidence is gone are
+        // reported (not silently dropped).
+        SpeakerRepository::clear_all_speaker_labels(pool, meeting_id)
+            .await
+            .map_err(|e| e.to_string())?
+    } else {
+        SpeakerRepository::clear_auto_speaker_labels(pool, meeting_id)
+            .await
+            .map_err(|e| e.to_string())?
+    };
 
     log::info!(
         "run_diarization_for_meeting: cleared {} auto labels for meeting {}",
@@ -433,7 +502,7 @@ pub async fn run_diarization_for_meeting(
     let folder_path: Option<String> = row.and_then(|r| sqlx::Row::get(&r, "folder_path"));
     let Some(folder) = folder_path else {
         log::warn!("run_diarization_for_meeting: no folder_path for meeting {}", meeting_id);
-        return Ok(DiarizationResult { segments_labeled: cleared, speaker_count: 0 });
+        return Ok(DiarizationResult { segments_labeled: cleared, speaker_count: 0, unmatched_manual_names: Vec::new() });
     };
 
     let folder_path = std::path::Path::new(&folder);
@@ -441,7 +510,7 @@ pub async fn run_diarization_for_meeting(
     let audio_path = find_audio_in_folder(folder_path);
     let Some(audio_path) = audio_path else {
         log::warn!("run_diarization_for_meeting: no audio file in {}", folder_path.display());
-        return Ok(DiarizationResult { segments_labeled: cleared, speaker_count: 0 });
+        return Ok(DiarizationResult { segments_labeled: cleared, speaker_count: 0, unmatched_manual_names: Vec::new() });
     };
     log::warn!("run_diarization_for_meeting: found audio at {}", audio_path.display());
 
@@ -449,13 +518,12 @@ pub async fn run_diarization_for_meeting(
         .unwrap_or_default()
         .join(".meetily-models");
 
+    if !speaker_models_present(&models_dir) {
+        log::warn!("run_diarization_for_meeting: speaker models not found, skipping");
+        return Ok(DiarizationResult { segments_labeled: cleared, speaker_count: 0, unmatched_manual_names: Vec::new() });
+    }
     let embedding_path = models_dir.join(super::model_download::embedding_filename());
     let segmentation_path = models_dir.join("pyannote-segmentation.onnx");
-
-    if !embedding_path.exists() || !segmentation_path.exists() {
-        log::warn!("run_diarization_for_meeting: speaker models not found, skipping");
-        return Ok(DiarizationResult { segments_labeled: cleared, speaker_count: 0 });
-    }
 
     // Step 1: Decode audio + resample to 16kHz mono via sinc resampler.
     let t0 = std::time::Instant::now();
@@ -582,7 +650,7 @@ pub async fn run_diarization_for_meeting(
         SpeakerRepository::delete_embeddings_by_meeting(pool, meeting_id)
             .await
             .map_err(|e| e.to_string())?;
-        return Ok(DiarizationResult { segments_labeled: cleared, speaker_count: 0 });
+        return Ok(DiarizationResult { segments_labeled: cleared, speaker_count: 0, unmatched_manual_names: Vec::new() });
     }
 
     let num_speakers: std::collections::HashSet<u32> =
@@ -611,7 +679,7 @@ pub async fn run_diarization_for_meeting(
         .map_err(|e| format!("Failed to fetch transcripts: {}", e))?;
 
     if transcripts.is_empty() {
-        return Ok(DiarizationResult { segments_labeled: cleared, speaker_count: num_speakers.len() });
+        return Ok(DiarizationResult { segments_labeled: cleared, speaker_count: num_speakers.len(), unmatched_manual_names: Vec::new() });
     }
 
     use crate::audio::speaker::alignment::{
@@ -677,7 +745,7 @@ pub async fn run_diarization_for_meeting(
             s
         })
         .collect();
-    let segments_labeled = SpeakerRepository::persist_aligned_groups(pool, aligned)
+    let segments_labeled = SpeakerRepository::persist_aligned_groups(pool, aligned, manual_rederive)
         .await
         .map_err(|e| e.to_string())?
         as u64;
@@ -697,15 +765,34 @@ pub async fn run_diarization_for_meeting(
         meeting_id
     );
 
+    let unmatched_manual_names = if !manual_labels.is_empty() {
+        let unmatched = unmatched_manual_names(&manual_labels, &label_map);
+        if !unmatched.is_empty() {
+            log::warn!(
+                "run_diarization_for_meeting: {} manual speaker name(s) could not be re-matched on meeting {}: {:?}",
+                unmatched.len(),
+                meeting_id,
+                unmatched
+            );
+        }
+        unmatched
+    } else {
+        Vec::new()
+    };
+
     Ok(DiarizationResult {
         segments_labeled,
         speaker_count: num_speakers.len(),
+        unmatched_manual_names,
     })
 }
 
 pub struct DiarizationResult {
     pub segments_labeled: u64,
     pub speaker_count: usize,
+    /// Manual speaker names that could not re-attach to any cluster in this
+    /// run (explicit re-run path only; empty otherwise).
+    pub unmatched_manual_names: Vec<String>,
 }
 
 fn find_audio_in_folder(folder: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -1114,6 +1201,24 @@ pub fn enforce_max_speakers_cap(
 mod tests {
     use super::*;
 
+    // Task 4.2 pin: the model-absent gate ("speaker models not found" skip).
+    #[test]
+    fn speaker_models_present_requires_both_model_files() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!speaker_models_present(dir.path()), "empty dir → skip");
+
+        let seg = dir.path().join("pyannote-segmentation.onnx");
+        std::fs::write(&seg, b"stub").unwrap();
+        assert!(!speaker_models_present(dir.path()), "segmentation alone → skip");
+
+        let emb = dir.path().join(crate::audio::speaker::model_download::embedding_filename());
+        std::fs::write(&emb, b"stub").unwrap();
+        assert!(speaker_models_present(dir.path()), "both files → run");
+
+        std::fs::remove_file(&seg).unwrap();
+        assert!(!speaker_models_present(dir.path()), "embedding alone → skip");
+    }
+
     #[test]
     fn sanitize_rejects_empty() {
         assert!(sanitize_speaker_name("").is_err());
@@ -1213,7 +1318,7 @@ mod tests {
         let threshold_fp = (0.40f32 * 65536.0) as u32;
         let meeting_id = "meeting-00000000-0000-4000-8000-000000000003";
 
-        let result = run_diarization_for_meeting(&pool, meeting_id, threshold_fp, registry).await;
+        let result = run_diarization_for_meeting(&pool, meeting_id, threshold_fp, registry, ManualNamesPolicy::None).await;
 
         match &result {
             Ok(r) => eprintln!(
@@ -1261,7 +1366,7 @@ mod tests {
 
         let threshold_fp = (0.65f32 * 65536.0) as u32;
         let registry = Arc::new(Mutex::new(None));
-        let result = run_diarization_for_meeting(&pool, meeting_id, threshold_fp, registry)
+        let result = run_diarization_for_meeting(&pool, meeting_id, threshold_fp, registry, ManualNamesPolicy::None)
             .await
             .expect("diarization");
 
@@ -1457,7 +1562,7 @@ mod tests {
 
         let threshold_fp = (0.65f32 * 65536.0) as u32;
         let registry = Arc::new(Mutex::new(None));
-        let result = run_diarization_for_meeting(&pool, meeting_id, threshold_fp, registry)
+        let result = run_diarization_for_meeting(&pool, meeting_id, threshold_fp, registry, ManualNamesPolicy::None)
             .await
             .expect("diarization");
 
@@ -1534,7 +1639,7 @@ mod tests {
 
         let threshold_fp = (0.40f32 * 65536.0) as u32;
         let registry = Arc::new(Mutex::new(None));
-        let result = run_diarization_for_meeting(&pool, meeting_id, threshold_fp, registry)
+        let result = run_diarization_for_meeting(&pool, meeting_id, threshold_fp, registry, ManualNamesPolicy::None)
             .await
             .expect("diarization");
         eprintln!(
@@ -2606,5 +2711,60 @@ mod tests {
         assert_ne!(first, second, "old row replaced, not duplicated");
         let nulls: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM speaker_embeddings WHERE speaker_id IS NULL").fetch_one(&pool).await.unwrap();
         assert_eq!(nulls.0, 0);
+    }
+
+    // Re-diarization semantics: unmatched-name report.
+    #[test]
+    fn unmatched_manual_names_reports_only_unmatched() {
+        let map = std::collections::HashMap::from([
+            (0u32, "Alice".to_string()),
+            (1u32, "Speaker 1".to_string()),
+        ]);
+        let manual = vec![
+            "Alice".to_string(),
+            "Zed".to_string(),
+            "Speaker 1".to_string(),
+        ];
+        assert_eq!(unmatched_manual_names(&manual, &map), vec!["Zed".to_string()]);
+        assert!(unmatched_manual_names(&[], &map).is_empty());
+    }
+
+    // Survival: a user name re-applies via the stamped-embedding match even
+    // when the new run's cluster count and ordering changed completely; a
+    // name whose voice evidence is gone is reported unmatched, not dropped.
+    #[tokio::test]
+    async fn rerun_reapplies_stamped_name_despite_changed_cluster_layout() {
+        let pool = stamp_pool().await;
+        // Prior run: the user renamed a cluster to "Cynthia"; relinking stamped
+        // her voice into the named-speaker pool.
+        SpeakerRepository::create_speaker(&pool, "speaker-cynthia", "Cynthia", "#321321").await.unwrap();
+        let mut cynthia = vec![0.0f32; TEST_DIM];
+        cynthia[1] = 1.0;
+        SpeakerRepository::store_embedding(&pool, "emb-cynthia", Some("speaker-cynthia"), &cynthia, "older-meeting", "Speaker 1").await.unwrap();
+
+        // Re-run: THREE clusters in a different order; Cynthia's voice now
+        // lands on cluster 2 (previously cluster 1).
+        let mut c0 = vec![0.0f32; TEST_DIM];
+        c0[0] = 1.0;
+        let mut c1 = vec![0.0f32; TEST_DIM];
+        c1[0] = -1.0;
+        let cents = std::collections::HashMap::from([
+            (0u32, c0),
+            (1u32, c1),
+            (2u32, cynthia.clone()),
+        ]);
+        let reg = registry_with("speaker-cynthia", &cynthia);
+        let label_map = persist_stamped_centroids(&pool, &reg, 0.99, "m9", &cents).await.unwrap();
+        assert_eq!(label_map[&2], "Cynthia", "name re-applies regardless of cluster index");
+        assert_eq!(label_map[&0], "Speaker 0");
+        assert_eq!(label_map[&1], "Speaker 1");
+
+        // The manual-name report: "Cynthia" survived, "Bob" (no stamped voice
+        // evidence anywhere) is reported unmatched.
+        let manual = vec!["Bob".to_string(), "Cynthia".to_string()];
+        assert_eq!(
+            unmatched_manual_names(&manual, &label_map),
+            vec!["Bob".to_string()]
+        );
     }
 }
