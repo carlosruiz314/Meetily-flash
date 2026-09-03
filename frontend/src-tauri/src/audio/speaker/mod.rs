@@ -6,6 +6,7 @@ pub mod alignment;
 pub mod sherpa_adapter;
 pub mod nemo_extractor;
 pub mod pyannote_segmentation;
+pub mod run_assembly;
 pub mod token_timestamps;
 pub mod turns;
 pub mod commands;
