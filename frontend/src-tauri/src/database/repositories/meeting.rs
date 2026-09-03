@@ -127,6 +127,7 @@ impl MeetingsRepository {
                     audio_end_time: t.audio_end_time,
                     duration: t.duration,
                     speaker: t.speaker_label,
+                    continues_previous: t.continues_previous,
                 })
                 .collect::<Vec<_>>();
 

@@ -379,7 +379,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         knownSpeakers={knownSpeakers}
                                         canRevertSpeaker={!!segment.speaker && !segment.speaker.startsWith("Speaker ") && !segment.speaker.startsWith("Unknown")}
                                         onSpeakerRevert={segment.speaker ? () => handleSpeakerRevert(segment.speaker!) : undefined}
-                                        continuesPrevious={virtualRow.index > 0 && isContinuation(segments[virtualRow.index - 1].text, segment.text)}
+                                        continuesPrevious={segment.continuesPrevious ?? (virtualRow.index > 0 && isContinuation(segments[virtualRow.index - 1].text, segment.text))}
                                     />
                                 </div>
                             );
@@ -442,7 +442,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         knownSpeakers={knownSpeakers}
                                         canRevertSpeaker={!!segment.speaker && !segment.speaker.startsWith("Speaker ") && !segment.speaker.startsWith("Unknown")}
                                         onSpeakerRevert={segment.speaker ? () => handleSpeakerRevert(segment.speaker!) : undefined}
-                                        continuesPrevious={segIdx > 0 && isContinuation(segments[segIdx - 1].text, segment.text)}
+                                        continuesPrevious={segment.continuesPrevious ?? (segIdx > 0 && isContinuation(segments[segIdx - 1].text, segment.text))}
                                     />
                                 </motion.div>
                             );
