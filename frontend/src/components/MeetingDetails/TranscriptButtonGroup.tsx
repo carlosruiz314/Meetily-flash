@@ -39,7 +39,7 @@ export function TranscriptButtonGroup({
     setIsRediarizing(true);
     try {
       const { listen } = await import('@tauri-apps/api/event');
-      const unlisten = await listen<{ meeting_id: string; speaker_count: number; segments_labeled: number }>(
+      const unlisten = await listen<{ meeting_id: string; speaker_count: number; segments_labeled: number; unmatched_names?: string[] }>(
         'diarization-complete',
         async (event) => {
           if (event.payload.meeting_id === meetingId) {
@@ -47,6 +47,12 @@ export function TranscriptButtonGroup({
             if (onRefetchTranscripts) await onRefetchTranscripts();
             setIsRediarizing(false);
             toast.success(`Detected ${event.payload.speaker_count} speaker${event.payload.speaker_count !== 1 ? 's' : ''}`);
+            const unmatched = event.payload.unmatched_names ?? [];
+            if (unmatched.length > 0) {
+              toast.warning('Some speaker names could not be re-applied', {
+                description: `${unmatched.join(', ')} — no voice in this run matched. Rename again to re-assign.`,
+              });
+            }
           }
         }
       );
