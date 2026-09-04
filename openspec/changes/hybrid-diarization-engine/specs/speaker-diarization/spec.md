@@ -24,7 +24,7 @@ Where this requirement and the chunk-grid labeling requirements conflict on the 
 
 #### Scenario: Voice change inside a run splits at the verified change point
 
-- **GIVEN** the cde5c264 fixture entry of one voice change in 02:12–02:50s located at ≈163s (±1s per the fixture pin)
+- **GIVEN** the cde5c264 fixture entry of one voice change in 02:12–02:50s located at ≈161s (±0.75s per the fixture pin, user-ear-recorded 2026-09-04)
 - **WHEN** the engine derives turns
 - **THEN** the run splits at the corroborated change point, not at the ≈159s pause
 - **AND** the sentence tail ("And I was like, oh, when you put a that one") is attributed to the earlier speaker
@@ -54,7 +54,7 @@ Where this requirement and the chunk-grid labeling requirements conflict on the 
 
 - **GIVEN** the 02:12–02:50 fixture entry, where the "And I was like, oh, when you put a that one" tail shares a whisper row with later-speaker text
 - **WHEN** the rows are aligned to the derived turns
-- **THEN** the row splits at the ≈163s boundary and the tail text is attributed to the earlier turn (whole-row assignment would make this entry structurally unpassable)
+- **THEN** the row splits at the ≈161s boundary and the tail text is attributed to the earlier turn (whole-row assignment would make this entry structurally unpassable)
 
 #### Scenario: Overlap flag is span-truthful
 
@@ -77,7 +77,7 @@ Where this requirement and the chunk-grid labeling requirements conflict on the 
 
 ### Requirement: Ear-truth fixture gate validates attribution
 
-The repository SHALL contain a pinned ear-truth fixture (`frontend/src-tauri/tests/fixtures/ear_truth_cde5c264.json`) holding attribution facts as data, each entry `{start_s, end_s, kind, params}` with kinds: `single_voice` (no boundary inside the span; all turns in it share one label), `voice_change_at` (exactly one boundary within the pinned tolerance; the pinned text tail belongs to the earlier turn), `distinct_speaker` (the span's turn label differs from the surrounding turns'). Seed entries (user-ear-established on cde5c264; formally re-confirmed in the change's first task): 9.38–13.03s `single_voice`; 02:12–02:50s `voice_change_at` ≈163s ±1s with the "And I was like, oh, when you put a that one" tail on the earlier side; ≈2818s `distinct_speaker` (Ricardo's interjection vs the surrounding voice). The fixture SHALL be extended toward ~8–10 entries by implementer-mined candidate spans that the user confirms or denies per entry; entries change only with explicit user confirmation, and two entries SHALL be designated hold-out (not used for any calibration decision).
+The repository SHALL contain a pinned ear-truth fixture (`frontend/src-tauri/tests/fixtures/ear_truth_cde5c264.json`) holding attribution facts as data, each entry `{id, start_s, end_s, kind, params}` with kinds: `single_voice` (all turns overlapping the span carry one label — silence-delimited same-speaker boundaries inside the span are not violations, since the ear attests voices, not turn units), `voice_change_at` (exactly one label change inside the span, one within the pinned tolerance; the pinned text tail belongs to the earlier turn), `distinct_speaker` (the span's turn label differs from the surrounding turns'). The 13 recorded entries (user-ear answers of 2026-09-04, verbatim in this change's `fixture-answers.md`, resolved to absolute times via recovered clip offsets): single-voice spans ≈5.9–12.8 (user's sentence), 15.5–20.8, 24.5–29.5 (Cynthia), 32.0–38.0, 2803–2820 (Ricardo); voice changes at ≈13.0 (user→Cynthia), ≈29.5 (Cynthia→user), ≈31.5 (user→Cynthia "Yeah"), ≈38.0/≈39.0 ("okay" interjection), ≈2776.4 (two voices trading), ≈2803.0 (Cynthia→Ricardo), ≈2821.0 (Ricardo→Cynthia), and the 02:12–02:50s anchor `voice_change_at` ≈161s ±0.75 with the "And I was like, oh, when you put a that one" tail on the earlier side. Entries change only with explicit user confirmation, and two entries (`S3_updates_run`, `S13_ricardo_to_cynthia`) SHALL be designated hold-out (not used for any calibration decision).
 
 A gate test SHALL run the turn-derivation engine on the real meeting audio and assert every entry, failing with the entry name on mismatch. Because it requires the meeting audio and local models, the gate SHALL be env-gated like the existing live diagnostics, AND a named runner script SHALL record the gate output to a file inside the change folder at every verification point, so the acceptance evidence is inspectable without re-running. Per-entry outcomes SHALL be exactly: PASS; KNOWN-LIMITATION (documented in this change with explicit user sign-off); or FAIL (blocks the change). A synthetic subset of the gate (the frame/split/attachment rules on recorded fixture arrays) SHALL run in plain `cargo test` without audio or models.
 

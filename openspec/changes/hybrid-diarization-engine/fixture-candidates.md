@@ -1,3 +1,5 @@
+# SUPERSEDED — see fixture-answers.md (user confirmed/denied 2026-09-04; several hypotheses corrected there).
+
 # Fixture candidates — task 1.1 (user confirm/deny)
 
 Each entry becomes `ear_truth_cde5c264.json` data `{start_s, end_s, kind, params}`.

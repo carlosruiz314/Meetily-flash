@@ -1,0 +1,52 @@
+{
+  "01_one-voice-throughout.mp3": {
+    "start_s": 8.0,
+    "end_s": 14.5,
+    "corr": 0.9969
+  },
+  "02_if-the-voice-changes-tell-me-when.mp3": {
+    "start_s": 155.0,
+    "end_s": 170.0,
+    "corr": 0.9971
+  },
+  "03_same-person-or-someone-else-in-the-middle.mp3": {
+    "start_s": 2812.0,
+    "end_s": 2826.0,
+    "corr": 0.9964
+  },
+  "04_does-the-voice-change-after-five-years.mp3": {
+    "start_s": 2493.892,
+    "end_s": 2498.392,
+    "corr": 0.1023
+  },
+  "05_one-voice-throughout.mp3": {
+    "start_s": 24.5,
+    "end_s": 30.5,
+    "corr": 0.9978
+  },
+  "06_does-the-voice-change-here.mp3": {
+    "start_s": 28.5,
+    "end_s": 33.0,
+    "corr": 0.9961
+  },
+  "07_one-voice-throughout.mp3": {
+    "start_s": 15.5,
+    "end_s": 20.8,
+    "corr": 0.998
+  },
+  "08_one-voice-throughout.mp3": {
+    "start_s": 2802.0,
+    "end_s": 2820.0,
+    "corr": 0.9979
+  },
+  "09_same-voice-or-two-people.mp3": {
+    "start_s": 2772.0,
+    "end_s": 2777.5,
+    "corr": 0.9989
+  },
+  "10_same-voice-from-where-is-ricardo-on.mp3": {
+    "start_s": 32.0,
+    "end_s": 41.0,
+    "corr": 0.9979
+  }
+}

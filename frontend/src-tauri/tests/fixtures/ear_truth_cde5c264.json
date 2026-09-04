@@ -1,0 +1,130 @@
+{
+  "meeting": "cde5c264",
+  "recorded": "2026-09-04",
+  "source_audio": "~/Music/meetily-recordings/Meeting 2026-06-22_16-04-01_2026-06-22_14-04/audio.mp4",
+  "voices_note": "user = softer male; Cynthia = louder female; Ricardo = third voice. Times are meeting-absolute seconds (clip answers resolved via fixture_clips/offsets.json).",
+  "single_voice_semantics": "All turns/segments overlapping the span by >0.25s must carry the SAME speaker label. Silence-delimited same-speaker boundaries inside the span are NOT violations (the ear attests voices, not turn units).",
+  "known_limitations": [],
+  "entries": [
+    {
+      "id": "S1_five_years_sentence",
+      "kind": "single_voice",
+      "start_s": 5.9,
+      "end_s": 12.8,
+      "hold_out": false,
+      "note": "User voice: '...you've aged like five years' — one continuous sentence (ear-established earlier, re-confirmed via clip 01: the user's part ends after 'five years'). The legacy pipeline flips label mid-sentence at 12.07."
+    },
+    {
+      "id": "S2_user_to_cynthia_13s",
+      "kind": "voice_change_at",
+      "start_s": 12.0,
+      "end_s": 15.5,
+      "change_at_s": 13.03,
+      "tolerance_s": 0.5,
+      "hold_out": false,
+      "note": "Clip 01: Cynthia (louder female) takes over after the user's sentence; 'Yeah. That's right. Oh, man' is hers. Pin = pyannote flip 13.011, bounded by sentence end 12.8."
+    },
+    {
+      "id": "S3_updates_run",
+      "kind": "single_voice",
+      "start_s": 15.5,
+      "end_s": 20.83,
+      "hold_out": true,
+      "note": "Clip 07 confirmed one voice throughout. May contain silence gaps; asserts label uniformity only."
+    },
+    {
+      "id": "S4_cynthia_banter",
+      "kind": "single_voice",
+      "start_s": 24.5,
+      "end_s": 29.5,
+      "hold_out": false,
+      "note": "Clip 05: Cynthia throughout (user's 'yeah sure' starts at the very end). The pipeline's 26.11 flip ('do we wan|to') is fabricated."
+    },
+    {
+      "id": "S5_cynthia_to_user_yeah_sure",
+      "kind": "voice_change_at",
+      "start_s": 28.5,
+      "end_s": 31.0,
+      "change_at_s": 29.5,
+      "tolerance_s": 0.5,
+      "hold_out": false,
+      "note": "Clips 05 and 06 independently place it: Cynthia → user at ≈29.5. 'Yeah, sure, sure, sure. Yeah, for Paulina, right?' is the USER."
+    },
+    {
+      "id": "S6_user_to_cynthia_yeah",
+      "kind": "voice_change_at",
+      "start_s": 30.5,
+      "end_s": 33.04,
+      "change_at_s": 31.5,
+      "tolerance_s": 0.75,
+      "hold_out": false,
+      "note": "Clip 06 0:03: Cynthia interjects 'Yeah' — inside the legacy pipeline's 30.09–34.92 row (missed change)."
+    },
+    {
+      "id": "S7_where_is_ricardo_head",
+      "kind": "single_voice",
+      "start_s": 32.0,
+      "end_s": 38.0,
+      "hold_out": false,
+      "note": "Clip 10: same voice 0:00–0:06. The DB flip at 34.92 ('Where | is Ricardo') is fabricated."
+    },
+    {
+      "id": "S8_okay_interjection_start",
+      "kind": "voice_change_at",
+      "start_s": 37.5,
+      "end_s": 39.5,
+      "change_at_s": 38.0,
+      "tolerance_s": 0.5,
+      "hold_out": false,
+      "note": "Clip 10 0:06: Cynthia's brief 'okay' interjection starts."
+    },
+    {
+      "id": "S9_okay_interjection_end",
+      "kind": "voice_change_at",
+      "start_s": 38.5,
+      "end_s": 41.02,
+      "change_at_s": 39.0,
+      "tolerance_s": 0.5,
+      "hold_out": false,
+      "note": "Clip 10 0:07: back to the main voice."
+    },
+    {
+      "id": "S10_can_you_come_again_trade",
+      "kind": "voice_change_at",
+      "start_s": 2772.0,
+      "end_s": 2777.54,
+      "change_at_s": 2776.4,
+      "tolerance_s": 1.5,
+      "hold_out": false,
+      "note": "Clip 09: 'two people trading' (two voices confirmed). Exact trade time not ear-pinned; pinned at the DB row edge 2776.36 ('...probably something that we | can take. Can you come again?')."
+    },
+    {
+      "id": "S11_ricardo_stretch",
+      "kind": "single_voice",
+      "start_s": 2803.0,
+      "end_s": 2820.0,
+      "hold_out": false,
+      "note": "Clip 08: one voice 0:01–end (Ricardo, named by clip 03) after Cynthia's brief 0:00–0:01."
+    },
+    {
+      "id": "S12_cynthia_to_ricardo",
+      "kind": "voice_change_at",
+      "start_s": 2801.5,
+      "end_s": 2804.5,
+      "change_at_s": 2803.0,
+      "tolerance_s": 0.5,
+      "hold_out": false,
+      "note": "Clip 08 0:00–0:01: Cynthia → Ricardo."
+    },
+    {
+      "id": "S13_ricardo_to_cynthia",
+      "kind": "voice_change_at",
+      "start_s": 2812.0,
+      "end_s": 2826.04,
+      "change_at_s": 2821.0,
+      "tolerance_s": 0.75,
+      "hold_out": true,
+      "note": "Clip 03 0:09: Ricardo until 0:09, Cynthia afterwards. Corrects the old hypothesis (a ~2818 interjection) — Ricardo holds 2812–2821."
+    }
+  ]
+}
