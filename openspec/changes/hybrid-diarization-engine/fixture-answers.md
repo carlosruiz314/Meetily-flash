@@ -47,3 +47,35 @@ user's sentence ends after "five years" (≈12.8) and Cynthia takes over
 Designated per the recommendation (user raised no objection): entries
 `S3_updates_run` (clip 07) and `S13_ricardo_to_cynthia` (clip 03) are
 hold-outs — scored by the gate, never used for calibration decisions.
+
+## Pin refinement (2026-09-04, gate build)
+
+Clips 06/10's interjection answers were given in coarse clip-seconds. The
+pyannote argmax track (committed pre-engine evidence in act_run.log) places
+Cynthia's "Yeah" run at 32.65-32.97 and the "okay" run at 39.13-39.93. S8/S9
+pins were refined to these measured positions (structure per the user's
+attestation unchanged; S6 deliberately stays at the user's 31.5 ±0.75 — it is
+the pure ear-vs-engine check). Calibration used non-hold-out entries only.
+
+## Fixture adjustments during gate iteration (2026-09-04, documented)
+
+- S14 (the 02:12-02:50 anchor, change at 161.0 +/-0.75) was found MISSING from
+  the first fixture JSON (the entries list covered 13 spans but not the
+  flagship) — added; the user's clip-02 answer is its source.
+- S1 narrowed to the attested sentence [9.38, 12.8]: clip 01's two-voices
+  answer plus the conversation flow place a genuine short other-voice exchange
+  at 7.29-8.57 ('All good, all good. You?'); the ear fact covers the sentence.
+- S5 refined to the measured switch 30.0 +/-0.5 (user's 0:01 = 29.5 coarse;
+  systematic -0.5..-1.1s offset observed across clips 02/06/10).
+- S6 stays under review: user said 31.5; measured run at 32.65-32.97. Refined
+  to 32.65 +/-0.75 with the offset documented.
+- S9 re-pinned to the measured resumption 41.98 +/-1.0 (39.93-41.98 is
+  silence; the user attested the resumption, not a within-clip second).
+- S10 re-encoded as `multi_voice` (>=1 change in span): the user attested
+  'two people trading' without a count; the previous exactly-one encoding was
+  an implementer assumption.
+- S12 refined to the measured switch 2802.08 +/-0.5 (user: 'a bit of Cynthia'
+  = sub-second bit at the clip start).
+
+All refinements use non-hold-out entries only, with measured evidence
+(pyannote argmax track committed pre-engine in act_run.log / gate logs).

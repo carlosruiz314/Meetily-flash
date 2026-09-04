@@ -57,6 +57,29 @@ Legacy `consolidate_meeting_turns` and the persist-path turn assembly from `sent
 
 **D10 — Failure branches.** Embedding-model unloadable ⇒ run fails with the error surfaced (no partial labels); pyannote mid-pass failure ⇒ run fails without partial persistence; segmentation model absent ⇒ skip ("speaker models not found"); segmentation model corrupt ⇒ fallback grid path. Enumerated in the spec's fallback scenario.
 
+## Engine calibration record (gate iterations, 2026-09-04)
+
+- **Split corroboration tolerance 0.2s → 0.35s**: per-window decodes jitter
+  >0.2s at real changes; the tight window silently swallowed corroborated
+  boundaries. Calibrated on non-hold-out entries.
+- **Sub-floor arbitration (D3 amendment)**: promotion floor 0.8s (a 0.37s
+  fragment once won with margin 0.28 on pure noise); burst-join for <0.8s
+  fragments between agreeing neighbors; sandwich rule keeps interjection
+  boundaries; undecided ≥-floor pieces keep their boundary instead of being
+  absorbed (the 39.0s "okay" was eaten twice by over-eager joining).
+- **Marker semantics**: `continues_previous` = engine fact OR text begins
+  mid-sentence (`effective_continuation`). A voice change cutting a shared
+  whisper row mid-sentence is legitimately marked; a marker on a fresh
+  sentence at a pinned voice change remains a defect.
+- **Known model gaps pending user sign-off (gate FAILs by design)**: S5/S6 —
+  every per-window decode renders the ≈26.4–34.66s stretch as continuous
+  single-speaker speech, so the user-heard changes at ≈30.0/≈32.65 have NO
+  model signal for any assembly logic to find; S7 — the 8-window-corroborated
+  change at 34.66s plus confident TitaNet separation (margin 0.157–0.40)
+  contradict the ear's "same voice through 32–38". Named next lever for
+  S5/S6: mixed-piece sub-window scanning (TitaNet change detection inside
+  ambiguous long pieces).
+
 ## Risks / Trade-offs (continued)
 
 - [Meetings with >3 simultaneous voices: powerset segmentation degrades] → Explicit non-goal; label count still follows clustering + cap (identity comes from TitaNet, not the powerset indices); noted so the degradation is expected, not discovered.

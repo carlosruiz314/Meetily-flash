@@ -20,8 +20,10 @@ pub const MIN_RUN_SECS: f64 = 0.3;
 /// Label-track mode filter radius (frames; ≈50ms). Calibration-gated (design D8).
 pub const MODE_FILTER_RADIUS_FRAMES: usize = 3;
 /// Split corroboration tolerance: both adjacent windows must show a change
-/// event within this of the candidate time (spec step 2).
-pub const SPLIT_TOLERANCE_SECS: f64 = 0.2;
+/// event within this of the candidate time (spec step 2). Calibrated on the
+/// fixture's non-hold-out entries (S5): per-window decodes jitter more than
+/// 0.2s at real changes, which silently swallowed the ≈30.0s boundary.
+pub const SPLIT_TOLERANCE_SECS: f64 = 0.35;
 /// Labeling floor = `MIN_SPEECH_SECS`; sub-floor pieces are attachment-only.
 pub const EMBED_FLOOR_SECS: f64 = 1.5;
 /// Pieces longer than this embed their middle slice (validated measurement).
@@ -31,6 +33,11 @@ pub const AMBIGUITY_MARGIN: f32 = 0.05;
 /// Contiguous backward-attached material above this forces its own
 /// low-confidence turn (spec step 4).
 pub const ABSORPTION_CAP_SECS: f64 = 5.0;
+/// Minimum duration for margin-based sub-floor promotion: shorter slices
+/// produce confidently-wrong identities (a 0.37s fragment once won with
+/// margin 0.28 on noise). Below this floor, sub-floor pieces resolve by
+/// neighbor vote instead. Calibration-gated (design D8).
+pub const PROMOTION_FLOOR_SECS: f64 = 0.8;
 /// Overlap flag threshold on powerset classes 4–6 mass (spec step 7).
 pub const OVERLAP_THRESHOLD: f32 = 0.25;
 /// Piece shed-to-cap before embedding (spec: bounded clustering cost).
@@ -360,12 +367,15 @@ pub fn margin_to_centroids(embedding: &[f32], centroids: &[Vec<f32>]) -> f32 {
 
 /// One input piece, in time order. `cluster = None` = sub-floor piece (may
 /// carry an embedding for attachment only). `margin` = final-centroid margin
-/// for labeled pieces (post-refine).
+/// for labeled pieces (post-refine). `promoted_subfloor` = a sub-floor piece
+/// the embedding-margin arbitration promoted to its own turn (engine-set).
 #[derive(Clone, Copy, Debug)]
 pub struct PieceIn {
+    pub start_secs: f64,
     pub dur_secs: f64,
     pub cluster: Option<usize>,
     pub margin: Option<f32>,
+    pub promoted_subfloor: bool,
 }
 
 /// A derived turn. `low_confidence` = carries attached material or was forced
@@ -374,6 +384,8 @@ pub struct PieceIn {
 /// false) — persisted on the turn's first row.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TurnOut {
+    pub start_secs: f64,
+    pub end_secs: f64,
     pub cluster: usize,
     pub low_confidence: bool,
     pub continues_previous: bool,
@@ -393,30 +405,35 @@ pub struct TurnOut {
 pub fn resolve_turns(pieces: &[PieceIn]) -> Vec<TurnOut> {
     let mut turns: Vec<TurnOut> = Vec::new();
     let mut pending_forward: f64 = 0.0;
+    let mut pending_start: f64 = 0.0;
     for p in pieces {
+        let piece_end = p.start_secs + p.dur_secs;
         let attach = match p.cluster {
-            None => true,
-            Some(_) => p.margin.map_or(false, |m| m < AMBIGUITY_MARGIN),
+            None => !p.promoted_subfloor,
+            Some(_) => !p.promoted_subfloor && p.margin.map_or(false, |m| m < AMBIGUITY_MARGIN),
         };
         if !attach {
             let c = p.cluster.expect("labeled piece has cluster");
+            let start = if pending_forward > 0.0 { pending_start } else { p.start_secs };
+            let t = TurnOut {
+                start_secs: start,
+                end_secs: piece_end,
+                cluster: c,
+                low_confidence: pending_forward > 0.0 || p.promoted_subfloor,
+                continues_previous: turns.last().map_or(false, |prev| prev.cluster == c),
+                dur_secs: p.dur_secs + pending_forward,
+                attached_secs: pending_forward,
+            };
+            pending_forward = 0.0;
             if let Some(prev) = turns.last_mut() {
-                if prev.cluster == c {
-                    prev.dur_secs += p.dur_secs + pending_forward;
-                    prev.attached_secs += pending_forward;
-                    pending_forward = 0.0;
+                if prev.cluster == t.cluster {
+                    prev.end_secs = t.end_secs;
+                    prev.dur_secs += t.dur_secs;
+                    prev.attached_secs += t.attached_secs;
                     continue;
                 }
             }
-            let continues = turns.last().map_or(false, |prev| prev.cluster == c);
-            turns.push(TurnOut {
-                cluster: c,
-                low_confidence: pending_forward > 0.0,
-                continues_previous: continues,
-                dur_secs: p.dur_secs + pending_forward,
-                attached_secs: pending_forward,
-            });
-            pending_forward = 0.0;
+            turns.push(t);
             continue;
         }
         let over_cap = matches!(
@@ -428,10 +445,14 @@ pub fn resolve_turns(pieces: &[PieceIn]) -> Vec<TurnOut> {
                 prev.low_confidence = true;
                 prev.attached_secs += p.dur_secs;
                 prev.dur_secs += p.dur_secs;
+                prev.end_secs = piece_end;
             }
         }
         if turns.is_empty() {
             // Meeting start: hold forward for the first labeled turn.
+            if pending_forward == 0.0 {
+                pending_start = p.start_secs;
+            }
             pending_forward += p.dur_secs;
         } else if over_cap {
             // Contiguous attached material would exceed the cap: it opens its
@@ -440,6 +461,8 @@ pub fn resolve_turns(pieces: &[PieceIn]) -> Vec<TurnOut> {
             // the previous turn ⇒ it continues that turn's speech.
             let c = turns.last().expect("non-empty").cluster;
             turns.push(TurnOut {
+                start_secs: p.start_secs,
+                end_secs: piece_end,
                 cluster: c,
                 low_confidence: true,
                 continues_previous: true,
@@ -932,10 +955,10 @@ mod tests {
     #[test]
     fn resolve_turns_coalesces_same_cluster_and_attaches_subfloor() {
         let pieces = vec![
-            PieceIn { dur_secs: 3.0, cluster: Some(0), margin: Some(0.3) },
-            PieceIn { dur_secs: 0.5, cluster: None, margin: None },   // sub-floor → attach back
-            PieceIn { dur_secs: 3.0, cluster: Some(0), margin: Some(0.3) }, // coalesce
-            PieceIn { dur_secs: 4.0, cluster: Some(1), margin: Some(0.3) },
+            PieceIn { start_secs: 0.0, dur_secs: 3.0, cluster: Some(0), margin: Some(0.3), promoted_subfloor: false },
+            PieceIn { start_secs: 0.0, dur_secs: 0.5, cluster: None, margin: None, promoted_subfloor: false },   // sub-floor → attach back
+            PieceIn { start_secs: 0.0, dur_secs: 3.0, cluster: Some(0), margin: Some(0.3), promoted_subfloor: false }, // coalesce
+            PieceIn { start_secs: 0.0, dur_secs: 4.0, cluster: Some(1), margin: Some(0.3), promoted_subfloor: false },
         ];
         let turns = resolve_turns(&pieces);
         assert_eq!(turns.len(), 2);
@@ -949,8 +972,8 @@ mod tests {
     #[test]
     fn resolve_turns_attaches_ambiguous_backward() {
         let pieces = vec![
-            PieceIn { dur_secs: 3.0, cluster: Some(0), margin: Some(0.3) },
-            PieceIn { dur_secs: 3.0, cluster: Some(1), margin: Some(0.01) }, // ambiguous → backward
+            PieceIn { start_secs: 0.0, dur_secs: 3.0, cluster: Some(0), margin: Some(0.3), promoted_subfloor: false },
+            PieceIn { start_secs: 0.0, dur_secs: 3.0, cluster: Some(1), margin: Some(0.01), promoted_subfloor: false }, // ambiguous → backward
         ];
         let turns = resolve_turns(&pieces);
         assert_eq!(turns.len(), 1);
@@ -961,10 +984,10 @@ mod tests {
     #[test]
     fn resolve_turns_forces_turn_past_absorption_cap() {
         let pieces = vec![
-            PieceIn { dur_secs: 3.0, cluster: Some(0), margin: Some(0.3) },
-            PieceIn { dur_secs: 3.0, cluster: Some(1), margin: Some(0.01) }, // attached 3s
-            PieceIn { dur_secs: 3.0, cluster: Some(1), margin: Some(0.01) }, // 3+3 > 5 → forced turn
-            PieceIn { dur_secs: 3.0, cluster: Some(0), margin: Some(0.3) },  // clean, coalesces into forced turn
+            PieceIn { start_secs: 0.0, dur_secs: 3.0, cluster: Some(0), margin: Some(0.3), promoted_subfloor: false },
+            PieceIn { start_secs: 0.0, dur_secs: 3.0, cluster: Some(1), margin: Some(0.01), promoted_subfloor: false }, // attached 3s
+            PieceIn { start_secs: 0.0, dur_secs: 3.0, cluster: Some(1), margin: Some(0.01), promoted_subfloor: false }, // 3+3 > 5 → forced turn
+            PieceIn { start_secs: 0.0, dur_secs: 3.0, cluster: Some(0), margin: Some(0.3), promoted_subfloor: false },  // clean, coalesces into forced turn
         ];
         let turns = resolve_turns(&pieces);
         assert_eq!(turns.len(), 2, "{:?}", turns);
@@ -982,8 +1005,8 @@ mod tests {
     #[test]
     fn resolve_turns_attaches_forward_at_meeting_start() {
         let pieces = vec![
-            PieceIn { dur_secs: 0.8, cluster: None, margin: None }, // meeting start
-            PieceIn { dur_secs: 4.0, cluster: Some(2), margin: Some(0.3) },
+            PieceIn { start_secs: 0.0, dur_secs: 0.8, cluster: None, margin: None, promoted_subfloor: false }, // meeting start
+            PieceIn { start_secs: 0.0, dur_secs: 4.0, cluster: Some(2), margin: Some(0.3), promoted_subfloor: false },
         ];
         let turns = resolve_turns(&pieces);
         assert_eq!(turns.len(), 1);
@@ -993,7 +1016,7 @@ mod tests {
 
     #[test]
     fn resolve_turns_empty_when_all_subfloor() {
-        let pieces = vec![PieceIn { dur_secs: 0.8, cluster: None, margin: None }];
+        let pieces = vec![PieceIn { start_secs: 0.0, dur_secs: 0.8, cluster: None, margin: None, promoted_subfloor: false }];
         assert!(resolve_turns(&pieces).is_empty());
     }
 
@@ -1067,14 +1090,14 @@ mod tests {
         assert!(!is_textless(&pieces[2], &text, skew));
 
         let undropped = vec![
-            PieceIn { dur_secs: 2.0, cluster: Some(0), margin: Some(0.3) },
-            PieceIn { dur_secs: 0.4, cluster: Some(1), margin: Some(0.3) },
-            PieceIn { dur_secs: 0.9, cluster: Some(0), margin: Some(0.3) },
+            PieceIn { start_secs: 0.0, dur_secs: 2.0, cluster: Some(0), margin: Some(0.3), promoted_subfloor: false },
+            PieceIn { start_secs: 0.0, dur_secs: 0.4, cluster: Some(1), margin: Some(0.3), promoted_subfloor: false },
+            PieceIn { start_secs: 0.0, dur_secs: 0.9, cluster: Some(0), margin: Some(0.3), promoted_subfloor: false },
         ];
         assert_eq!(resolve_turns(&undropped).len(), 3, "control: the undropped laugh dices the stretch");
         let dropped = vec![
-            PieceIn { dur_secs: 2.0, cluster: Some(0), margin: Some(0.3) },
-            PieceIn { dur_secs: 0.9, cluster: Some(0), margin: Some(0.3) },
+            PieceIn { start_secs: 0.0, dur_secs: 2.0, cluster: Some(0), margin: Some(0.3), promoted_subfloor: false },
+            PieceIn { start_secs: 0.0, dur_secs: 0.9, cluster: Some(0), margin: Some(0.3), promoted_subfloor: false },
         ];
         let turns = resolve_turns(&dropped);
         assert_eq!(turns.len(), 1, "surrounding same-speaker text is ONE turn");
@@ -1223,10 +1246,10 @@ mod tests {
         // Voice change → false; forced same-cluster continuation → true;
         // meeting start → false.
         let pieces = vec![
-            PieceIn { dur_secs: 3.0, cluster: Some(0), margin: Some(0.3) },
-            PieceIn { dur_secs: 3.0, cluster: Some(1), margin: Some(0.01) }, // attached back
-            PieceIn { dur_secs: 3.0, cluster: Some(1), margin: Some(0.01) }, // over cap → forced turn
-            PieceIn { dur_secs: 3.0, cluster: Some(0), margin: Some(0.3) },  // coalesces
+            PieceIn { start_secs: 0.0, dur_secs: 3.0, cluster: Some(0), margin: Some(0.3), promoted_subfloor: false },
+            PieceIn { start_secs: 0.0, dur_secs: 3.0, cluster: Some(1), margin: Some(0.01), promoted_subfloor: false }, // attached back
+            PieceIn { start_secs: 0.0, dur_secs: 3.0, cluster: Some(1), margin: Some(0.01), promoted_subfloor: false }, // over cap → forced turn
+            PieceIn { start_secs: 0.0, dur_secs: 3.0, cluster: Some(0), margin: Some(0.3), promoted_subfloor: false },  // coalesces
         ];
         let turns = resolve_turns(&pieces);
         assert_eq!(turns.len(), 2);
@@ -1234,8 +1257,8 @@ mod tests {
         assert!(turns[1].continues_previous, "forced same-cluster turn continues the previous");
 
         let voice_change = resolve_turns(&[
-            PieceIn { dur_secs: 3.0, cluster: Some(0), margin: Some(0.3) },
-            PieceIn { dur_secs: 3.0, cluster: Some(1), margin: Some(0.3) },
+            PieceIn { start_secs: 0.0, dur_secs: 3.0, cluster: Some(0), margin: Some(0.3), promoted_subfloor: false },
+            PieceIn { start_secs: 0.0, dur_secs: 3.0, cluster: Some(1), margin: Some(0.3), promoted_subfloor: false },
         ]);
         assert_eq!(voice_change.len(), 2);
         assert!(!voice_change[1].continues_previous, "corroborated voice change is NOT a continuation");
@@ -1249,5 +1272,44 @@ mod tests {
         assert!(!is_mid_sentence_start("5 years ago"));
         assert!(!is_mid_sentence_start(""));
         assert!(!is_mid_sentence_start("…?!"));
+    }
+
+    #[test]
+    fn resolve_turns_tracks_time_spans() {
+        let pieces = vec![
+            PieceIn { start_secs: 5.0, dur_secs: 3.0, cluster: Some(0), margin: Some(0.3), promoted_subfloor: false },
+            PieceIn { start_secs: 8.5, dur_secs: 0.5, cluster: None, margin: None, promoted_subfloor: false }, // attached
+            PieceIn { start_secs: 9.0, dur_secs: 3.0, cluster: Some(0), margin: Some(0.3), promoted_subfloor: false }, // coalesces
+        ];
+        let turns = resolve_turns(&pieces);
+        assert_eq!(turns.len(), 1);
+        assert!((turns[0].start_secs - 5.0).abs() < 1e-9);
+        assert!((turns[0].end_secs - 12.0).abs() < 1e-9);
+        assert!((turns[0].dur_secs - 6.5).abs() < 1e-9);
+        assert!((turns[0].attached_secs - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn resolve_turns_promotes_clear_subfloor_interjection() {
+        // Speaker 0 turn, brief different-voice interjection promoted by the
+        // embedding-margin arbitration (clear margin to cluster 1), speaker 0
+        // resumes. The "Yeah"-interjection fixture class: the 1.5s floor must
+        // not absorb a corroborated voice change.
+        let pieces = vec![
+            PieceIn { start_secs: 30.0, dur_secs: 2.0, cluster: Some(0), margin: Some(0.3), promoted_subfloor: false },
+            PieceIn { start_secs: 32.0, dur_secs: 0.4, cluster: Some(1), margin: Some(0.4), promoted_subfloor: true },
+            PieceIn { start_secs: 32.6, dur_secs: 2.0, cluster: Some(0), margin: Some(0.3), promoted_subfloor: false },
+        ];
+        let turns = resolve_turns(&pieces);
+        assert_eq!(turns.len(), 3, "{:?}", turns);
+        assert_eq!(turns[1].cluster, 1);
+        assert!(turns[1].low_confidence);
+        assert!(!turns[1].continues_previous);
+        assert!((turns[1].start_secs - 32.0).abs() < 1e-9);
+        assert!((turns[1].end_secs - 32.4).abs() < 1e-9);
+        assert!((turns[2].start_secs - 32.6).abs() < 1e-9);
+        for w in turns.windows(2) {
+            assert!(w[0].end_secs <= w[1].start_secs + 1e-9, "spans ordered");
+        }
     }
 }
