@@ -548,6 +548,9 @@ pub async fn run_diarization_for_meeting(
         transcript_segments.len(),
     );
 
+    // Threshold for the engine's clustering (same source as the stamped match).
+    let merge_threshold = match_threshold_from_fp(threshold_fp);
+
     // Step 3: Create adapter.
     let t1 = std::time::Instant::now();
     let shared_fp = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(threshold_fp));
@@ -574,7 +577,52 @@ pub async fn run_diarization_for_meeting(
     // are CPU-bound; offloading keeps detection polls / IPC responsive.
     let t2 = std::time::Instant::now();
     let segmentation_path_for_pya = segmentation_path.clone();
-    let (segments, centroids) = tokio::task::spawn_blocking(move || {
+    let embedding_path_for_engine = embedding_path.clone();
+    let (segments, centroids, engine_turns) = tokio::task::spawn_blocking(move || {
+        // SUCCESS PATH (design D5): the run-assembly engine derives the final
+        // turns from ONE full-meeting pyannote pass. The chunk grid, temporal
+        // smoothing, and refine_pass2 are NOT invoked here. Runs only when
+        // both models load; any load failure falls through to the legacy
+        // path below, unchanged.
+        let engine_models = (
+            super::pyannote_segmentation::PyannoteSegmentation::new(
+                segmentation_path_for_pya.to_str().unwrap_or(""),
+            ),
+            crate::audio::speaker::nemo_extractor::NemoEmbeddingExtractor::new(
+                embedding_path_for_engine.to_str().unwrap_or(""),
+            ),
+        );
+        if let (Ok(pya), Ok(extractor)) = engine_models {
+            let t_eng = std::time::Instant::now();
+            let engine_out = super::run_engine::derive_turns(
+                &samples,
+                &pya,
+                &extractor,
+                &transcript_segments,
+                merge_threshold,
+                effective_cap,
+            )?;
+            log::warn!(
+                "DIARIZATION: run-assembly engine in {:.2}s → {} turns, {} clusters",
+                t_eng.elapsed().as_secs_f64(),
+                engine_out.turns.len(),
+                engine_out.centroids.len()
+            );
+            let segments: Vec<SpeakerSegment> = engine_out
+                .turns
+                .iter()
+                .map(|t| SpeakerSegment {
+                    start_seconds: t.start_seconds,
+                    end_seconds: t.end_seconds,
+                    speaker_id: t.speaker_id,
+                })
+                .collect();
+            let centroids = engine_out.centroids.clone();
+            let turns = engine_out.turns;
+            return Ok::<_, anyhow::Error>((segments, centroids, Some(turns)));
+        }
+
+        // FALLBACK (only on model-load failure): legacy grid path, unchanged.
         // Part B: source intra-region splits from in-process pyannote
         // (design D2/D4). The pyannote session runs INSIDE spawn_blocking —
         // it is CPU-bound (~240ms/window) and must not block the async
@@ -632,15 +680,17 @@ pub async fn run_diarization_for_meeting(
                 centroids.retain(|k, _| used.contains(k));
             }
         }
-        Ok::<_, anyhow::Error>((segments, centroids))
+        let turns: Option<Vec<super::run_engine::EngineTurn>> = None;
+        Ok::<_, anyhow::Error>((segments, centroids, turns))
     })
     .await
     .map_err(|e| format!("Diarization blocking task failed: {}", e))?
     .map_err(|e| format!("Diarization failed: {}", e))?;
     log::warn!(
-        "DIARIZATION: full pipeline (Pass 1 + cap + Pass 2): {:.2}s → {} segments",
+        "DIARIZATION: full pipeline: {:.2}s → {} segments (engine path: {})",
         t2.elapsed().as_secs_f64(),
-        segments.len()
+        segments.len(),
+        engine_turns.is_some()
     );
 
     if segments.is_empty() {
@@ -750,14 +800,26 @@ pub async fn run_diarization_for_meeting(
         .map_err(|e| e.to_string())?
         as u64;
 
-    let (turns, absorbed) = SpeakerRepository::consolidate_meeting_turns(pool, meeting_id)
-        .await
-        .map_err(|e| e.to_string())?;
-    log::info!(
-        "DIARIZATION: consolidated {} fragments into {} speaker turns",
-        absorbed,
-        turns
-    );
+    if engine_turns.is_some() {
+        // D9: the engine's turns are final — persist-path consolidation does
+        // not re-run over success-path output.
+        log::info!(
+            "DIARIZATION: engine turns are final — consolidation skipped (D9)"
+        );
+    } else {
+        let (turns, absorbed) = SpeakerRepository::consolidate_meeting_turns(pool, meeting_id)
+            .await
+            .map_err(|e| e.to_string())?;
+        log::info!(
+            "DIARIZATION: consolidated {} fragments into {} speaker turns",
+            absorbed,
+            turns
+        );
+    }
+
+    if let Some(turns) = &engine_turns {
+        stamp_continuation_facts(pool, meeting_id, turns).await?;
+    }
 
     log::info!(
         "run_diarization_for_meeting: labeled {} segments for meeting {}",
@@ -793,6 +855,49 @@ pub struct DiarizationResult {
     /// Manual speaker names that could not re-attach to any cluster in this
     /// run (explicit re-run path only; empty otherwise).
     pub unmatched_manual_names: Vec<String>,
+}
+
+/// Store the engine's continuation fact on each turn's FIRST persisted row
+/// (spec: the UI resolves a turn's flag from its first row; legacy rows keep
+/// NULL → text-heuristic fallback). Rows are matched to turns by
+/// `audio_start_time`; the earliest row inside the turn span is the first.
+/// The persisted value is `effective_continuation`: the engine's derivation
+/// fact OR the row text beginning mid-sentence (the hard invariant — the
+/// machine marks lowercase-initial turns, never presents them as fresh
+/// starts).
+async fn stamp_continuation_facts(
+    pool: &SqlitePool,
+    meeting_id: &str,
+    turns: &[super::run_engine::EngineTurn],
+) -> Result<(), String> {
+    let mut stamped = 0usize;
+    for t in turns {
+        let row: Option<(String, String)> = sqlx::query_as(
+            "SELECT id, transcript FROM transcripts WHERE meeting_id = ? AND audio_start_time >= ? AND audio_start_time < ? ORDER BY audio_start_time ASC LIMIT 1",
+        )
+        .bind(meeting_id)
+        .bind(t.start_seconds)
+        .bind(t.end_seconds)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+        if let Some((id, first_text)) = row {
+            let flag =
+                super::run_engine::effective_continuation(t.continues_previous, &first_text);
+            sqlx::query("UPDATE transcripts SET continues_previous = ? WHERE id = ?")
+                .bind(flag)
+                .bind(&id)
+                .execute(pool)
+                .await
+                .map_err(|e| e.to_string())?;
+            stamped += 1;
+        }
+    }
+    log::info!(
+        "DIARIZATION: stamped continuation facts on {} turn-first rows",
+        stamped
+    );
+    Ok(())
 }
 
 fn find_audio_in_folder(folder: &std::path::Path) -> Option<std::path::PathBuf> {
