@@ -100,7 +100,7 @@ fn decode_multilabel_with_hysteresis(
 /// input). `speaker` masses sum overlap-pair classes into their constituents;
 /// `overlap` is the raw powerset classes 4–6 mass; everything sums to 1 with
 /// `silence` (class 0).
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FrameMasses {
     pub speaker: [f32; 3],
     pub overlap: f32,
@@ -168,10 +168,27 @@ pub fn local_labels(masses: &[FrameMasses], speech_gate: f32) -> Vec<u8> {
 
 /// Per-frame masses plus the per-window local label tracks the split
 /// corroboration needs (each window's track is in that window's OWN labeling).
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct FrameMassesOutput {
     pub frames: Vec<FrameMasses>,
     /// (window start seconds, local label track — one entry per window frame).
     pub window_label_tracks: Vec<(f64, Vec<u8>)>,
+}
+
+impl FrameMassesOutput {
+    /// Gate-iteration cache: the pyannote pass costs ~16 min on the reference
+    /// meeting; engine-logic iterations must not re-pay it. The cached file is
+    /// the exact `frame_masses` result (same models/geometry), so loading it
+    /// is equivalent to re-running inference.
+    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let file = std::io::BufWriter::new(std::fs::File::create(path)?);
+        serde_json::to_writer(file, self).map_err(|e| std::io::Error::other(e.to_string()))
+    }
+
+    pub fn load(path: &std::path::Path) -> std::io::Result<Self> {
+        let file = std::io::BufReader::new(std::fs::File::open(path)?);
+        serde_json::from_reader(file).map_err(|e| std::io::Error::other(e.to_string()))
+    }
 }
 
 /// Per-speaker median filter (majority vote over a 2*rad+1 kernel, clamped
