@@ -1,9 +1,9 @@
 ## 1. Ear-truth fixture (the acceptance gate comes first)
 
-- [ ] 1.1 Mine candidate fixture spans from existing diagnostics (near-threshold boundaries, index-change sites, dropped-run regions, long-run middles); render each candidate with its exact text and times; present to the user as a confirm/deny list (no authoring burden); record confirmed entries and mark two as hold-out
-- [ ] 1.2 RED: after 1.1 sign-off, create `frontend/src-tauri/tests/fixtures/ear_truth_cde5c264.json` (kinds: `single_voice`, `voice_change_at`, `distinct_speaker`) and `tests/ear_truth_gate.rs` env-gated test that runs the CURRENT production engine, asserts every entry, AND scans the FULL output for the no-unmarked-mid-sentence-cut invariant (every lowercase-initial turn must carry `continues_previous`) — must FAIL on the current pipeline, proving detection power
+- [x] 1.1 Mine candidate fixture spans from existing diagnostics (near-threshold boundaries, index-change sites, dropped-run regions, long-run middles); render each candidate with its exact text and times; present to the user as a confirm/deny list (no authoring burden); record confirmed entries and mark two as hold-out
+- [x] 1.2 RED: after 1.1 sign-off, create `frontend/src-tauri/tests/fixtures/ear_truth_cde5c264.json` (kinds: `single_voice`, `voice_change_at`, `distinct_speaker`) and `tests/ear_truth_gate.rs` env-gated test that runs the CURRENT production engine, asserts every entry, AND scans the FULL output for the no-unmarked-mid-sentence-cut invariant (every lowercase-initial turn must carry `continues_previous`) — must FAIL on the current pipeline, proving detection power
 - [ ] 1.3 CI-runnable synthetic subset: record the fixture audio arrays (frames around each pinned boundary) as test data; assert the run/split/attachment rules on them in plain `cargo test` (no audio, no models, no env gate)
-- [ ] 1.4 Named gate runner script (`run_gate.bat` pattern) that records gate output into `openspec/changes/hybrid-diarization-engine/gate-runs/`; every later verification point appends a timestamped run record
+- [x] 1.4 Named gate runner script (`run_gate.bat` pattern) that records gate output into `openspec/changes/hybrid-diarization-engine/gate-runs/`; every later verification point appends a timestamped run record
 
 ## 2. Frame-level activity source (production code path)
 

@@ -83,3 +83,6 @@ Cargo.lock
 .zcode/
 __pycache__/
 *.pyc
+
+# User meeting audio — never enters git
+fixture_clips/
