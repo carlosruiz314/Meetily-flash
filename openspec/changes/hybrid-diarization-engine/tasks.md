@@ -22,9 +22,9 @@
 
 ## 4. Pipeline wiring and data
 
-- [ ] 4.1 Success path: `run_diarization_for_meeting` invokes the assembly engine directly with one pyannote pass (frame masses); `boundary_segments`/chunk path NOT invoked on this path; engine returns `DiarizationOutput`-shaped segments plus `continues_previous` and overlap fraction
+- [x] 4.1 Success path: `run_diarization_for_meeting` invokes the assembly engine directly with one pyannote pass (frame masses); `boundary_segments`/chunk path NOT invoked on this path; engine returns `DiarizationOutput`-shaped segments plus `continues_previous` and overlap fraction
 - [x] 4.2 Fallback path (corrupt model) untouched: existing grid + AHC + smoothing tests still green; model-absent skip behavior test pinned ("speaker models not found", no labels)
-- [ ] 4.3 `refine_pass2` on the success path: decide by the pinned rule (keep iff a fixture entry fails without it); record the decision and the gate run in design.md
+- [x] 4.3 `refine_pass2` on the success path: decide by the pinned rule (keep iff a fixture entry fails without it); record the decision and the gate run in design.md
 - [ ] 4.4 Migration: nullable `continues_previous` column on `transcripts` (LF-pinned, checksum-safe); legacy rows render via heuristic fallback (null flag)
 - [x] 4.5 RED→GREEN: re-diarization semantics — enumerate pre-run manual labels BEFORE stale-state cleanup; manual rows re-derive (guard relaxed on the explicit re-run path only); names re-apply via stamped-embedding match; unmatched names reported in the run result (survival test with changed cluster count/ordering) — sign-off on this semantics folds into touchpoint 1 (task 1.1)
 - [ ] 4.6 UI plumbing + verification: serialize `continues_previous` through the Tauri command layer into `TranscriptSegmentData` and feed the existing `continuesPrevious` prop in `VirtualizedTranscriptView` (engine fact first, heuristic fallback); render the new engine's cde5c264 output; run frontend suites; walk the checklist (longest row ≈160s, inline rename, revert flow, continuation markers from engine facts, pagination totals)

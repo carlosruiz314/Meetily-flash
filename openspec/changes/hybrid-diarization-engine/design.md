@@ -78,7 +78,11 @@ Legacy `consolidate_meeting_turns` and the persist-path turn assembly from `sent
   change at 34.66s plus confident TitaNet separation (margin 0.157–0.40)
   contradict the ear's "same voice through 32–38". Named next lever for
   S5/S6: mixed-piece sub-window scanning (TitaNet change detection inside
-  ambiguous long pieces).
+  ambiguous long pieces) — ATTEMPTED and REVERTED: the scan fixed S5 but
+  every split perturbs the global clustering, regressing 4 other regions
+  (7/14) including a hold-out. The scoring rule (pinned boundaries, global
+  clusters) punishes local greedy fixes; these three entries need the
+  user's KNOWN-LIMITATION decision, not more tuning.
 
 ## Risks / Trade-offs (continued)
 
@@ -101,7 +105,7 @@ Legacy `consolidate_meeting_turns` and the persist-path turn assembly from `sent
 
 1. Fixture + gate first (task group 1): user confirms entries; gate runs RED against the current engine (proving detection power); synthetic subset green in CI.
 2. Build the assembly engine beside `sherpa_adapter`; flip the success path only when the recorded gate output is green or user-signed KNOWN-LIMITATION.
-3. Fallback path untouched throughout; `refine_pass2` retirement on the success path is decided by a pinned rule: keep iff some fixture entry fails without it (record the outcome in this design file).
+3. Fallback path untouched throughout; `refine_pass2` retirement on the success path is DECIDED (2026-09-04): the engine path does not run it, and no fixture entry failed for lack of pass-2 re-labeling — the gate's failures are model-signal gaps, not labeling misses. Not needed on the success path.
 4. `continues_previous` migration ships with the flip; legacy rows render via the heuristic fallback (null flag).
 5. Rollback = revert the success-path flip; schema addition is nullable and backward-compatible; existing turns re-derive on the next explicit Speakers run (manual rows included, per D7 sign-off).
 
