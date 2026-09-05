@@ -53,9 +53,18 @@ Activation: user renames this meeting's three Speaker badges → the rename
 flow relinks cluster embeddings to the named speakers → pool seeds → gate
 re-runs with references → S4/S5/S6 verify against known voices.
 
+Same-meeting reference seeding: measured and REVERTED — seeding the pool
+with the meeting's own cluster centroids is information-free (identical
+output) and reshuffled margins harmfully (the mixed piece became
+confidently-wrong at margin 0.187, absorbing Cynthia's 27.34–30.0 into the
+user's turn). Enrollment requires INDEPENDENT reference audio.
+
 Paths to close S4/S5/S6 (user decision at review):
 1. KNOWN-LIMITATION sign-off (models lack the signal; boundary invented from
    text would contradict the success-path design).
-2. Speaker enrollment (the planned follow-on change): a user reference voice
-   would both identify the mixed piece's halves and pull them to the correct
-   clusters at verification time.
+2. Speaker enrollment (the planned follow-on change): INDEPENDENT reference
+   audio — any recording where the person speaks clearly (another meeting, a
+   voice memo). The reference-anchored clustering (built, inert) activates
+   the moment the pool holds such references: the mixed piece's halves and
+   the 32.65s blip verify against clean fingerprints instead of meeting
+   averages. Same-meeting seeding was measured and rejected (above).
