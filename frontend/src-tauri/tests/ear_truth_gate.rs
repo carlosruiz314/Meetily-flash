@@ -304,6 +304,18 @@ async fn ear_truth_gate_cde5c264() {
         out.centroids.len(),
         t0.elapsed().as_secs_f64()
     );
+    // Optional centroid dump (enrollment seeding): MEETIFY_CENTROID_DUMP=path
+    // writes the final cluster centroids as JSON for the seeding script.
+    if let Some(dump_path) = std::env::var_os("MEETIFY_CENTROID_DUMP") {
+        let dump: std::collections::BTreeMap<String, Vec<f32>> = out
+            .centroids
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.clone()))
+            .collect();
+        std::fs::write(&dump_path, serde_json::to_string(&dump).expect("serialize centroids"))
+            .expect("write centroid dump");
+        eprintln!("GATE: centroids dumped to {}", dump_path.display());
+    }
     for t in &out.turns {
         eprintln!(
             "TURN {:9.2}-{:.2} sp{}{}{}",
