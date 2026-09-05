@@ -551,6 +551,14 @@ pub async fn run_diarization_for_meeting(
     // Threshold for the engine's clustering (same source as the stamped match).
     let merge_threshold = match_threshold_from_fp(threshold_fp);
 
+    // Enrolled references (named-speaker fingerprints): anchor ambiguous
+    // pieces during engine clustering. Empty until the user enrolls by
+    // renaming badges (the rename flow relinks embeddings to named speakers).
+    let references = SpeakerRepository::list_stamped_embeddings(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    log::info!("DIARIZATION: {} enrolled reference voice(s)", references.len());
+
     // Step 3: Create adapter.
     let t1 = std::time::Instant::now();
     let shared_fp = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(threshold_fp));
@@ -601,6 +609,7 @@ pub async fn run_diarization_for_meeting(
                 &transcript_segments,
                 merge_threshold,
                 effective_cap,
+                &references,
             )?;
             log::warn!(
                 "DIARIZATION: run-assembly engine in {:.2}s → {} turns, {} clusters",

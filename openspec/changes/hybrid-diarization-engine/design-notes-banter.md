@@ -44,6 +44,15 @@ stream is a sequential chain; any locally injected split propagates boundary
 shifts forward to the next stable anchor. Three measured attempts confirm the
 fix class does not exist within the pinned signal set.
 
+**Enrollment lever BUILT (2026-09-05, commit pending):** enrolled references
+(named-speaker fingerprints from the stamped pool) enter clustering as extra
+stable centroids — the piece-cluster budget shrinks by the reference count,
+and the Lloyd loop resolves ambiguous pieces/blips against them. Inert while
+the pool is empty (verified: gate unchanged at 11/14 with 0 references).
+Activation: user renames this meeting's three Speaker badges → the rename
+flow relinks cluster embeddings to the named speakers → pool seeds → gate
+re-runs with references → S4/S5/S6 verify against known voices.
+
 Paths to close S4/S5/S6 (user decision at review):
 1. KNOWN-LIMITATION sign-off (models lack the signal; boundary invented from
    text would contradict the success-path design).
