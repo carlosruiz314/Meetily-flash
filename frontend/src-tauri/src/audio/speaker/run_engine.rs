@@ -151,7 +151,51 @@ pub fn derive_turns_from_masses(
         // on stale greedy centroids (the false 34.66s boundary — S7). Pieces
         // nearer a reference centroid join it here.
         refine_loop(&mut assign, &mut centroids, &labeled_embs, 10);
-        let refined = assign;
+        let mut refined = assign;
+
+        // Deduplicate centroids that converged onto the same voice (e.g. an
+        // enrolled reference and the meeting cluster of that same person):
+        // merge the higher index into the lower, reassign, recompute the
+        // keepers from their members. Deterministic; bounded.
+        loop {
+            let mut merge: Option<(usize, usize)> = None;
+            for i in 0..centroids.len() {
+                for j in (i + 1)..centroids.len() {
+                    if cosine(&centroids[i], &centroids[j]) >= 0.85 {
+                        merge = Some((j, i));
+                        break;
+                    }
+                }
+                if merge.is_some() {
+                    break;
+                }
+            }
+            let Some((victim, keeper)) = merge else { break };
+            for a in refined.iter_mut() {
+                if *a == victim {
+                    *a = keeper;
+                } else if *a > victim {
+                    *a -= 1;
+                }
+            }
+            centroids.remove(victim);
+            let dim = centroids[0].len();
+            let mut sums = vec![0.0f32; centroids.len() * dim];
+            let mut counts = vec![0usize; centroids.len()];
+            for (k, ci) in refined.iter().enumerate() {
+                counts[*ci] += 1;
+                for (d, v) in labeled_embs[k].iter().enumerate() {
+                    sums[*ci * dim + d] += v;
+                }
+            }
+            for (ci, c) in centroids.iter_mut().enumerate() {
+                if counts[ci] > 0 {
+                    for d in 0..dim {
+                        c[d] = sums[ci * dim + d] / counts[ci] as f32;
+                    }
+                }
+            }
+        }
 
         // Phantom-centroid invariant: relabel through the pruned centroid set
         // (no centroid without a refined member survives).
