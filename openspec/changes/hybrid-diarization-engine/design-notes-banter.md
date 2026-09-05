@@ -59,6 +59,14 @@ output) and reshuffled margins harmfully (the mixed piece became
 confidently-wrong at margin 0.187, absorbing Cynthia's 27.34–30.0 into the
 user's turn). Enrollment requires INDEPENDENT reference audio.
 
+Cross-meeting mining (2026-09-05): the reference miner
+(tests/reference_miner.rs) enrolled an INDEPENDENT Carlos fingerprint from
+the 2026-06-27 18:35 meeting (cross-meeting affinity 0.63 vs 0.22 second).
+Gate with the mined reference: 11/14 unchanged — a Carlos-only reference
+cannot split a piece that blends Carlos+Cynthia; the scan variants that try
+cascade into the pinned boundaries (measured three times). No Cynthia
+reference exists in any mined meeting so far.
+
 Paths to close S4/S5/S6 (user decision at review):
 1. KNOWN-LIMITATION sign-off (models lack the signal; boundary invented from
    text would contradict the success-path design).
