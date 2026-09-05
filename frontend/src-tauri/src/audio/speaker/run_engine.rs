@@ -10,7 +10,7 @@ use crate::audio::speaker::pyannote_segmentation::{
 };
 use crate::audio::speaker::run_assembly::{
     cluster_pieces, derive_pieces, drop_textless, embed_slice, margin_to_centroids, merge_to_cap,
-    overlap_fraction, refine_to_centroids, resolve_turns, speech_runs, cosine, PieceIn, PieceSpan,
+    overlap_fraction, refine_loop, resolve_turns, speech_runs, cosine, PieceIn, PieceSpan,
     AMBIGUITY_MARGIN, EMBED_FLOOR_SECS, MODE_FILTER_RADIUS_FRAMES, PIECE_CAP,
     PROMOTION_FLOOR_SECS, SPEECH_GATE, TEXT_SKEW_TOLERANCE_SECS,
 };
@@ -123,7 +123,10 @@ pub fn derive_turns_from_masses(
     if !labeled_embs.is_empty() {
         let (mut assign, mut centroids) = cluster_pieces(&labeled_embs, merge_threshold);
         merge_to_cap(&mut assign, &mut centroids, &labeled_embs, max_speakers);
-        let refined = refine_to_centroids(&labeled_embs, &centroids);
+        // Lloyd loop instead of a single refine pass: one pass keeps pieces
+        // on stale greedy centroids (the false 34.66s boundary — S7).
+        refine_loop(&mut assign, &mut centroids, &labeled_embs, 10);
+        let refined = assign;
 
         // Phantom-centroid invariant: relabel through the pruned centroid set
         // (no centroid without a refined member survives).

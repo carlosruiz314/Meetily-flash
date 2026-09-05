@@ -350,6 +350,46 @@ pub fn refine_to_centroids(embeddings: &[Vec<f32>], centroids: &[Vec<f32>]) -> V
         .collect()
 }
 
+/// Lloyd-style refinement (engine calibration, 2026-09-05): the single-pass
+/// refine kept pieces on STALE greedy centroids — one real voice ended up
+/// split across two clusters (the false 34.66s boundary: its pieces scored
+/// 0.55–0.57 affinity to the user's other stretches yet sat in the wrong
+/// cluster). Alternate nearest-centroid assignment and centroid
+/// recomputation until stable, bounded. Deterministic.
+pub fn refine_loop(
+    assign: &mut [usize],
+    centroids: &mut [Vec<f32>],
+    embeddings: &[Vec<f32>],
+    max_iters: usize,
+) {
+    if centroids.is_empty() || embeddings.is_empty() {
+        return;
+    }
+    let dim = centroids[0].len();
+    for _ in 0..max_iters {
+        let new_assign = refine_to_centroids(embeddings, centroids);
+        if new_assign == *assign {
+            break;
+        }
+        assign.clone_from_slice(&new_assign);
+        let mut sums = vec![0.0f32; centroids.len() * dim];
+        let mut counts = vec![0usize; centroids.len()];
+        for (k, ci) in assign.iter().enumerate() {
+            counts[*ci] += 1;
+            for (d, v) in embeddings[k].iter().enumerate() {
+                sums[*ci * dim + d] += v;
+            }
+        }
+        for (ci, c) in centroids.iter_mut().enumerate() {
+            if counts[ci] > 0 {
+                for d in 0..dim {
+                    c[d] = sums[ci * dim + d] / counts[ci] as f32;
+                }
+            }
+        }
+    }
+}
+
 /// Final-centroid margin for a piece: best minus second-best cosine.
 pub fn margin_to_centroids(embedding: &[f32], centroids: &[Vec<f32>]) -> f32 {
     let mut sims: Vec<f32> = centroids.iter().map(|c| cosine(c, embedding)).collect();
