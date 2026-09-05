@@ -38,6 +38,12 @@ destabilizing correct clusters globally:
 - scan attempts reverted; Lloyd-only state retained: **11/14, 0 invariant
   violations**, failures S4/S5/S6 (this root cause).
 
+Scan attempt 3 (own-side evidence on either side of the run + transition
+restriction + Lloyd): 6/14 — identical collateral. Root finding: the turn
+stream is a sequential chain; any locally injected split propagates boundary
+shifts forward to the next stable anchor. Three measured attempts confirm the
+fix class does not exist within the pinned signal set.
+
 Paths to close S4/S5/S6 (user decision at review):
 1. KNOWN-LIMITATION sign-off (models lack the signal; boundary invented from
    text would contradict the success-path design).
