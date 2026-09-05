@@ -57,13 +57,26 @@ pub fn derive_turns(
     text_spans: &[(f64, f64)],
     merge_threshold: f32,
     max_speakers: usize,
+    references: &[(String, Vec<f32>)],
 ) -> Result<EngineOutput> {
     let fm = pya.frame_masses(samples)?;
-    derive_turns_from_masses(&fm, extractor, samples, text_spans, merge_threshold, max_speakers)
+    derive_turns_from_masses(
+        &fm,
+        extractor,
+        samples,
+        text_spans,
+        merge_threshold,
+        max_speakers,
+        references,
+    )
 }
 
 /// Assembly from a (possibly cached) `frame_masses` output — the exact same
 /// derivation `derive_turns` performs after its single pyannote pass.
+/// `references` are enrolled voice fingerprints (named-speaker embeddings,
+/// possibly empty): they anchor clustering as stable extra centroids, so
+/// ambiguous pieces resolve against known voices instead of noisy
+/// meeting-internal averages.
 pub fn derive_turns_from_masses(
     fm: &FrameMassesOutput,
     extractor: &NemoEmbeddingExtractor,
@@ -71,6 +84,7 @@ pub fn derive_turns_from_masses(
     text_spans: &[(f64, f64)],
     merge_threshold: f32,
     max_speakers: usize,
+    references: &[(String, Vec<f32>)],
 ) -> Result<EngineOutput> {
     // Layer 0: one full-meeting pass, production geometry (zero-padded tail).
     let labels = local_labels(&fm.frames, SPEECH_GATE);
@@ -121,10 +135,21 @@ pub fn derive_turns_from_masses(
     let mut engine_turns = Vec::new();
     let mut centroid_map: HashMap<u32, Vec<f32>> = HashMap::new();
     if !labeled_embs.is_empty() {
+        // Reference-anchored clustering (enrollment lever): enrolled voice
+        // fingerprints enter as extra stable centroids, and the meeting's
+        // piece-cluster budget shrinks accordingly — ambiguous pieces
+        // resolve against known voices instead of noisy internal averages.
+        let refs: Vec<&Vec<f32>> =
+            references.iter().take(max_speakers.max(1) - 1).map(|(_, e)| e).collect();
+        let piece_cap = (max_speakers - refs.len()).max(1);
         let (mut assign, mut centroids) = cluster_pieces(&labeled_embs, merge_threshold);
-        merge_to_cap(&mut assign, &mut centroids, &labeled_embs, max_speakers);
+        merge_to_cap(&mut assign, &mut centroids, &labeled_embs, piece_cap);
+        for e in &refs {
+            centroids.push((*e).clone());
+        }
         // Lloyd loop instead of a single refine pass: one pass keeps pieces
-        // on stale greedy centroids (the false 34.66s boundary — S7).
+        // on stale greedy centroids (the false 34.66s boundary — S7). Pieces
+        // nearer a reference centroid join it here.
         refine_loop(&mut assign, &mut centroids, &labeled_embs, 10);
         let refined = assign;
 

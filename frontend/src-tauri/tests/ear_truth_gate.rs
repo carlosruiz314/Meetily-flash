@@ -239,6 +239,36 @@ async fn ear_truth_gate_cde5c264() {
         .parent()
         .unwrap()
         .join("gate_frame_masses.json");
+    // Enrolled references: seeded by badge renames (the rename flow relinks
+    // meeting cluster embeddings to named speakers). Absent/empty pool → the
+    // consultation rule is inert and the gate runs on meeting-internal
+    // clusters only.
+    let db_path = std::path::Path::new(&home)
+        .join("AppData/Roaming/com.meetily.ai/meeting_minutes.sqlite");
+    let references: Vec<(String, Vec<f32>)> = if db_path.exists() {
+        match sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .read_only(true)
+                    .filename(&db_path),
+            )
+            .await
+        {
+            Ok(pool) => {
+                let refs =
+                    app_lib::database::repositories::speaker::SpeakerRepository::list_stamped_embeddings(&pool)
+                        .await
+                        .unwrap_or_default();
+                refs
+            }
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+    eprintln!("GATE: {} enrolled reference voice(s)", references.len());
+
     let t0 = std::time::Instant::now();
     let fm = match app_lib::audio::speaker::pyannote_segmentation::FrameMassesOutput::load(
         &cache_path,
@@ -265,6 +295,7 @@ async fn ear_truth_gate_cde5c264() {
         &text_spans,
         MERGE_THRESHOLD,
         MEETING_CAP,
+        &references,
     )
     .expect("engine run");
     eprintln!(
