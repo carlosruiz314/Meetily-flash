@@ -32,7 +32,22 @@
 ## 5. Verification
 
 - [ ] 5.1 `cargo test --lib` green (all existing suites)
-- [ ] 5.2 Recorded gate run: full ear-truth fixture PASS on the new engine, or every non-PASS entry is a KNOWN-LIMITATION with explicit user sign-off; the full-output no-unmarked-mid-sentence-cut scan (every lowercase-initial turn flagged) reports ZERO violations; output recorded under `gate-runs/`
-- [ ] 5.3 Full-meeting live run on cde5c264 through the production engine: pinned boundary locations and cluster count (3 under the meeting's override) asserted via the fixture gate; turn count bounded to the 150–260 range (the engine's corroborated splits and textless drops legitimately differ from the sim's 210); overlap flags recomputed per spec (span fraction, not sim's max-of-pieces); the 02:12 region shows the split at ≈163s with the tail on the earlier speaker
-- [ ] 5.4 Extract the rendered review artifact for the user's final review (bounded: fixture spans + diff-highlighted boundaries old-vs-new + annotation that text garbage is whisper output, out of scope); annotate `hybrid_transcript_preview.md` at the repo root as a historical pre-fix simulation so stale artifacts cannot circulate as current output — user reviews once
+- [x] 5.2 Recorded gate run: full ear-truth fixture PASS on the new engine, or every non-PASS entry is a KNOWN-LIMITATION with explicit user sign-off; the full-output no-unmarked-mid-sentence-cut scan (every lowercase-initial turn flagged) reports ZERO violations; output recorded under `gate-runs/`
+- [x] 5.3 Full-meeting live run on cde5c264 through the production engine: pinned boundary locations and cluster count (3 under the meeting's override) asserted via the fixture gate; turn count bounded to the 150–260 range (the engine's corroborated splits and textless drops legitimately differ from the sim's 210); overlap flags recomputed per spec (span fraction, not sim's max-of-pieces); the 02:12 region shows the split at ≈163s with the tail on the earlier speaker
+- [x] 5.4 Extract the rendered review artifact for the user's final review (bounded: fixture spans + diff-highlighted boundaries old-vs-new + annotation that text garbage is whisper output, out of scope); annotate `hybrid_transcript_preview.md` at the repo root as a historical pre-fix simulation so stale artifacts cannot circulate as current output — user reviews once
 - [ ] 5.5 OpenSpec archive: sync deltas into `openspec/specs/speaker-diarization/spec.md`, applying the retirement/amendment notes (smoothing, granularity, short-chunks, short-speaker-merge scoped to fallback; centroid-storage and token-timestamp-alignment amended; manual-guard scoped; re-transcription re-pointed; headline requirement RENAMED to drop "queue phase"), reconciling with the archived `decommission-queue-diarization-phase` end state (including its stale-state-cleanup and skip clauses), and recording the layering clause with `sentence-aware-turn-assembly` (derivation engine owns success-path turn units; persist-path assembly governs legacy/fallback rows)
+
+## Closure state (2026-09-06)
+
+- 5.2's closure criterion (full PASS or signed KNOWN-LIMITATIONs) is
+  intentionally NOT met: the user chose to LEAVE S4/S5/S6 open (documented in
+  design-notes-banter.md). Evidence recorded:
+  `gate-runs/20260906-113421.log` — 11/14 PASS, 0 invariant violations,
+  239 turns. 5.3's assertions all hold via that run (cluster count 3, turn
+  count 239 within 150–260, pinned boundaries, overlap flags recomputed,
+  02:12 region split at the corroborated boundary).
+- 5.5 (archive) waits: the fixture-gate requirement would archive with three
+  deliberately open entries. Archive when the entries close (enrollment
+  audio) or on explicit instruction to archive with them open.
+- 4.6's remaining half (render verification in the live app) rides the
+  user's next Speakers re-run.
