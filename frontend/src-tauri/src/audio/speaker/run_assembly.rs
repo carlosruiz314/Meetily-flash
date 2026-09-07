@@ -978,6 +978,175 @@ pub fn is_mid_sentence_start(text: &str) -> bool {
         .map_or(false, |c| c.is_alphabetic() && c.is_lowercase())
 }
 
+// ---------------------------------------------------------------------------
+// Gap rescue (change `gap-speech-voice-attribution`): speech pyannote decoded
+// as silence, attributed by voice. Pure decision function; the engine derives
+// gaps/sub-windows and embeds (run_engine), this function gates and selects.
+// ---------------------------------------------------------------------------
+
+/// One energy-segmented voiced sub-window of a gap, with its identity vote.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RescueSubWindow {
+    pub start_secs: f64,
+    pub end_secs: f64,
+    pub cluster: usize,
+    pub margin: f32,
+}
+
+/// One text-bearing silence gap offered to the rescue pass.
+#[derive(Clone, Debug)]
+pub struct RescueGap {
+    /// The pyannote silence gap.
+    pub gap_start_secs: f64,
+    pub gap_end_secs: f64,
+    /// Union of intersecting transcript-row spans clipped to the gap
+    /// (None = no text overlap — true silence, never a candidate).
+    pub raw_span: Option<(f64, f64)>,
+    /// Decided AND undecided sub-window votes (the margin gate runs here).
+    pub sub_windows: Vec<RescueSubWindow>,
+}
+
+/// A selected rescue: splice a synthetic promoted piece over this span.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RescueCandidate {
+    pub start_secs: f64,
+    pub end_secs: f64,
+    pub cluster: usize,
+    pub margin: f32,
+}
+
+/// Point-to-span distance in whole milliseconds, containment-0,
+/// start-inclusive/end-exclusive (render-borrow-faithful).
+fn rescue_dist_ms(p: i64, s: i64, e: i64) -> i64 {
+    if p >= s && p < e {
+        0
+    } else if p < s {
+        s - p
+    } else {
+        p - e
+    }
+}
+
+/// Tie-abstain zone: when the two nearest turn edges are within this distance
+/// of each other AND carry different labels, geometry is indeterminate (the
+/// render's earlier-turn tie-break is a convenience, not ear truth) and voice
+/// evidence decides. Calibratable only under the fixture-gate rule.
+const RESCUE_TIE_EPS_MS: i64 = 100;
+
+/// Modeled borrow winner for `mid_ms`: nearest turn edge within `borrow_cap_ms`,
+/// ties broken by the earlier turn (turns are time-ordered; strict `<` keeps
+/// the first minimum). None when no turn is within the cap, or when the two
+/// nearest edges tie within `RESCUE_TIE_EPS_MS` with DIFFERENT labels
+/// (geometry abstains; a same-label near-tie still resolves to that label —
+/// both readings agree).
+fn rescue_borrow_winner(turns: &[(f64, f64, u32)], mid_ms: i64, borrow_cap_ms: i64) -> Option<u32> {
+    let mut best: Option<(u32, i64)> = None;
+    let mut second: Option<i64> = None;
+    for (s, e, l) in turns {
+        let d = rescue_dist_ms(mid_ms, (*s * 1000.0) as i64, (*e * 1000.0) as i64);
+        if d > borrow_cap_ms {
+            continue;
+        }
+        if best.is_none() || d < best.map(|(_, bd)| bd).unwrap_or(i64::MAX) {
+            if let Some((bl, bd)) = best {
+                if second.is_none() || bd < second.unwrap_or(i64::MAX) {
+                    second = Some(bd);
+                }
+            }
+            best = Some((*l, d));
+        } else if second.is_none() || d < second.unwrap_or(i64::MAX) {
+            second = Some(d);
+        }
+    }
+    let (Some((bl, bd)), sd) = (best, second) else {
+        return None;
+    };
+    if let Some(sd) = sd {
+        if sd - bd <= RESCUE_TIE_EPS_MS {
+            // the second-nearest edge belongs to a turn whose label may differ;
+            // find its label (any turn at that distance) — same label → both
+            // readings agree, different → geometry abstains
+            let second_label = turns.iter().find_map(|(s, e, l)| {
+                let d = rescue_dist_ms(mid_ms, (*s * 1000.0) as i64, (*e * 1000.0) as i64);
+                (d == sd && *l != bl).then_some(*l)
+            });
+            if second_label.is_some() {
+                return None;
+            }
+        }
+    }
+    Some(bl)
+}
+
+/// Select gap-rescue candidates (pure, deterministic; time/index order only).
+///
+/// Gates per gap, ALL of: (1) the raw span exists and is at least
+/// `min_raw_secs` (the promotion floor — guards the text evidence); (2) the
+/// gap separates two DISTINCT turns (interior and meeting-edge gaps abstain);
+/// (3) at least one voiced sub-window is decided (margin ≥ `rescue_margin`);
+/// the row is attributed to the LAST decided sub-window (legacy rows skew
+/// early — the words sit at the row's tail); (4) that sub-window's cluster
+/// differs from the modeled borrow winner (raw-span midpoint, containment-0,
+/// i64 ms, ties → earlier turn, within `borrow_cap_ms`; no winner within the
+/// cap → splice — decided voice replaces geometry that would leave the row
+/// unattributed). A sub-window matching its adjacent flank never blocks the
+/// last-decided attribution (far-flank matches coalesce in resolve_turns).
+pub fn rescue_candidates(
+    turns: &[(f64, f64, u32)],
+    gaps: &[RescueGap],
+    min_raw_secs: f64,
+    rescue_margin: f32,
+    borrow_cap_ms: i64,
+) -> Vec<RescueCandidate> {
+    let mut out = Vec::new();
+    for gap in gaps {
+        // (2) distinct flanks by adjacency; meeting-edge and interior abstain
+        let Some(&(la, _le, lc)) = turns
+            .iter()
+            .filter(|(_, e, _)| *e <= gap.gap_start_secs + 1e-9)
+            .last()
+        else {
+            continue;
+        };
+        let Some(&(ra, _re, rc)) = turns
+            .iter()
+            .find(|(s, _, _)| *s >= gap.gap_end_secs - 1e-9)
+        else {
+            continue;
+        };
+        if lc == rc {
+            continue;
+        }
+        // (1) raw span floor
+        let Some((sa, sb)) = gap.raw_span else { continue };
+        if sb - sa < min_raw_secs {
+            continue;
+        }
+        // (3) last decided sub-window
+        let Some(sw) = gap
+            .sub_windows
+            .iter()
+            .filter(|s| s.margin >= rescue_margin)
+            .last()
+        else {
+            continue;
+        };
+        // (4) borrow-winner contradiction
+        let mid_ms = ((sa + sb) / 2.0 * 1000.0) as i64;
+        let winner = rescue_borrow_winner(turns, mid_ms, borrow_cap_ms);
+        if winner == Some(sw.cluster as u32) {
+            continue;
+        }
+        out.push(RescueCandidate {
+            start_secs: sw.start_secs,
+            end_secs: sw.end_secs,
+            cluster: sw.cluster,
+            margin: sw.margin,
+        });
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1645,5 +1814,124 @@ mod tests {
         for w in turns.windows(2) {
             assert!(w[0].end_secs <= w[1].start_secs + 1e-9, "spans ordered");
         }
+    }
+
+    // ---- gap rescue: rescue_candidates (change gap-speech-voice-attribution) ----
+
+    fn rsub(start: f64, end: f64, cluster: usize, margin: f32) -> RescueSubWindow {
+        RescueSubWindow { start_secs: start, end_secs: end, cluster, margin }
+    }
+
+    fn rgap(raw: Option<(f64, f64)>, subs: Vec<RescueSubWindow>) -> RescueGap {
+        RescueGap { gap_start_secs: 10.0, gap_end_secs: 12.0, raw_span: raw, sub_windows: subs }
+    }
+
+    #[test]
+    fn rescue_candidates_selects_last_decided_subwindow_contradicting_borrow_winner() {
+        // sp0 [8,10] | gap [10,12] | sp1 [12,14]; raw [10.2,11.2] mid 10.7s
+        // -> borrow winner sp0 (700ms); last decided sub-window is sp1 -> splice
+        let turns = vec![(8.0, 10.0, 0), (12.0, 14.0, 1)];
+        let subs = vec![
+            rsub(10.2, 10.6, 0, 0.30), // left-flank continuation: diagnostic only
+            rsub(10.9, 11.15, 1, 0.08),
+        ];
+        let cands = rescue_candidates(&turns, &[rgap(Some((10.2, 11.2)), subs)], 0.8, 0.05, 3000);
+        assert_eq!(cands.len(), 1, "{cands:?}");
+        assert_eq!(cands[0].cluster, 1);
+        assert!((cands[0].start_secs - 10.9).abs() < 1e-9);
+        assert!((cands[0].end_secs - 11.15).abs() < 1e-9);
+        assert!((cands[0].margin - 0.08).abs() < 1e-6);
+    }
+
+    #[test]
+    fn rescue_candidates_abstains_on_undecided_floor_silence_interior_and_meeting_edge() {
+        let turns = vec![(8.0, 10.0, 0), (12.0, 14.0, 1)];
+        // undecided identity
+        let subs = vec![rsub(10.5, 10.8, 1, 0.04)];
+        assert!(rescue_candidates(&turns, &[rgap(Some((10.2, 11.2)), subs)], 0.8, 0.05, 3000).is_empty());
+        // sub-floor raw span
+        let subs = vec![rsub(10.5, 10.8, 1, 0.30)];
+        assert!(rescue_candidates(&turns, &[rgap(Some((10.2, 10.9)), subs)], 0.8, 0.05, 3000).is_empty());
+        // true silence: no raw span
+        assert!(rescue_candidates(&turns, &[rgap(None, vec![])], 0.8, 0.05, 3000).is_empty());
+        // interior gap (same-label flanks)
+        let turns_same = vec![(8.0, 10.0, 0), (12.0, 14.0, 0)];
+        let subs = vec![rsub(10.5, 10.8, 1, 0.30)];
+        assert!(rescue_candidates(&turns_same, &[rgap(Some((10.2, 11.2)), subs)], 0.8, 0.05, 3000).is_empty());
+        // meeting edge: gap before the first turn (no left flank)
+        let mut g = rgap(Some((7.1, 7.9)), vec![rsub(7.2, 7.6, 0, 0.20)]);
+        g.gap_start_secs = 7.0;
+        g.gap_end_secs = 7.9;
+        assert!(rescue_candidates(&turns, &[g], 0.8, 0.05, 3000).is_empty());
+    }
+
+    #[test]
+    fn rescue_candidates_beyond_cap_splices_and_best_eq_winner_is_noop() {
+        // beyond cap: both flanks > 3000ms from the raw midpoint -> no winner;
+        // decided voice replaces geometry that would leave the row unattributed
+        let turns = vec![(8.0, 10.0, 0), (18.0, 20.0, 1)];
+        let subs = vec![rsub(13.5, 13.9, 1, 0.20)];
+        let mut g = rgap(Some((13.4, 14.4)), subs);
+        g.gap_start_secs = 10.0;
+        g.gap_end_secs = 18.0;
+        let cands = rescue_candidates(&turns, &[g], 0.8, 0.05, 3000);
+        assert_eq!(cands.len(), 1, "{cands:?}");
+        assert_eq!(cands[0].cluster, 1);
+        // no-op: decided cluster equals the borrow winner (mid 10.7 -> sp0)
+        let turns = vec![(8.0, 10.0, 0), (12.0, 14.0, 1)];
+        let subs = vec![rsub(10.5, 10.8, 0, 0.30)];
+        assert!(rescue_candidates(&turns, &[rgap(Some((10.2, 11.2)), subs)], 0.8, 0.05, 3000).is_empty());
+    }
+
+    #[test]
+    fn rescue_candidates_treats_near_tie_as_geometry_abstain() {
+        // raw mid 11.0 sits 600ms from BOTH flanks (different labels): the
+        // modeled winner abstains and the decided sub-window splices
+        let turns = vec![(8.0, 10.0, 0), (12.0, 14.0, 1)];
+        let subs = vec![rsub(10.8, 11.2, 1, 0.09)];
+        let cands = rescue_candidates(&turns, &[rgap(Some((10.6, 11.4)), subs)], 0.8, 0.05, 3000);
+        assert_eq!(cands.len(), 1, "{cands:?}");
+        assert_eq!(cands[0].cluster, 1);
+        // 100ms-epsilon boundary: mid 10.95 -> dists 950/1050 (100 apart) -> abstain
+        let subs = vec![rsub(10.8, 11.2, 1, 0.09)];
+        let cands = rescue_candidates(&turns, &[rgap(Some((10.5, 11.4)), subs)], 0.8, 0.05, 3000);
+        assert_eq!(cands.len(), 1, "tie abstain still splices on decided voice");
+        // clear winner: mid 10.5 -> sp0 by 1000ms; sp1 candidate is a no-op
+        let subs = vec![rsub(10.3, 10.7, 1, 0.30)];
+        let cands = rescue_candidates(&turns, &[rgap(Some((10.2, 10.8)), subs)], 0.8, 0.05, 3000);
+        assert!(cands.is_empty());
+    }
+
+    #[test]
+    fn rescue_candidates_is_deterministic() {
+        let turns = vec![(8.0, 10.0, 0), (12.0, 14.0, 1)];
+        let subs = vec![
+            rsub(10.2, 10.6, 0, 0.30),
+            rsub(10.9, 11.15, 1, 0.08),
+        ];
+        let gaps = vec![rgap(Some((10.2, 11.2)), subs)];
+        let a = rescue_candidates(&turns, &gaps, 0.8, 0.05, 3000);
+        let b = rescue_candidates(&turns, &gaps, 0.8, 0.05, 3000);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn rescued_far_flank_piece_coalesces_into_right_turn() {
+        // S2b shape: [onset, gap end] promoted piece matching the right flank
+        // founds the turn; the right flank coalesces into it; the surviving
+        // turn carries the promotion flag (low_confidence) and the boundary
+        // moves to the sub-window start.
+        let spliced = vec![
+            PieceIn { start_secs: 8.0, dur_secs: 2.0, cluster: Some(0), margin: Some(0.3), promoted_subfloor: false },
+            PieceIn { start_secs: 10.7, dur_secs: 0.32, cluster: Some(1), margin: Some(0.09), promoted_subfloor: true },
+            PieceIn { start_secs: 11.02, dur_secs: 2.0, cluster: Some(1), margin: Some(0.4), promoted_subfloor: false },
+        ];
+        let turns = resolve_turns(&spliced);
+        assert_eq!(turns.len(), 2, "{turns:?}");
+        assert_eq!(turns[0].cluster, 0);
+        assert_eq!(turns[1].cluster, 1);
+        assert!((turns[1].start_secs - 10.7).abs() < 1e-9, "{:?}", turns[1]);
+        assert!(turns[1].low_confidence, "founder carries the promotion flag");
+        assert!(!turns[1].continues_previous);
     }
 }
