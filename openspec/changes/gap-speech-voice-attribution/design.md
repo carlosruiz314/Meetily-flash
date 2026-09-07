@@ -12,6 +12,17 @@ Engine-side facts that make the rescue tractable (all verified in the working tr
 
 Panel history: rounds 1–3 converged the mechanism (5+3+2 reviewers); round 4 of ear adjudication (clips D/E) then revised the pins, which this version absorbs.
 
+## Probe Findings (2026-09-07) — design revision required (v3)
+
+The de-risk probe (`openspec/exploration/gap-rescue-probe-20260907-full.log`, tasks 1.1–1.6) returned **NO-GO** for the mechanism as written and a clear pivot:
+
+1. **The target gap contains TWO voices.** Energy onset fires at 14.78 (peak −29.8 dBFS) — Carlos's speech tail bleeding past the "Yeah. That's right." row — and Cynthia's voice starts ≈15.8 (ear). First-onset placement is wrong; there is no single "voice onset".
+2. **Raw-span identity is confidently wrong.** `[14.78,16.12]` votes sp0/Carlos margin 0.226; `[14.78,15.84]` votes sp0 0.242. Only the ear-positioned voiced window `[15.8,16.12]` votes sp1/Cynthia (0.096, decided). Sanity anchors pass (Cynthia 16.3–17.5 → sp1 0.586; Carlos 13.6–14.7 → sp0 0.421) — centroids are sound; the raw span is a mixture dominated by Carlos's louder tail.
+3. **Margin alone is not protective on silence-adjacent audio**: true-silence controls produce decided margins up to 0.14. The text-bearing gate is the load-bearing protection, as designed.
+4. **The piece-list replica drifts** (423 vs 222 turns — the shed-to-cap's sub-floor survivor merging was not replicated), invalidating the piece-level rehearsal; the real engine path gets verified by the gate (4.2) after implementation instead.
+
+**Pivot v3 (sub-window attribution):** segment the raw span ∩ gap by energy into voiced sub-windows; embed and decide EACH sub-window against the final centroids; attribute the transcript row to the LAST decided sub-window in the gap (skew-aware: legacy rows skew early, so the row's words sit at its tail — ear-attested ≈1.0s on this row); splice exactly that sub-window's span (here `[15.8, 16.12]`, 0.32s — sub-floor, carried by `promoted_subfloor = true` as before). A sub-window whose identity equals its adjacent flank is a continuation (no piece — today's behavior is already correct there). Sub-windows with undecided identity are ignored for attribution. Under v3 the S2b outcome is: row attributed via the Cynthia sub-window → splice [15.8,16.12] → coalesce right → boundary 15.8 (S2b improves from |0.32| to |0.00|) and the row renders Cynthia. Whole-meeting candidate re-scan under v3 is required before engine code (probe iteration 2); the false-rescue mapping must be re-checked against all 16 entries.
+
 ## Goals / Non-Goals
 
 **Goals:**

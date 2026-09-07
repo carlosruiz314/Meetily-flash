@@ -1,0 +1,1504 @@
+The system cannot find the path specified.
+warning: patch for the non root package will be ignored, specify patch at the workspace root:
+package:   C:\Users\CarlosRuizMartínez\workspace\Meetily-flash\frontend\src-tauri\Cargo.toml
+workspace: C:\Users\CarlosRuizMartínez\workspace\Meetily-flash\Cargo.toml
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   C:\Users\CarlosRuizMartínez\workspace\Meetily-flash\llama-helper\Cargo.toml
+workspace: C:\Users\CarlosRuizMartínez\workspace\Meetily-flash\Cargo.toml
+   Compiling meetily-flash v0.3.0 (C:\Users\CarlosRuizMartínez\workspace\Meetily-flash\frontend\src-tauri)
+warning: meetily-flash@0.3.0: 🚀 Building Meetily for: windows
+warning: meetily-flash@0.3.0: ✅ Windows: Vulkan GPU acceleration ENABLED
+warning: meetily-flash@0.3.0: 🎬 Checking FFmpeg binary for target: x86_64-pc-windows-msvc
+warning: meetily-flash@0.3.0: 🔍 Found cached FFmpeg binary: ffmpeg-x86_64-pc-windows-msvc.exe
+warning: meetily-flash@0.3.0: ✅ FFmpeg verification passed: ffmpeg version 8.0.1-essentials_build-www.gyan.dev Copyright (c) 2000-2025 the FFmpeg developers
+warning: meetily-flash@0.3.0: ✅ FFmpeg binary already cached and verified: ffmpeg-x86_64-pc-windows-msvc.exe
+warning: unused import: `serde::Serialize`
+ --> frontend\src-tauri\src\lib.rs:1:5
+  |
+1 | use serde::Serialize;
+  |     ^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: type `PyannoteParams` is more private than the item `PyannoteSegmentation::with_params`
+   --> frontend\src-tauri\src\audio\speaker\pyannote_segmentation.rs:540:5
+    |
+540 |     pub fn with_params(model_path: &str, params: PyannoteParams) -> Result<Self> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ associated function `PyannoteSegmentation::with_params` is reachable at visibility `pub`
+    |
+note: but type `PyannoteParams` is only usable at visibility `pub(crate)`
+   --> frontend\src-tauri\src\audio\speaker\pyannote_segmentation.rs:504:1
+    |
+504 | pub(crate) struct PyannoteParams {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(private_interfaces)]` on by default
+
+warning: type `ManualNamesPolicy` is more private than the item `run_diarization_for_meeting`
+   --> frontend\src-tauri\src\audio\speaker\commands.rs:439:1
+    |
+439 | / pub async fn run_diarization_for_meeting(
+440 | |     pool: &SqlitePool,
+441 | |     meeting_id: &str,
+442 | |     threshold_fp: u32,
+443 | |     registry: Arc<Mutex<Option<CosineRegistryAdapter>>>,
+444 | |     manual_policy: ManualNamesPolicy,
+445 | | ) -> Result<DiarizationResult, String> {
+    | |______________________________________^ function `run_diarization_for_meeting` is reachable at visibility `pub`
+    |
+note: but type `ManualNamesPolicy` is only usable at visibility `pub(crate)`
+   --> frontend\src-tauri\src\audio\speaker\commands.rs:433:1
+    |
+433 | pub(crate) enum ManualNamesPolicy {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: fields `frame_length_ms`, `frame_shift_ms`, and `use_power` are never read
+  --> frontend\src-tauri\src\audio\speaker\nemo_extractor.rs:60:5
+   |
+57 | pub(crate) struct NemoFbankParams {
+   |                   --------------- fields in this struct
+...
+60 |     frame_length_ms: f32,
+   |     ^^^^^^^^^^^^^^^
+61 |     frame_shift_ms: f32,
+   |     ^^^^^^^^^^^^^^
+...
+68 |     use_power: bool,
+   |     ^^^^^^^^^
+   |
+   = note: `NemoFbankParams` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `meetily-flash` (lib) generated 4 warnings (run `cargo fix --lib -p meetily-flash` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 9m 23s
+     Running tests\gap_rescue_probe.rs (C:/mf\release\deps\gap_rescue_probe-8ec355d0fef86b02.exe)
+
+running 1 test
+PROBE: decoded 4973.4s
+PROBE: spans gate=237 db=426 refs=0
+test gap_rescue_signals has been running for over 60 seconds
+PROBE: engine pre-rescue: 222 turns, 2 clusters, 0 refs
+PROBE: inter-centroid cosine sp0-sp1 = 0.131
+
+=== 1.1 turns 12-17s and 32-38s ===
+TURN     13.42-14.78 sp0
+TURN     16.12-20.30 sp1
+TURN     32.65-36.08 sp1
+TURN     36.08-38.64 sp0
+--- cached full-meeting frame-mass track 12-17.5s and 32-38.5s ---
+MASS 12.0:sp1(0.99) 12.5:sp1(0.74) 13.0:sp2(0.51) 13.5:sp0(0.64) 14.0:sp0(0.84) 14.5:sp0(0.50) 15.0:sil(0.68) 15.5:sil(0.88) 16.0:sil(0.62) 16.6:sp2(0.95) 17.1:sil(0.91) 
+MASS 32.0:sp1(1.03) 32.5:sil(0.88) 33.0:sil(0.77) 33.5:sil(0.94) 34.0:sil(0.78) 34.5:sp1(1.15) 35.0:sp2(1.14) 35.5:sp2(1.05) 36.0:sil(0.72) 36.6:sp1(0.96) 37.1:sp1(0.59) 37.6:sp1(1.01) 38.1:sp1(1.01) 
+--- per-window slot tracks ([w+2,w+8) mid-window frames) ---
+VOTE w= 10.0 10.0:s1 10.1:s1 10.1:s1 10.1:s1 10.1:s1 10.1:s1 
+VOTE w= 11.0 11.0:s1 11.1:s1 11.1:s1 11.1:s1 11.1:s1 11.1:s1 
+VOTE w= 12.0 12.0:s1 12.1:s1 12.1:s1 12.1:s1 12.1:s1 12.1:s1 
+VOTE w= 13.0 13.0:s255 13.1:s255 13.1:s255 13.1:s255 13.1:s255 13.1:s255 
+VOTE w= 14.0 14.0:s0 14.1:s0 14.1:s0 14.1:s0 14.1:s0 14.1:s0 
+VOTE w= 15.0 15.0:s255 15.1:s255 15.1:s255 15.1:s255 15.1:s255 15.1:s255 
+VOTE w= 16.0 16.0:s255 16.1:s255 16.1:s255 16.1:s255 16.1:s255 16.1:s2 
+VOTE w= 30.0 30.0:s1 30.1:s1 30.1:s1 30.1:s1 30.1:s1 30.1:s1 
+VOTE w= 31.0 31.0:s1 31.1:s1 31.1:s1 31.1:s1 31.1:s1 31.1:s1 
+VOTE w= 32.0 32.0:s1 32.1:s1 32.1:s1 32.1:s1 32.1:s1 32.1:s1 
+VOTE w= 33.0 33.0:s255 33.1:s255 33.1:s255 33.1:s255 33.1:s255 33.1:s255 
+VOTE w= 34.0 34.0:s255 34.1:s255 34.1:s255 34.1:s255 34.1:s255 34.1:s255 
+VOTE w= 35.0 35.0:s2 35.1:s2 35.1:s2 35.1:s2 35.1:s2 35.1:s2 
+VOTE w= 36.0 36.0:s255 36.1:s255 36.1:s255 36.1:s255 36.1:s255 36.1:s255 
+--- borrow distances at the target gap (midpoint rule, i64 ms) ---
+BORROW gate mega-row: span [14.78,16.12] mid 15450ms -> Some("sp1 @ 665ms")
+BORROW db fine row: span [14.78,15.84] mid 15309ms -> Some("sp0 @ 527ms")
+
+=== 1.2 onset rehearsal 14.5-16.5s ===
+ENERGY 14.6:-33 14.6:-46 14.7:-32 14.8:-42 14.9:-48 15.0:-41 15.0:-31 15.1:-64 15.2:-57 15.3:-70 15.4:-75 15.4:-73 15.5:-74 15.6:-79 15.7:-47 15.8:-47 15.8:-63 15.9:-83 16.0:-76 16.1:-48 16.2:-61 16.2:-26 16.3:-26 16.4:-24 16.5:-28 
+ONSET gap[14.78,16.12]: detected Some(14.78) (baseline -61.1 dBFS, peak -29.8 dBFS) — ear says ≈15.8
+
+=== 1.3 identity votes vs final centroids ===
+VOTE raw gate window [14.78,16.12]      best sp0 margin Some("0.226") decided=true [sp0=0.263 sp1=0.037]
+VOTE raw db window [14.78,15.84]        best sp0 margin Some("0.242") decided=true [sp0=0.272 sp1=0.030]
+VOTE padded gate [14.58,16.32]          best sp0 margin Some("0.098") decided=true [sp0=0.185 sp1=0.088]
+VOTE padded db [14.58,16.04]            best sp0 margin Some("0.359") decided=true [sp0=0.292 sp1=-0.067]
+VOTE voiced [onset,16.12]               best sp0 margin Some("0.226") decided=true [sp0=0.263 sp1=0.037]
+VOTE voiced ear [15.8,16.12]            best sp1 margin Some("0.096") decided=true [sp1=0.096 sp0=0.001]
+VOTE sanity cynthia [16.3,17.5]         best sp1 margin Some("0.494") decided=true [sp1=0.586 sp0=0.092]
+VOTE sanity carlos [13.6,14.7]          best sp0 margin Some("0.320") decided=true [sp0=0.421 sp1=0.101]
+
+PROBE: replica pieces kept 1435/1464 (drop_textless + cap)
+PROBE: replica fidelity vs engine: DRIFT (engine 222 turns, replica 423 turns)
+
+=== 1.4 whole-meeting candidate scan (DB spans = production engine) ===
+gap[8.57,9.38] span[9.38,9.38] sp0[1.30..]..[..9.38]sp1 ABSTAIN: floor(0.00<0.8) 
+  -> touches S1_five_years_sentence [9.38..11.8] pin None
+gap[13.03,13.42] span[13.41,13.42] sp1[9.38..]..[..13.42]sp0 ABSTAIN: floor(0.00<0.8) 
+  -> touches S2_user_to_cynthia_13s [11.8..13.5] pin Some(12.0)
+CANDIDATE gap[14.78,16.12] sp0[13.42..]..[..16.12]sp1 span[14.78,15.84] dur 1.06 best sp1 margin 0.275 onset 14.78 winner Some("sp0")
+  -> touches S2_user_to_cynthia_13s [11.8..13.5] pin Some(12.0)
+  -> touches S2b_oh_man_cynthia [15..16.8] pin Some(15.8)
+  -> touches S3_updates_run [15.5..20.83] pin None
+gap[16.99,17.30] span[16.99,17.30] sp0[13.42..]..[..20.81]sp0 ABSTAIN: interior floor(0.30<0.8) 
+  -> touches S2b_oh_man_cynthia [15..16.8] pin Some(15.8)
+  -> touches S3_updates_run [15.5..20.83] pin None
+gap[20.30,20.81] span[20.81,20.81] sp1[16.12..]..[..20.81]sp0 ABSTAIN: floor(0.00<0.8) 
+  -> touches S3_updates_run [15.5..20.83] pin None
+gap[22.11,22.51] span[22.11,22.51] sp1[16.12..]..[..25.31]sp1 ABSTAIN: interior floor(0.40<0.8) 
+gap[23.14,23.52] span[23.14,23.52] sp1[16.12..]..[..25.31]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[24.49,25.31] span[25.31,25.31] sp0[20.81..]..[..25.31]sp1 ABSTAIN: floor(0.00<0.8) 
+  -> touches S4_cynthia_banter [24.5..29.5] pin None
+gap[26.43,27.34] span[26.43,27.34] sp0[20.81..]..[..29.92]sp0 ABSTAIN: interior 
+  -> touches S4_cynthia_banter [24.5..29.5] pin None
+gap[32.16,32.65] span[32.65,32.65] sp0[29.92..]..[..32.65]sp1 ABSTAIN: floor(0.00<0.8) 
+  -> touches S6_user_to_cynthia_yeah [30.5..33.04] pin Some(32.65)
+gap[32.97,34.29] span[32.97,34.29] sp0[29.92..]..[..36.08]sp0 ABSTAIN: interior 
+  -> touches S6_user_to_cynthia_yeah [30.5..33.04] pin Some(32.65)
+  -> touches S7_where_is_ricardo_head [33.8..36.8] pin None
+  -> touches S7b_carlos_resumption_36 [33.8..37.5] pin Some(36.08)
+gap[38.64,39.00] span[38.64,39.00] sp0[36.08..]..[..39.00]sp1 ABSTAIN: floor(0.35<0.8) 
+  -> touches S8_okay_interjection_start [37.5..39.2] pin Some(39.13)
+  -> touches S9_okay_interjection_end [39.3..43] pin Some(41.98)
+gap[39.93,41.98] span[39.93,41.98] sp1[39.00..]..[..41.98]sp0 ABSTAIN: margin(0.004) 
+  -> touches S8_okay_interjection_start [37.5..39.2] pin Some(39.13)
+  -> touches S9_okay_interjection_end [39.3..43] pin Some(41.98)
+gap[52.85,53.49] span[53.49,53.49] sp0[41.98..]..[..53.49]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[55.01,58.00] span[55.01,55.18] sp0[41.98..]..[..62.15]sp0 ABSTAIN: interior floor(0.17<0.8) 
+gap[60.04,60.82] span[60.04,60.82] sp0[41.98..]..[..62.15]sp0 ABSTAIN: interior floor(0.78<0.8) 
+gap[61.64,62.15] span[62.15,62.15] sp1[53.49..]..[..62.15]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[63.26,63.64] span[63.63,63.64] sp0[62.15..]..[..63.64]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[68.48,69.31] span[69.31,69.31] sp1[63.64..]..[..69.31]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[73.22,74.28] span[73.22,74.28] sp0[69.31..]..[..74.28]sp1 ABSTAIN: margin(0.035) 
+gap[77.20,77.59] span[77.20,77.59] sp0[69.31..]..[..100.00]sp0 ABSTAIN: interior floor(0.39<0.8) 
+gap[79.23,80.34] span[80.34,80.34] sp1[74.28..]..[..100.00]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[83.63,84.19] span[83.63,84.19] sp1[74.28..]..[..100.00]sp0 ABSTAIN: floor(0.56<0.8) 
+gap[85.12,85.49] span[85.12,85.49] sp1[74.28..]..[..100.00]sp0 ABSTAIN: floor(0.37<0.8) 
+gap[104.59,105.03] span[104.59,105.03] sp0[100.00..]..[..129.16]sp0 ABSTAIN: interior floor(0.44<0.8) 
+gap[105.32,105.79] span[105.32,105.79] sp0[100.00..]..[..129.16]sp0 ABSTAIN: interior floor(0.47<0.8) 
+gap[105.99,106.46] span[105.99,106.46] sp0[100.00..]..[..129.16]sp0 ABSTAIN: interior floor(0.47<0.8) 
+gap[112.32,113.28] span[112.32,113.28] sp0[100.00..]..[..129.16]sp0 ABSTAIN: interior 
+gap[114.04,114.38] span[114.04,114.38] sp0[100.00..]..[..129.16]sp0 ABSTAIN: interior floor(0.34<0.8) 
+gap[118.65,120.22] span[118.65,120.22] sp0[100.00..]..[..129.16]sp0 ABSTAIN: interior 
+gap[122.36,122.78] span[122.36,122.78] sp0[100.00..]..[..129.16]sp0 ABSTAIN: interior floor(0.42<0.8) 
+gap[126.71,127.09] span[126.71,127.09] sp0[100.00..]..[..129.16]sp0 ABSTAIN: interior floor(0.37<0.8) 
+gap[127.81,128.35] span[127.81,128.09] sp0[100.00..]..[..129.16]sp0 ABSTAIN: interior floor(0.28<0.8) 
+gap[128.77,129.16] span[129.16,129.16] sp1[103.43..]..[..129.16]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[132.00,132.64] span[132.00,132.11] sp0[129.16..]..[..132.64]sp1 ABSTAIN: floor(0.11<0.8) 
+gap[136.67,138.07] span[136.67,138.07] sp0[129.16..]..[..146.63]sp0 ABSTAIN: interior 
+gap[138.78,139.93] span[138.78,139.93] sp0[129.16..]..[..146.63]sp0 ABSTAIN: interior 
+gap[140.52,141.14] span[140.52,141.14] sp0[129.16..]..[..146.63]sp0 ABSTAIN: interior floor(0.62<0.8) 
+gap[144.45,144.97] span[144.45,144.97] sp0[129.16..]..[..146.63]sp0 ABSTAIN: interior floor(0.52<0.8) 
+gap[145.90,146.63] span[146.63,146.63] sp1[132.64..]..[..146.63]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[147.69,148.09] span[147.69,148.09] sp0[146.63..]..[..148.09]sp1 ABSTAIN: floor(0.41<0.8) 
+gap[149.26,150.46] span[149.26,150.46] sp0[146.63..]..[..161.36]sp0 ABSTAIN: interior 
+gap[153.16,153.97] span[153.16,153.97] sp0[146.63..]..[..161.36]sp0 ABSTAIN: interior 
+gap[162.34,162.78] span[162.34,162.78] sp1[148.09..]..[..171.79]sp1 ABSTAIN: interior floor(0.44<0.8) 
+  -> touches S14_banter_anchor_161 [155..170] pin Some(161.36)
+gap[163.13,163.65] span[163.13,163.65] sp1[148.09..]..[..171.79]sp1 ABSTAIN: interior floor(0.52<0.8) 
+  -> touches S14_banter_anchor_161 [155..170] pin Some(161.36)
+gap[164.40,165.00] span[164.40,165.00] sp1[148.09..]..[..171.79]sp1 ABSTAIN: interior floor(0.61<0.8) 
+  -> touches S14_banter_anchor_161 [155..170] pin Some(161.36)
+gap[170.89,171.79] span[171.79,171.79] sp0[161.36..]..[..171.79]sp1 ABSTAIN: floor(0.00<0.8) 
+  -> touches S14_banter_anchor_161 [155..170] pin Some(161.36)
+gap[173.81,174.44] span[173.81,174.44] sp1[171.79..]..[..174.44]sp0 ABSTAIN: floor(0.62<0.8) 
+gap[178.72,179.45] span[178.72,179.45] sp1[171.79..]..[..182.00]sp1 ABSTAIN: interior floor(0.73<0.8) 
+CANDIDATE gap[180.41,182.00] sp0[174.44..]..[..182.00]sp1 span[180.41,181.76] dur 1.35 best sp1 margin 0.062 onset 181.49 winner Some("sp0")
+gap[185.73,187.50] span[185.73,187.24] sp0[183.99..]..[..187.50]sp1 ABSTAIN: margin(0.000) 
+gap[189.62,192.00] span[189.62,192.00] sp0[183.99..]..[..196.73]sp0 ABSTAIN: interior 
+gap[196.43,196.73] span[196.73,196.73] sp1[187.50..]..[..196.73]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[199.70,200.32] span[199.70,200.32] sp0[196.73..]..[..200.32]sp0 ABSTAIN: interior floor(0.62<0.8) 
+gap[213.44,213.82] span[213.44,213.82] sp0[200.32..]..[..229.03]sp0 ABSTAIN: interior floor(0.39<0.8) 
+gap[214.14,214.99] span[214.14,214.99] sp0[200.32..]..[..229.03]sp0 ABSTAIN: interior 
+gap[224.99,225.42] span[224.99,225.42] sp0[200.32..]..[..229.03]sp0 ABSTAIN: interior floor(0.42<0.8) 
+gap[228.00,229.03] span[229.03,229.03] sp1[205.72..]..[..229.03]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[233.58,234.55] span[233.58,234.55] sp1[205.72..]..[..279.38]sp1 ABSTAIN: interior 
+gap[235.61,235.91] span[235.61,235.91] sp1[205.72..]..[..279.38]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[236.33,237.31] span[236.33,237.31] sp1[205.72..]..[..279.38]sp1 ABSTAIN: interior 
+gap[240.38,240.98] span[240.38,240.98] sp1[205.72..]..[..279.38]sp1 ABSTAIN: interior floor(0.59<0.8) 
+gap[243.47,244.55] span[243.47,244.55] sp1[205.72..]..[..279.38]sp1 ABSTAIN: interior 
+gap[250.24,250.80] span[250.24,250.80] sp1[205.72..]..[..279.38]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[253.26,253.99] span[253.26,253.99] sp1[205.72..]..[..279.38]sp1 ABSTAIN: interior floor(0.73<0.8) 
+gap[254.24,254.95] span[254.24,254.95] sp1[205.72..]..[..279.38]sp1 ABSTAIN: interior floor(0.71<0.8) 
+gap[259.35,259.84] span[259.35,259.84] sp1[205.72..]..[..279.38]sp1 ABSTAIN: interior floor(0.49<0.8) 
+gap[260.94,261.28] span[260.94,261.28] sp1[205.72..]..[..279.38]sp1 ABSTAIN: interior floor(0.34<0.8) 
+gap[263.01,263.32] span[263.01,263.32] sp1[205.72..]..[..279.38]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[265.55,266.09] span[265.55,266.09] sp1[205.72..]..[..279.38]sp1 ABSTAIN: interior floor(0.54<0.8) 
+gap[270.88,271.67] span[270.88,271.67] sp1[205.72..]..[..279.38]sp1 ABSTAIN: interior floor(0.79<0.8) 
+gap[274.20,274.76] span[274.20,274.76] sp1[205.72..]..[..279.38]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[278.24,279.38] span[279.38,279.38] sp0[229.03..]..[..279.38]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[281.71,282.42] span[281.71,282.42] sp1[279.38..]..[..282.42]sp0 ABSTAIN: floor(0.71<0.8) 
+gap[286.94,287.36] span[286.94,287.36] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior floor(0.42<0.8) 
+gap[293.84,294.20] span[293.84,294.20] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[296.63,297.57] span[296.63,297.57] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior 
+gap[299.53,300.66] span[299.53,300.66] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior 
+gap[301.73,302.28] span[301.73,302.28] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[303.90,304.26] span[303.90,304.26] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[305.56,306.69] span[305.56,306.69] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior 
+gap[307.95,308.32] span[307.95,308.32] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[313.69,314.74] span[313.69,314.74] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior 
+gap[317.54,318.45] span[317.54,318.45] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior 
+gap[327.27,328.00] span[327.27,328.00] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior floor(0.73<0.8) 
+gap[330.51,331.36] span[330.51,331.36] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior 
+gap[334.58,336.00] span[334.58,336.00] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior 
+gap[339.15,339.71] span[339.15,339.71] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[340.71,341.31] span[340.71,341.31] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior floor(0.61<0.8) 
+gap[342.85,343.59] span[342.85,343.59] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior floor(0.74<0.8) 
+gap[348.76,349.89] span[348.76,349.89] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior 
+gap[353.51,354.00] span[353.51,354.00] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior floor(0.49<0.8) 
+gap[356.42,357.14] span[356.42,357.14] sp1[279.38..]..[..360.16]sp1 ABSTAIN: interior floor(0.73<0.8) 
+gap[359.45,360.16] span[359.45,359.95] sp0[282.42..]..[..360.16]sp1 ABSTAIN: floor(0.50<0.8) 
+gap[362.19,363.83] span[363.82,363.83] sp1[360.16..]..[..363.83]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[365.60,366.15] span[365.60,366.15] sp1[360.16..]..[..367.34]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[366.58,367.34] span[367.33,367.34] sp0[363.83..]..[..367.34]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[369.24,369.73] span[369.73,369.73] sp1[367.34..]..[..369.73]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[370.32,370.76] span[370.62,370.76] sp1[367.34..]..[..397.61]sp1 ABSTAIN: interior floor(0.14<0.8) 
+gap[372.13,372.62] span[372.13,372.62] sp1[367.34..]..[..397.61]sp1 ABSTAIN: interior floor(0.49<0.8) 
+gap[374.76,375.82] span[374.76,375.82] sp1[367.34..]..[..397.61]sp1 ABSTAIN: interior 
+gap[377.90,378.20] span[377.90,378.20] sp1[367.34..]..[..397.61]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[381.97,382.27] span[381.97,382.27] sp1[367.34..]..[..397.61]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[384.40,385.14] span[384.40,385.14] sp1[367.34..]..[..397.61]sp1 ABSTAIN: interior floor(0.74<0.8) 
+gap[387.10,388.01] span[387.10,388.01] sp1[367.34..]..[..397.61]sp1 ABSTAIN: interior 
+gap[391.64,392.34] span[391.64,392.34] sp1[367.34..]..[..397.61]sp1 ABSTAIN: interior floor(0.71<0.8) 
+gap[397.00,397.61] span[397.61,397.61] sp0[369.73..]..[..397.61]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[400.01,400.88] span[400.01,400.88] sp0[369.73..]..[..403.08]sp0 ABSTAIN: interior 
+gap[402.69,403.08] span[402.69,403.08] sp1[397.61..]..[..403.08]sp0 ABSTAIN: floor(0.39<0.8) 
+gap[405.00,406.37] span[405.00,406.25] sp0[403.08..]..[..406.37]sp1 ABSTAIN: margin(0.002) 
+gap[407.55,408.38] span[407.55,408.31] sp1[406.37..]..[..408.38]sp0 ABSTAIN: floor(0.76<0.8) 
+gap[410.65,411.18] span[410.65,411.18] sp1[406.37..]..[..460.23]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[411.56,412.00] span[411.56,412.00] sp1[406.37..]..[..460.23]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[417.18,417.94] span[417.18,417.94] sp1[406.37..]..[..460.23]sp1 ABSTAIN: interior floor(0.76<0.8) 
+gap[418.31,418.99] span[418.31,418.99] sp1[406.37..]..[..460.23]sp1 ABSTAIN: interior floor(0.68<0.8) 
+gap[421.32,421.76] span[421.32,421.76] sp1[406.37..]..[..460.23]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[428.54,430.67] span[428.54,430.67] sp1[406.37..]..[..460.23]sp1 ABSTAIN: interior 
+gap[432.46,432.79] span[432.46,432.79] sp1[406.37..]..[..460.23]sp1 ABSTAIN: interior floor(0.34<0.8) 
+gap[435.32,435.83] span[435.32,435.83] sp1[406.37..]..[..460.23]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[439.59,440.00] span[439.59,440.00] sp1[406.37..]..[..460.23]sp1 ABSTAIN: interior floor(0.40<0.8) 
+gap[440.66,441.16] span[440.66,441.16] sp1[406.37..]..[..460.23]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[442.43,442.95] span[442.43,442.95] sp1[406.37..]..[..460.23]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[446.90,448.00] span[446.90,448.00] sp1[406.37..]..[..460.23]sp1 ABSTAIN: interior 
+gap[448.74,449.28] span[448.74,449.28] sp1[406.37..]..[..460.23]sp1 ABSTAIN: interior floor(0.54<0.8) 
+gap[450.48,450.87] span[450.48,450.87] sp1[406.37..]..[..460.23]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[457.41,457.77] span[457.41,457.77] sp1[406.37..]..[..460.23]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[459.14,460.23] span[459.14,460.13] sp0[408.38..]..[..460.23]sp1 ABSTAIN: margin(0.023) 
+gap[460.54,461.40] span[460.54,461.40] sp0[408.38..]..[..465.36]sp0 ABSTAIN: interior 
+gap[466.81,467.32] span[466.81,467.32] sp1[460.23..]..[..474.37]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[468.01,468.74] span[468.01,468.74] sp1[460.23..]..[..474.37]sp1 ABSTAIN: interior floor(0.73<0.8) 
+gap[469.23,469.55] span[469.23,469.55] sp1[460.23..]..[..474.37]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[471.32,472.70] span[471.32,472.70] sp1[460.23..]..[..474.37]sp1 ABSTAIN: interior 
+gap[476.50,477.41] span[477.41,477.41] sp1[474.37..]..[..477.41]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[478.12,480.13] span[478.12,480.13] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior 
+gap[481.22,481.78] span[481.22,481.78] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[482.34,482.71] span[482.34,482.71] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[484.14,484.77] span[484.14,484.77] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior floor(0.62<0.8) 
+gap[487.45,488.01] span[487.45,488.01] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[490.34,491.59] span[490.34,491.59] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior 
+gap[494.13,494.52] span[494.13,494.52] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[495.80,496.56] span[495.80,496.56] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior floor(0.76<0.8) 
+gap[497.21,498.44] span[497.21,498.44] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior 
+gap[499.47,499.89] span[499.47,499.89] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior floor(0.42<0.8) 
+gap[501.32,501.93] span[501.32,501.93] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior floor(0.61<0.8) 
+gap[508.33,509.00] span[508.33,509.00] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior floor(0.67<0.8) 
+gap[512.66,513.81] span[512.66,513.81] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior 
+gap[516.81,517.64] span[516.81,517.64] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior 
+gap[519.45,519.88] span[519.45,519.88] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[520.31,520.80] span[520.31,520.80] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior floor(0.49<0.8) 
+gap[523.41,524.24] span[523.41,524.24] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior 
+gap[529.76,530.20] span[529.76,530.20] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[537.28,537.91] span[537.28,537.91] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior floor(0.62<0.8) 
+gap[543.64,543.95] span[543.64,543.95] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[547.14,548.00] span[547.14,548.00] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior 
+gap[556.81,557.50] span[556.81,557.50] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior floor(0.69<0.8) 
+gap[558.92,559.95] span[558.92,559.95] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior 
+gap[561.18,562.44] span[561.18,562.44] sp1[474.37..]..[..564.18]sp1 ABSTAIN: interior 
+gap[566.34,567.00] span[566.34,567.00] sp0[477.41..]..[..568.49]sp0 ABSTAIN: interior floor(0.66<0.8) 
+gap[569.70,570.05] span[569.70,570.05] sp1[564.18..]..[..611.75]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[570.76,572.54] span[570.76,572.54] sp1[564.18..]..[..611.75]sp1 ABSTAIN: interior 
+gap[578.64,579.69] span[578.64,579.69] sp1[564.18..]..[..611.75]sp1 ABSTAIN: interior 
+gap[586.42,586.78] span[586.42,586.78] sp1[564.18..]..[..611.75]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[587.93,588.25] span[587.93,588.25] sp1[564.18..]..[..611.75]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[589.98,590.74] span[589.98,590.74] sp1[564.18..]..[..611.75]sp1 ABSTAIN: interior floor(0.76<0.8) 
+gap[592.18,592.90] span[592.18,592.90] sp1[564.18..]..[..611.75]sp1 ABSTAIN: interior floor(0.73<0.8) 
+gap[593.60,594.13] span[593.60,594.13] sp1[564.18..]..[..611.75]sp1 ABSTAIN: interior floor(0.54<0.8) 
+gap[594.24,595.64] span[594.24,595.64] sp1[564.18..]..[..611.75]sp1 ABSTAIN: interior 
+gap[596.77,597.16] span[596.77,597.16] sp1[564.18..]..[..611.75]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[603.72,604.48] span[603.72,604.48] sp1[564.18..]..[..611.75]sp1 ABSTAIN: interior floor(0.76<0.8) 
+gap[608.12,608.65] span[608.12,608.65] sp1[564.18..]..[..611.75]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[610.76,611.75] span[611.75,611.75] sp0[568.49..]..[..611.75]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[616.65,617.14] span[616.65,617.14] sp0[568.49..]..[..621.13]sp0 ABSTAIN: interior floor(0.49<0.8) 
+gap[624.53,626.00] span[624.53,626.00] sp1[611.75..]..[..647.85]sp1 ABSTAIN: interior 
+gap[637.00,637.44] span[637.00,637.44] sp1[611.75..]..[..647.85]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[638.75,640.64] span[638.75,640.64] sp1[611.75..]..[..647.85]sp1 ABSTAIN: interior 
+gap[641.64,642.16] span[641.64,642.16] sp1[611.75..]..[..647.85]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[643.28,644.22] span[643.28,644.22] sp1[611.75..]..[..647.85]sp1 ABSTAIN: interior 
+gap[649.55,650.58] span[649.55,650.58] sp0[621.13..]..[..677.89]sp0 ABSTAIN: interior 
+gap[651.24,651.93] span[651.24,651.93] sp0[621.13..]..[..677.89]sp0 ABSTAIN: interior floor(0.69<0.8) 
+gap[656.37,657.32] span[656.37,657.32] sp0[621.13..]..[..677.89]sp0 ABSTAIN: interior 
+gap[659.17,659.51] span[659.17,659.51] sp0[621.13..]..[..677.89]sp0 ABSTAIN: interior floor(0.34<0.8) 
+gap[667.15,667.69] span[667.15,667.69] sp0[621.13..]..[..677.89]sp0 ABSTAIN: interior floor(0.54<0.8) 
+gap[670.31,670.78] span[670.31,670.78] sp0[621.13..]..[..677.89]sp0 ABSTAIN: interior floor(0.47<0.8) 
+gap[675.22,675.86] span[675.22,675.86] sp0[621.13..]..[..677.89]sp0 ABSTAIN: interior floor(0.64<0.8) 
+gap[678.31,679.12] span[678.31,679.12] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior 
+gap[681.38,682.19] span[681.38,682.19] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior 
+gap[683.39,684.28] span[683.39,684.28] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior 
+gap[684.92,685.97] span[684.92,685.97] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior 
+gap[687.15,687.96] span[687.15,687.96] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior 
+gap[690.56,690.98] span[690.56,690.98] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior floor(0.42<0.8) 
+gap[692.82,694.22] span[692.82,694.22] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior 
+gap[696.97,697.34] span[696.97,697.34] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[698.00,699.67] span[698.00,699.67] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior 
+gap[702.93,703.47] span[702.93,703.47] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior floor(0.54<0.8) 
+gap[705.21,706.39] span[705.21,706.39] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior 
+gap[707.15,707.64] span[707.15,707.64] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior floor(0.49<0.8) 
+gap[709.19,709.75] span[709.19,709.75] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[710.25,711.18] span[710.25,711.18] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior 
+gap[711.45,711.80] span[711.45,711.80] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[714.76,715.37] span[714.76,715.37] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior floor(0.61<0.8) 
+gap[718.40,718.72] span[718.40,718.72] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[722.10,722.57] span[722.10,722.57] sp1[647.85..]..[..726.59]sp1 ABSTAIN: interior floor(0.47<0.8) 
+gap[726.00,726.59] span[726.00,726.59] sp0[677.89..]..[..726.59]sp1 ABSTAIN: floor(0.59<0.8) 
+gap[729.12,729.52] span[729.12,729.52] sp0[677.89..]..[..732.16]sp0 ABSTAIN: interior floor(0.40<0.8) 
+gap[731.55,732.16] span[731.55,732.09] sp1[726.59..]..[..732.16]sp0 ABSTAIN: floor(0.54<0.8) 
+gap[733.74,734.60] span[733.74,734.60] sp1[726.59..]..[..744.59]sp1 ABSTAIN: interior 
+gap[736.22,736.80] span[736.22,736.80] sp1[726.59..]..[..744.59]sp1 ABSTAIN: interior floor(0.57<0.8) 
+gap[737.49,737.96] span[737.49,737.96] sp1[726.59..]..[..744.59]sp1 ABSTAIN: interior floor(0.47<0.8) 
+gap[741.66,742.13] span[741.66,742.13] sp1[726.59..]..[..744.59]sp1 ABSTAIN: interior floor(0.47<0.8) 
+gap[743.14,744.00] span[743.14,744.00] sp1[726.59..]..[..744.59]sp1 ABSTAIN: interior 
+gap[746.31,746.90] span[746.78,746.90] sp0[732.16..]..[..747.73]sp0 ABSTAIN: interior floor(0.12<0.8) 
+gap[754.53,755.33] span[754.53,755.33] sp1[744.59..]..[..772.40]sp1 ABSTAIN: interior floor(0.79<0.8) 
+gap[756.15,756.61] span[756.15,756.61] sp1[744.59..]..[..772.40]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[758.80,759.24] span[758.80,759.24] sp1[744.59..]..[..772.40]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[767.91,768.47] span[767.91,768.47] sp1[744.59..]..[..772.40]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[771.96,772.40] span[772.40,772.40] sp0[747.73..]..[..772.40]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[773.20,774.01] span[773.20,774.01] sp0[747.73..]..[..787.24]sp0 ABSTAIN: interior 
+gap[776.67,776.99] span[776.67,776.99] sp0[747.73..]..[..787.24]sp0 ABSTAIN: interior floor(0.32<0.8) 
+gap[777.72,778.24] span[777.72,778.24] sp0[747.73..]..[..787.24]sp0 ABSTAIN: interior floor(0.52<0.8) 
+gap[778.78,779.69] span[778.78,779.69] sp0[747.73..]..[..787.24]sp0 ABSTAIN: interior 
+gap[783.44,783.88] span[783.44,783.88] sp0[747.73..]..[..787.24]sp0 ABSTAIN: interior floor(0.44<0.8) 
+gap[787.61,788.00] span[787.61,788.00] sp1[772.40..]..[..809.22]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[788.21,788.77] span[788.21,788.77] sp1[772.40..]..[..809.22]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[795.99,796.40] span[795.99,796.40] sp1[772.40..]..[..809.22]sp1 ABSTAIN: interior floor(0.40<0.8) 
+gap[798.64,799.62] span[798.64,799.62] sp1[772.40..]..[..809.22]sp1 ABSTAIN: interior 
+gap[802.52,802.95] span[802.52,802.95] sp1[772.40..]..[..809.22]sp1 ABSTAIN: interior floor(0.42<0.8) 
+gap[805.01,805.65] span[805.01,805.65] sp1[772.40..]..[..809.22]sp1 ABSTAIN: interior floor(0.64<0.8) 
+gap[808.82,809.22] span[809.22,809.22] sp0[787.24..]..[..809.22]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[810.51,810.86] span[810.86,810.86] sp1[809.22..]..[..810.86]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[819.15,819.75] span[819.15,819.75] sp1[809.22..]..[..866.35]sp1 ABSTAIN: interior floor(0.61<0.8) 
+gap[822.74,823.55] span[822.74,823.55] sp1[809.22..]..[..866.35]sp1 ABSTAIN: interior 
+gap[833.64,834.42] span[833.64,834.42] sp1[809.22..]..[..866.35]sp1 ABSTAIN: interior floor(0.78<0.8) 
+gap[839.09,839.55] span[839.09,839.55] sp1[809.22..]..[..866.35]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[851.95,852.76] span[851.95,852.76] sp1[809.22..]..[..866.35]sp1 ABSTAIN: interior 
+gap[857.66,857.98] span[857.66,857.98] sp1[809.22..]..[..866.35]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[858.26,858.65] span[858.26,858.65] sp1[809.22..]..[..866.35]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[860.07,860.52] span[860.07,860.52] sp1[809.22..]..[..866.35]sp1 ABSTAIN: interior floor(0.46<0.8) 
+CANDIDATE gap[865.00,866.35] sp0[810.86..]..[..866.35]sp1 span[865.00,866.22] dur 1.22 best sp1 margin 0.131 onset 865.22 winner Some("sp0")
+gap[866.68,867.71] span[866.68,867.71] sp0[810.86..]..[..887.83]sp0 ABSTAIN: interior 
+gap[869.54,870.60] span[869.54,870.60] sp0[810.86..]..[..887.83]sp0 ABSTAIN: interior 
+gap[875.29,875.81] span[875.29,875.81] sp0[810.86..]..[..887.83]sp0 ABSTAIN: interior floor(0.52<0.8) 
+gap[877.58,878.01] span[877.58,878.01] sp0[810.86..]..[..887.83]sp0 ABSTAIN: interior floor(0.42<0.8) 
+gap[878.55,879.07] span[878.55,879.07] sp0[810.86..]..[..887.83]sp0 ABSTAIN: interior floor(0.52<0.8) 
+gap[880.18,880.50] span[880.18,880.50] sp0[810.86..]..[..887.83]sp0 ABSTAIN: interior floor(0.32<0.8) 
+gap[881.33,883.59] span[881.33,883.59] sp0[810.86..]..[..887.83]sp0 ABSTAIN: interior 
+gap[887.05,887.83] span[887.83,887.83] sp1[866.35..]..[..887.83]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[889.65,890.11] span[889.65,889.84] sp0[887.83..]..[..890.11]sp1 ABSTAIN: floor(0.19<0.8) 
+gap[894.21,895.24] span[894.21,895.24] sp0[887.83..]..[..898.81]sp0 ABSTAIN: interior 
+gap[896.91,897.65] span[896.91,897.65] sp0[887.83..]..[..898.81]sp0 ABSTAIN: interior floor(0.74<0.8) 
+gap[901.38,901.99] span[901.38,901.70] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior floor(0.32<0.8) 
+gap[905.55,906.86] span[905.55,906.86] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior 
+gap[907.55,908.28] span[907.55,908.28] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior floor(0.73<0.8) 
+gap[911.22,911.60] span[911.22,911.60] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior floor(0.39<0.8) 
+gap[912.41,913.34] span[912.41,913.34] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior 
+gap[914.00,914.41] span[914.00,914.41] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior floor(0.41<0.8) 
+gap[919.00,919.52] span[919.00,919.52] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior floor(0.52<0.8) 
+gap[920.24,920.84] span[920.24,920.84] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior floor(0.59<0.8) 
+gap[921.59,921.92] span[921.59,921.92] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior floor(0.32<0.8) 
+gap[924.62,925.00] span[924.62,924.94] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior floor(0.33<0.8) 
+gap[928.40,930.89] span[930.66,930.89] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior floor(0.23<0.8) 
+gap[932.46,936.61] span[936.61,936.61] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior floor(0.00<0.8) 
+gap[938.57,939.77] span[938.57,939.77] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior 
+gap[944.24,944.68] span[944.24,944.68] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior floor(0.44<0.8) 
+gap[949.54,950.54] span[949.54,950.54] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior 
+gap[951.72,953.35] span[951.72,953.35] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior 
+gap[957.76,959.66] span[957.76,959.66] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior 
+gap[960.93,961.74] span[960.93,961.74] sp0[898.81..]..[..966.63]sp0 ABSTAIN: interior 
+gap[966.26,966.63] span[966.63,966.63] sp1[900.86..]..[..966.63]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[970.87,971.63] span[971.63,971.63] sp0[966.63..]..[..971.63]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[971.90,972.47] span[972.04,972.47] sp0[966.63..]..[..981.52]sp0 ABSTAIN: interior floor(0.43<0.8) 
+gap[981.20,981.52] span[981.52,981.52] sp1[971.63..]..[..981.52]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[981.87,983.15] span[982.07,983.15] sp1[971.63..]..[..1032.50]sp1 ABSTAIN: interior 
+gap[989.58,990.26] span[989.58,990.26] sp1[971.63..]..[..1032.50]sp1 ABSTAIN: interior floor(0.68<0.8) 
+gap[990.92,991.51] span[990.92,991.51] sp1[971.63..]..[..1032.50]sp1 ABSTAIN: interior floor(0.59<0.8) 
+gap[994.01,994.43] span[994.01,994.43] sp1[971.63..]..[..1032.50]sp1 ABSTAIN: interior floor(0.42<0.8) 
+gap[996.15,996.64] span[996.15,996.64] sp1[971.63..]..[..1032.50]sp1 ABSTAIN: interior floor(0.49<0.8) 
+gap[998.93,999.29] span[998.93,999.29] sp1[971.63..]..[..1032.50]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[999.54,1000.22] span[999.54,1000.22] sp1[971.63..]..[..1032.50]sp1 ABSTAIN: interior floor(0.67<0.8) 
+gap[1006.00,1006.41] span[1006.00,1006.41] sp1[971.63..]..[..1032.50]sp1 ABSTAIN: interior floor(0.40<0.8) 
+gap[1007.00,1007.42] span[1007.00,1007.42] sp1[971.63..]..[..1032.50]sp1 ABSTAIN: interior floor(0.42<0.8) 
+gap[1008.65,1009.56] span[1008.65,1009.56] sp1[971.63..]..[..1032.50]sp1 ABSTAIN: interior 
+gap[1015.00,1015.72] span[1015.00,1015.72] sp1[971.63..]..[..1032.50]sp1 ABSTAIN: interior floor(0.73<0.8) 
+gap[1019.99,1020.53] span[1019.99,1020.53] sp1[971.63..]..[..1032.50]sp1 ABSTAIN: interior floor(0.54<0.8) 
+gap[1022.66,1023.11] span[1022.66,1023.11] sp1[971.63..]..[..1032.50]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[1024.68,1025.48] span[1024.68,1025.48] sp1[971.63..]..[..1032.50]sp1 ABSTAIN: interior floor(0.79<0.8) 
+gap[1029.05,1030.08] span[1029.05,1030.08] sp1[971.63..]..[..1032.50]sp1 ABSTAIN: interior 
+gap[1030.84,1031.54] span[1030.84,1031.54] sp1[971.63..]..[..1032.50]sp1 ABSTAIN: interior floor(0.69<0.8) 
+gap[1031.75,1032.50] span[1032.50,1032.50] sp0[981.52..]..[..1032.50]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[1034.05,1034.66] span[1034.05,1034.66] sp0[981.52..]..[..1045.37]sp0 ABSTAIN: interior floor(0.61<0.8) 
+gap[1042.57,1043.41] span[1042.57,1043.41] sp0[981.52..]..[..1045.37]sp0 ABSTAIN: interior 
+gap[1044.83,1045.37] span[1045.37,1045.37] sp1[1032.50..]..[..1045.37]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[1049.42,1049.86] span[1049.42,1049.86] sp1[1032.50..]..[..1097.43]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[1052.54,1053.47] span[1052.54,1053.47] sp1[1032.50..]..[..1097.43]sp1 ABSTAIN: interior 
+gap[1057.76,1058.30] span[1057.76,1058.30] sp1[1032.50..]..[..1097.43]sp1 ABSTAIN: interior floor(0.54<0.8) 
+gap[1066.45,1066.92] span[1066.45,1066.92] sp1[1032.50..]..[..1097.43]sp1 ABSTAIN: interior floor(0.47<0.8) 
+gap[1068.24,1069.00] span[1068.24,1069.00] sp1[1032.50..]..[..1097.43]sp1 ABSTAIN: interior floor(0.76<0.8) 
+gap[1071.73,1072.15] span[1071.73,1072.15] sp1[1032.50..]..[..1097.43]sp1 ABSTAIN: interior floor(0.42<0.8) 
+gap[1072.85,1073.50] span[1072.85,1073.50] sp1[1032.50..]..[..1097.43]sp1 ABSTAIN: interior floor(0.66<0.8) 
+gap[1076.41,1076.84] span[1076.41,1076.84] sp1[1032.50..]..[..1097.43]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[1080.19,1080.81] span[1080.19,1080.81] sp1[1032.50..]..[..1097.43]sp1 ABSTAIN: interior floor(0.62<0.8) 
+gap[1081.55,1081.96] span[1081.55,1081.96] sp1[1032.50..]..[..1097.43]sp1 ABSTAIN: interior floor(0.40<0.8) 
+gap[1083.31,1083.98] span[1083.31,1083.98] sp1[1032.50..]..[..1097.43]sp1 ABSTAIN: interior floor(0.67<0.8) 
+gap[1094.23,1095.00] span[1094.23,1095.00] sp1[1032.50..]..[..1097.43]sp1 ABSTAIN: interior floor(0.78<0.8) 
+gap[1096.69,1096.99] span[1096.69,1096.99] sp1[1032.50..]..[..1097.43]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[1102.76,1103.41] span[1102.76,1103.41] sp0[1045.37..]..[..1112.74]sp0 ABSTAIN: interior floor(0.64<0.8) 
+gap[1109.57,1110.00] span[1109.57,1110.00] sp0[1045.37..]..[..1112.74]sp0 ABSTAIN: interior floor(0.44<0.8) 
+CANDIDATE gap[1111.49,1112.74] sp1[1097.43..]..[..1112.74]sp0 span[1111.49,1112.74] dur 1.25 best sp1 margin 0.064 onset 1112.27 winner Some("sp0")
+gap[1116.18,1116.70] span[1116.18,1116.70] sp1[1097.43..]..[..1130.29]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[1120.80,1121.48] span[1120.80,1121.48] sp1[1097.43..]..[..1130.29]sp1 ABSTAIN: interior floor(0.67<0.8) 
+gap[1123.99,1124.45] span[1123.99,1124.45] sp1[1097.43..]..[..1130.29]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[1127.71,1129.61] span[1127.71,1129.61] sp1[1097.43..]..[..1130.29]sp1 ABSTAIN: interior 
+gap[1131.20,1132.04] span[1131.20,1132.04] sp1[1130.29..]..[..1132.04]sp0 ABSTAIN: best==winner 
+gap[1134.15,1134.81] span[1134.15,1134.81] sp1[1130.29..]..[..1161.12]sp1 ABSTAIN: interior floor(0.66<0.8) 
+gap[1135.70,1136.18] span[1135.70,1136.18] sp1[1130.29..]..[..1161.12]sp1 ABSTAIN: interior floor(0.47<0.8) 
+gap[1143.45,1145.46] span[1143.45,1145.46] sp1[1130.29..]..[..1161.12]sp1 ABSTAIN: interior 
+gap[1149.71,1150.88] span[1149.71,1150.88] sp1[1130.29..]..[..1161.12]sp1 ABSTAIN: interior 
+gap[1151.67,1151.99] span[1151.67,1151.99] sp1[1130.29..]..[..1161.12]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[1154.98,1155.28] span[1154.98,1155.28] sp1[1130.29..]..[..1161.12]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[1155.75,1156.48] span[1155.75,1156.48] sp1[1130.29..]..[..1161.12]sp1 ABSTAIN: interior floor(0.73<0.8) 
+gap[1160.66,1161.12] span[1161.12,1161.12] sp0[1132.04..]..[..1161.12]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[1169.03,1170.11] span[1170.11,1170.11] sp1[1161.12..]..[..1170.11]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[1175.77,1176.12] span[1175.77,1176.12] sp1[1161.12..]..[..1187.12]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[1178.74,1179.71] span[1178.74,1179.71] sp1[1161.12..]..[..1187.12]sp1 ABSTAIN: interior 
+gap[1182.09,1183.01] span[1182.09,1183.01] sp1[1161.12..]..[..1187.12]sp1 ABSTAIN: interior 
+gap[1186.16,1187.12] span[1187.12,1187.12] sp0[1170.11..]..[..1187.12]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[1188.83,1189.23] span[1188.83,1189.23] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior floor(0.41<0.8) 
+gap[1189.43,1190.08] span[1189.43,1190.08] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior floor(0.64<0.8) 
+gap[1192.67,1194.01] span[1192.67,1194.01] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior 
+gap[1195.64,1196.49] span[1195.64,1196.49] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior 
+gap[1199.05,1199.73] span[1199.05,1199.56] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior floor(0.51<0.8) 
+gap[1215.44,1216.15] span[1215.61,1216.15] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior floor(0.54<0.8) 
+gap[1226.78,1227.47] span[1226.78,1227.47] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior floor(0.69<0.8) 
+gap[1235.25,1236.68] span[1235.25,1236.68] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior 
+gap[1237.97,1238.44] span[1237.97,1238.44] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior floor(0.47<0.8) 
+gap[1244.28,1245.19] span[1244.28,1245.19] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior 
+gap[1254.89,1255.37] span[1254.89,1255.37] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior floor(0.47<0.8) 
+gap[1260.82,1261.54] span[1260.82,1261.54] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior floor(0.73<0.8) 
+gap[1263.11,1263.70] span[1263.11,1263.70] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior floor(0.59<0.8) 
+gap[1264.38,1264.88] span[1264.38,1264.88] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior floor(0.51<0.8) 
+gap[1269.57,1270.00] span[1269.57,1270.00] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior floor(0.42<0.8) 
+gap[1271.43,1272.19] span[1271.43,1272.19] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior floor(0.76<0.8) 
+gap[1275.11,1276.51] span[1275.11,1276.51] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior 
+gap[1279.39,1279.83] span[1279.39,1279.83] sp0[1170.11..]..[..1286.25]sp0 ABSTAIN: interior floor(0.44<0.8) 
+gap[1285.49,1286.25] span[1286.25,1286.25] sp1[1187.12..]..[..1286.25]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[1286.67,1287.36] span[1286.67,1287.36] sp1[1187.12..]..[..1289.00]sp1 ABSTAIN: interior floor(0.69<0.8) 
+gap[1288.17,1289.00] span[1289.00,1289.00] sp0[1286.25..]..[..1289.00]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[1289.89,1290.52] span[1289.89,1290.52] sp0[1286.25..]..[..1300.66]sp0 ABSTAIN: interior floor(0.62<0.8) 
+gap[1292.00,1292.49] span[1292.00,1292.49] sp0[1286.25..]..[..1300.66]sp0 ABSTAIN: interior floor(0.49<0.8) 
+gap[1294.53,1297.06] span[1294.53,1297.06] sp0[1286.25..]..[..1300.66]sp0 ABSTAIN: interior 
+gap[1299.70,1300.66] span[1300.66,1300.66] sp1[1289.00..]..[..1300.66]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[1301.89,1302.95] span[1301.89,1302.95] sp1[1289.00..]..[..1343.55]sp1 ABSTAIN: interior 
+gap[1303.34,1303.86] span[1303.34,1303.86] sp1[1289.00..]..[..1343.55]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[1306.01,1306.34] span[1306.01,1306.34] sp1[1289.00..]..[..1343.55]sp1 ABSTAIN: interior floor(0.34<0.8) 
+gap[1315.83,1316.38] span[1315.83,1316.38] sp1[1289.00..]..[..1343.55]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[1320.77,1321.16] span[1320.77,1321.16] sp1[1289.00..]..[..1343.55]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[1324.47,1324.99] span[1324.47,1324.99] sp1[1289.00..]..[..1343.55]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[1325.26,1325.57] span[1325.26,1325.57] sp1[1289.00..]..[..1343.55]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[1333.43,1333.97] span[1333.43,1333.97] sp1[1289.00..]..[..1343.55]sp1 ABSTAIN: interior floor(0.54<0.8) 
+gap[1334.75,1335.59] span[1334.75,1335.59] sp1[1289.00..]..[..1343.55]sp1 ABSTAIN: interior 
+gap[1336.40,1336.72] span[1336.40,1336.72] sp1[1289.00..]..[..1343.55]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[1337.39,1338.24] span[1337.39,1338.24] sp1[1289.00..]..[..1343.55]sp1 ABSTAIN: interior 
+gap[1342.17,1343.00] span[1342.17,1343.00] sp1[1289.00..]..[..1343.55]sp1 ABSTAIN: interior 
+gap[1344.55,1345.16] span[1344.55,1345.16] sp0[1300.66..]..[..1361.61]sp0 ABSTAIN: interior floor(0.61<0.8) 
+gap[1349.21,1349.93] span[1349.21,1349.93] sp0[1300.66..]..[..1361.61]sp0 ABSTAIN: interior floor(0.73<0.8) 
+gap[1355.32,1356.01] span[1355.32,1356.01] sp0[1300.66..]..[..1361.61]sp0 ABSTAIN: interior floor(0.69<0.8) 
+gap[1360.60,1360.90] span[1360.60,1360.90] sp0[1300.66..]..[..1361.61]sp0 ABSTAIN: interior floor(0.30<0.8) 
+gap[1364.85,1365.32] span[1365.32,1365.32] sp0[1361.61..]..[..1365.32]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[1370.64,1370.99] span[1370.64,1370.99] sp0[1361.61..]..[..1378.45]sp0 ABSTAIN: interior floor(0.35<0.8) 
+gap[1375.89,1376.49] span[1375.89,1376.49] sp0[1361.61..]..[..1378.45]sp0 ABSTAIN: interior floor(0.61<0.8) 
+gap[1377.20,1378.00] span[1377.20,1377.88] sp0[1361.61..]..[..1378.45]sp0 ABSTAIN: interior floor(0.68<0.8) 
+gap[1388.98,1389.61] span[1388.98,1389.61] sp1[1365.32..]..[..1395.50]sp1 ABSTAIN: interior floor(0.62<0.8) 
+gap[1390.31,1390.72] span[1390.31,1390.72] sp1[1365.32..]..[..1395.50]sp1 ABSTAIN: interior floor(0.40<0.8) 
+gap[1393.00,1393.35] span[1393.00,1393.35] sp1[1365.32..]..[..1395.50]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[1394.72,1395.50] span[1395.49,1395.50] sp0[1378.45..]..[..1395.50]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[1399.01,1399.31] span[1399.01,1399.31] sp0[1378.45..]..[..1402.30]sp0 ABSTAIN: interior floor(0.30<0.8) 
+gap[1400.95,1402.30] span[1400.95,1402.14] sp1[1395.50..]..[..1402.30]sp0 ABSTAIN: margin(0.039) 
+gap[1404.22,1405.16] span[1404.22,1405.16] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior 
+gap[1407.12,1407.53] span[1407.12,1407.53] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior floor(0.40<0.8) 
+gap[1409.91,1410.23] span[1409.91,1409.95] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior floor(0.04<0.8) 
+gap[1426.56,1426.92] span[1426.56,1426.92] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[1429.23,1430.54] span[1429.23,1430.54] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior 
+gap[1435.22,1435.61] span[1435.22,1435.61] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[1438.05,1438.88] span[1438.05,1438.88] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior 
+gap[1440.25,1440.75] span[1440.25,1440.75] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[1444.47,1444.91] span[1444.47,1444.91] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[1456.90,1458.10] span[1456.90,1458.10] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior 
+gap[1460.82,1461.32] span[1460.82,1461.32] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[1469.48,1470.32] span[1469.48,1470.32] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior 
+gap[1472.51,1472.87] span[1472.51,1472.87] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[1480.46,1481.54] span[1480.46,1481.54] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior 
+gap[1482.55,1483.43] span[1482.55,1483.43] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior 
+gap[1486.52,1487.01] span[1486.52,1487.01] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior floor(0.49<0.8) 
+gap[1488.65,1490.00] span[1488.65,1489.85] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior 
+gap[1494.70,1495.01] span[1494.70,1495.01] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[1497.66,1498.20] span[1497.66,1498.20] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior floor(0.54<0.8) 
+gap[1503.90,1504.85] span[1503.90,1504.85] sp1[1395.50..]..[..1510.95]sp1 ABSTAIN: interior 
+gap[1510.48,1510.95] span[1510.95,1510.95] sp0[1402.30..]..[..1510.95]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[1511.65,1512.00] span[1511.65,1512.00] sp0[1402.30..]..[..1533.13]sp0 ABSTAIN: interior floor(0.35<0.8) 
+gap[1514.26,1515.63] span[1514.26,1515.63] sp0[1402.30..]..[..1533.13]sp0 ABSTAIN: interior 
+gap[1518.01,1518.83] span[1518.01,1518.83] sp0[1402.30..]..[..1533.13]sp0 ABSTAIN: interior 
+gap[1520.35,1520.72] span[1520.35,1520.72] sp0[1402.30..]..[..1533.13]sp0 ABSTAIN: interior floor(0.37<0.8) 
+gap[1522.36,1522.73] span[1522.36,1522.73] sp0[1402.30..]..[..1533.13]sp0 ABSTAIN: interior floor(0.37<0.8) 
+gap[1523.54,1524.56] span[1523.54,1524.56] sp0[1402.30..]..[..1533.13]sp0 ABSTAIN: interior 
+gap[1525.55,1526.80] span[1525.55,1526.80] sp0[1402.30..]..[..1533.13]sp0 ABSTAIN: interior 
+gap[1527.49,1531.00] span[1527.49,1527.84] sp0[1402.30..]..[..1533.13]sp0 ABSTAIN: interior floor(0.35<0.8) 
+gap[1531.78,1532.40] span[1531.78,1532.32] sp0[1402.30..]..[..1533.13]sp0 ABSTAIN: interior floor(0.54<0.8) 
+gap[1534.01,1535.32] span[1534.01,1535.32] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior 
+gap[1537.48,1538.65] span[1537.48,1538.65] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior 
+gap[1541.87,1542.17] span[1541.87,1542.17] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[1545.24,1546.37] span[1545.24,1546.37] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior 
+gap[1551.67,1552.11] span[1551.67,1552.11] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[1552.48,1554.00] span[1552.48,1554.00] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior 
+gap[1554.74,1556.08] span[1554.74,1556.08] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior 
+gap[1557.41,1557.73] span[1557.41,1557.73] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[1558.00,1558.36] span[1558.00,1558.36] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[1562.41,1563.87] span[1562.41,1563.87] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior 
+gap[1565.54,1565.92] span[1565.54,1565.92] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[1566.41,1566.71] span[1566.41,1566.71] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[1570.67,1571.52] span[1570.67,1571.52] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior 
+gap[1574.39,1574.69] span[1574.39,1574.69] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[1579.72,1580.16] span[1579.72,1580.16] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[1582.00,1582.98] span[1582.00,1582.98] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior 
+gap[1587.67,1588.75] span[1587.67,1588.75] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior 
+gap[1592.56,1592.93] span[1592.56,1592.93] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[1593.44,1593.95] span[1593.44,1593.95] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[1595.94,1596.26] span[1595.94,1596.26] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[1597.46,1598.15] span[1597.46,1598.15] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior floor(0.69<0.8) 
+gap[1599.73,1600.49] span[1599.73,1600.49] sp1[1510.95..]..[..1601.56]sp1 ABSTAIN: interior floor(0.76<0.8) 
+gap[1600.90,1601.56] span[1601.56,1601.56] sp0[1533.13..]..[..1601.56]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[1603.94,1604.76] span[1603.94,1604.76] sp0[1533.13..]..[..1615.31]sp0 ABSTAIN: interior 
+gap[1609.72,1610.09] span[1609.72,1610.09] sp0[1533.13..]..[..1615.31]sp0 ABSTAIN: interior floor(0.37<0.8) 
+gap[1614.23,1614.87] span[1614.23,1614.87] sp0[1533.13..]..[..1615.31]sp0 ABSTAIN: interior floor(0.64<0.8) 
+gap[1616.20,1616.90] span[1616.20,1616.90] sp1[1601.56..]..[..1626.14]sp1 ABSTAIN: interior floor(0.69<0.8) 
+gap[1617.15,1617.52] span[1617.15,1617.52] sp1[1601.56..]..[..1626.14]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[1620.84,1621.42] span[1620.84,1621.42] sp1[1601.56..]..[..1626.14]sp1 ABSTAIN: interior floor(0.57<0.8) 
+gap[1622.01,1622.38] span[1622.01,1622.38] sp1[1601.56..]..[..1626.14]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[1627.66,1628.57] span[1627.66,1628.34] sp1[1626.14..]..[..1628.57]sp0 ABSTAIN: floor(0.68<0.8) 
+gap[1631.85,1632.44] span[1631.85,1632.44] sp1[1626.14..]..[..1645.40]sp1 ABSTAIN: interior floor(0.59<0.8) 
+gap[1635.64,1636.40] span[1635.64,1636.40] sp1[1626.14..]..[..1645.40]sp1 ABSTAIN: interior floor(0.76<0.8) 
+gap[1636.91,1637.48] span[1636.91,1637.48] sp1[1626.14..]..[..1645.40]sp1 ABSTAIN: interior floor(0.57<0.8) 
+gap[1641.58,1642.66] span[1641.58,1642.66] sp1[1626.14..]..[..1645.40]sp1 ABSTAIN: interior 
+gap[1643.96,1645.40] span[1645.40,1645.40] sp0[1628.57..]..[..1645.40]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[1647.86,1648.33] span[1647.86,1648.33] sp0[1628.57..]..[..1653.46]sp0 ABSTAIN: interior floor(0.47<0.8) 
+gap[1650.31,1650.73] span[1650.31,1650.73] sp0[1628.57..]..[..1653.46]sp0 ABSTAIN: interior floor(0.42<0.8) 
+gap[1663.81,1664.15] span[1663.81,1664.15] sp1[1645.40..]..[..1699.82]sp1 ABSTAIN: interior floor(0.34<0.8) 
+gap[1666.02,1666.93] span[1666.02,1666.93] sp1[1645.40..]..[..1699.82]sp1 ABSTAIN: interior 
+gap[1674.61,1674.96] span[1674.61,1674.96] sp1[1645.40..]..[..1699.82]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[1676.77,1677.27] span[1676.77,1677.27] sp1[1645.40..]..[..1699.82]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[1681.46,1681.90] span[1681.46,1681.90] sp1[1645.40..]..[..1699.82]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[1682.39,1683.33] span[1682.39,1683.33] sp1[1645.40..]..[..1699.82]sp1 ABSTAIN: interior 
+gap[1692.53,1693.25] span[1692.53,1693.25] sp1[1645.40..]..[..1699.82]sp1 ABSTAIN: interior floor(0.73<0.8) 
+gap[1697.17,1697.68] span[1697.17,1697.68] sp1[1645.40..]..[..1699.82]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[1698.23,1698.57] span[1698.23,1698.57] sp1[1645.40..]..[..1699.82]sp1 ABSTAIN: interior floor(0.34<0.8) 
+gap[1702.37,1703.73] span[1702.37,1703.73] sp0[1653.46..]..[..1725.99]sp0 ABSTAIN: interior 
+gap[1712.10,1712.63] span[1712.10,1712.63] sp0[1653.46..]..[..1725.99]sp0 ABSTAIN: interior floor(0.52<0.8) 
+gap[1718.52,1720.00] span[1718.52,1720.00] sp0[1653.46..]..[..1725.99]sp0 ABSTAIN: interior 
+gap[1720.83,1722.23] span[1720.83,1722.23] sp0[1653.46..]..[..1725.99]sp0 ABSTAIN: interior 
+gap[1722.60,1723.01] span[1722.60,1723.01] sp0[1653.46..]..[..1725.99]sp0 ABSTAIN: interior floor(0.40<0.8) 
+gap[1723.12,1723.58] span[1723.12,1723.58] sp0[1653.46..]..[..1725.99]sp0 ABSTAIN: interior floor(0.46<0.8) 
+gap[1725.67,1725.99] span[1725.67,1725.88] sp1[1699.82..]..[..1725.99]sp0 ABSTAIN: floor(0.21<0.8) 
+gap[1729.67,1729.99] span[1729.67,1729.99] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[1731.61,1732.25] span[1731.61,1732.25] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.64<0.8) 
+gap[1733.89,1734.41] span[1733.89,1734.41] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[1736.39,1737.33] span[1736.39,1737.33] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior 
+gap[1737.89,1738.55] span[1737.89,1738.55] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.66<0.8) 
+gap[1739.48,1740.32] span[1739.48,1740.32] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior 
+gap[1745.16,1745.77] span[1745.16,1745.77] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.61<0.8) 
+gap[1746.33,1747.73] span[1746.46,1747.73] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior 
+gap[1748.76,1750.29] span[1748.76,1750.29] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior 
+gap[1754.48,1754.83] span[1754.48,1754.83] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[1758.46,1758.76] span[1758.46,1758.76] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[1763.84,1764.26] span[1763.84,1764.26] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.42<0.8) 
+gap[1768.25,1769.55] span[1768.25,1769.55] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior 
+gap[1771.50,1771.98] span[1771.50,1771.98] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.47<0.8) 
+gap[1776.43,1776.90] span[1776.43,1776.90] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.47<0.8) 
+gap[1782.42,1783.00] span[1782.42,1783.00] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.57<0.8) 
+gap[1784.75,1785.32] span[1784.75,1785.32] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.57<0.8) 
+gap[1787.47,1787.81] span[1787.47,1787.81] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.34<0.8) 
+gap[1788.01,1788.31] span[1788.01,1788.31] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[1790.27,1790.64] span[1790.27,1790.64] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[1791.62,1792.01] span[1791.62,1792.01] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[1799.70,1800.01] span[1799.70,1800.01] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[1807.55,1808.11] span[1807.55,1807.85] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[1808.76,1809.69] span[1808.76,1809.69] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior 
+gap[1813.30,1813.69] span[1813.30,1813.69] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[1815.01,1815.33] span[1815.01,1815.33] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[1815.73,1816.22] span[1815.73,1816.22] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior floor(0.49<0.8) 
+gap[1820.93,1821.91] span[1820.93,1821.91] sp1[1699.82..]..[..1828.22]sp1 ABSTAIN: interior 
+gap[1830.85,1831.71] span[1830.85,1831.71] sp1[1828.22..]..[..1837.87]sp1 ABSTAIN: interior 
+gap[1835.68,1836.00] span[1835.68,1836.00] sp1[1828.22..]..[..1837.87]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[1837.52,1837.87] span[1837.87,1837.87] sp0[1830.43..]..[..1837.87]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[1839.73,1840.40] span[1839.73,1840.40] sp1[1837.87..]..[..1840.40]sp0 ABSTAIN: floor(0.67<0.8) 
+gap[1841.91,1842.97] span[1842.97,1842.97] sp0[1840.40..]..[..1842.97]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[1846.51,1847.22] span[1846.51,1847.22] sp0[1840.40..]..[..1862.65]sp0 ABSTAIN: interior floor(0.71<0.8) 
+gap[1847.64,1849.99] span[1847.64,1848.01] sp0[1840.40..]..[..1862.65]sp0 ABSTAIN: interior floor(0.37<0.8) 
+gap[1851.00,1851.80] span[1851.00,1851.80] sp0[1840.40..]..[..1862.65]sp0 ABSTAIN: interior floor(0.79<0.8) 
+gap[1858.14,1860.00] span[1858.14,1859.22] sp0[1840.40..]..[..1862.65]sp0 ABSTAIN: interior 
+gap[1860.79,1862.65] span[1862.64,1862.65] sp1[1842.97..]..[..1862.65]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[1863.32,1864.00] span[1863.32,1864.00] sp1[1842.97..]..[..1875.45]sp1 ABSTAIN: interior floor(0.67<0.8) 
+gap[1868.16,1868.86] span[1868.16,1868.86] sp1[1842.97..]..[..1875.45]sp1 ABSTAIN: interior floor(0.69<0.8) 
+gap[1871.79,1872.11] span[1871.79,1872.11] sp1[1842.97..]..[..1875.45]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[1872.69,1873.24] span[1872.69,1873.24] sp1[1842.97..]..[..1875.45]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[1874.00,1875.45] span[1875.45,1875.45] sp0[1862.65..]..[..1875.45]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[1876.53,1877.50] span[1876.53,1877.50] sp0[1862.65..]..[..1964.30]sp0 ABSTAIN: interior 
+gap[1878.24,1881.78] span[1878.24,1878.58] sp0[1862.65..]..[..1964.30]sp0 ABSTAIN: interior floor(0.34<0.8) 
+gap[1885.83,1888.72] span[1885.83,1886.22] sp0[1862.65..]..[..1964.30]sp0 ABSTAIN: interior floor(0.39<0.8) 
+gap[1908.17,1910.13] span[1909.98,1910.13] sp0[1862.65..]..[..1964.30]sp0 ABSTAIN: interior floor(0.15<0.8) 
+gap[1913.49,1914.50] span[1913.49,1914.50] sp0[1862.65..]..[..1964.30]sp0 ABSTAIN: interior 
+gap[1916.27,1917.00] span[1916.27,1917.00] sp0[1862.65..]..[..1964.30]sp0 ABSTAIN: interior floor(0.73<0.8) 
+gap[1917.24,1917.56] span[1917.24,1917.56] sp0[1862.65..]..[..1964.30]sp0 ABSTAIN: interior floor(0.32<0.8) 
+gap[1918.28,1919.68] span[1918.28,1919.68] sp0[1862.65..]..[..1964.30]sp0 ABSTAIN: interior 
+gap[1924.71,1932.74] span[1924.71,1925.02] sp0[1862.65..]..[..1964.30]sp0 ABSTAIN: interior floor(0.31<0.8) 
+gap[1934.45,1934.87] span[1934.45,1934.87] sp0[1862.65..]..[..1964.30]sp0 ABSTAIN: interior floor(0.42<0.8) 
+gap[1936.59,1937.49] span[1936.59,1937.49] sp0[1862.65..]..[..1964.30]sp0 ABSTAIN: interior 
+gap[1938.28,1943.00] span[1938.28,1938.52] sp0[1862.65..]..[..1964.30]sp0 ABSTAIN: interior floor(0.24<0.8) 
+gap[1944.56,1945.30] span[1944.56,1945.30] sp0[1862.65..]..[..1964.30]sp0 ABSTAIN: interior floor(0.74<0.8) 
+gap[1947.34,1950.58] span[1947.34,1950.58] sp0[1862.65..]..[..1964.30]sp0 ABSTAIN: interior 
+gap[1956.56,1957.21] span[1956.56,1957.21] sp0[1862.65..]..[..1964.30]sp0 ABSTAIN: interior floor(0.66<0.8) 
+gap[1957.82,1958.39] span[1957.82,1958.39] sp0[1862.65..]..[..1964.30]sp0 ABSTAIN: interior floor(0.57<0.8) 
+gap[1966.70,1967.00] span[1966.70,1967.00] sp1[1875.45..]..[..1978.90]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[1972.64,1975.12] span[1972.64,1975.12] sp1[1875.45..]..[..1978.90]sp1 ABSTAIN: interior 
+gap[1975.67,1976.47] span[1975.67,1976.47] sp1[1875.45..]..[..1978.90]sp1 ABSTAIN: interior floor(0.79<0.8) 
+gap[1978.16,1978.90] span[1978.90,1978.90] sp0[1964.30..]..[..1978.90]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[1979.66,1980.65] span[1979.66,1980.65] sp0[1964.30..]..[..1993.87]sp0 ABSTAIN: interior 
+gap[1982.00,1983.69] span[1982.00,1983.69] sp0[1964.30..]..[..1993.87]sp0 ABSTAIN: interior 
+gap[1984.28,1986.42] span[1984.28,1986.42] sp0[1964.30..]..[..1993.87]sp0 ABSTAIN: interior 
+gap[1993.22,1993.87] span[1993.87,1993.87] sp1[1978.90..]..[..1993.87]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[1995.50,1996.43] span[1995.50,1996.43] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior 
+gap[1996.82,1997.41] span[1996.82,1997.41] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.59<0.8) 
+gap[2003.38,2003.84] span[2003.38,2003.84] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[2006.05,2006.64] span[2006.05,2006.64] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.59<0.8) 
+gap[2024.56,2025.37] span[2024.56,2025.37] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior 
+gap[2031.85,2032.41] span[2031.85,2032.41] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[2032.95,2035.21] span[2032.95,2035.21] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior 
+gap[2041.57,2042.26] span[2041.57,2042.26] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.69<0.8) 
+gap[2047.76,2048.20] span[2047.76,2048.20] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[2050.35,2050.87] span[2050.35,2050.87] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[2054.55,2054.97] span[2054.55,2054.97] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.42<0.8) 
+gap[2057.91,2058.33] span[2057.91,2058.33] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.42<0.8) 
+gap[2062.90,2063.42] span[2062.90,2063.42] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[2068.44,2069.11] span[2068.44,2069.11] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.67<0.8) 
+gap[2073.23,2074.29] span[2073.23,2074.29] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior 
+gap[2075.05,2076.22] span[2075.05,2076.22] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior 
+gap[2079.24,2079.86] span[2079.24,2079.86] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.62<0.8) 
+gap[2085.19,2085.67] span[2085.19,2085.67] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.47<0.8) 
+gap[2085.95,2086.36] span[2085.95,2086.36] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.40<0.8) 
+gap[2086.83,2087.89] span[2086.83,2087.89] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior 
+gap[2095.00,2095.94] span[2095.00,2095.94] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior 
+gap[2098.51,2099.00] span[2098.51,2099.00] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.49<0.8) 
+gap[2106.93,2108.28] span[2106.93,2108.28] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior 
+gap[2109.22,2109.78] span[2109.22,2109.78] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[2115.65,2116.28] span[2115.65,2116.28] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.62<0.8) 
+gap[2116.55,2117.66] span[2116.55,2117.66] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior 
+gap[2118.20,2119.53] span[2118.20,2119.53] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior 
+gap[2121.56,2123.21] span[2121.56,2123.21] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior 
+gap[2123.77,2124.51] span[2123.77,2124.51] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.74<0.8) 
+gap[2132.16,2132.56] span[2132.16,2132.56] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.41<0.8) 
+gap[2134.50,2135.13] span[2134.50,2135.13] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.62<0.8) 
+gap[2136.29,2137.64] span[2136.29,2137.64] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior 
+gap[2139.13,2139.65] span[2139.13,2139.65] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[2140.93,2142.21] span[2140.93,2142.21] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior 
+gap[2144.71,2146.30] span[2144.71,2146.30] sp1[1978.90..]..[..2153.12]sp1 ABSTAIN: interior 
+gap[2150.21,2153.12] span[2150.21,2153.12] sp0[1993.87..]..[..2153.12]sp1 ABSTAIN: margin(0.011) 
+gap[2154.99,2157.00] span[2154.99,2157.00] sp0[1993.87..]..[..2165.69]sp0 ABSTAIN: interior 
+gap[2157.45,2158.14] span[2157.45,2158.14] sp0[1993.87..]..[..2165.69]sp0 ABSTAIN: interior floor(0.69<0.8) 
+gap[2161.00,2161.40] span[2161.00,2161.40] sp0[1993.87..]..[..2165.69]sp0 ABSTAIN: interior floor(0.41<0.8) 
+gap[2165.00,2165.69] span[2165.69,2165.69] sp1[2153.12..]..[..2165.69]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[2170.58,2173.67] span[2170.58,2173.67] sp1[2153.12..]..[..2204.57]sp1 ABSTAIN: interior 
+gap[2175.61,2177.62] span[2175.61,2177.62] sp1[2153.12..]..[..2204.57]sp1 ABSTAIN: interior 
+gap[2179.15,2179.73] span[2179.15,2179.73] sp1[2153.12..]..[..2204.57]sp1 ABSTAIN: interior floor(0.57<0.8) 
+gap[2181.14,2181.65] span[2181.14,2181.65] sp1[2153.12..]..[..2204.57]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[2182.80,2183.37] span[2182.80,2183.37] sp1[2153.12..]..[..2204.57]sp1 ABSTAIN: interior floor(0.57<0.8) 
+gap[2185.77,2186.54] span[2185.77,2186.54] sp1[2153.12..]..[..2204.57]sp1 ABSTAIN: interior floor(0.78<0.8) 
+gap[2191.81,2192.69] span[2191.81,2192.69] sp1[2153.12..]..[..2204.57]sp1 ABSTAIN: interior 
+gap[2193.29,2193.68] span[2193.29,2193.68] sp1[2153.12..]..[..2204.57]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[2195.89,2197.24] span[2195.89,2197.24] sp1[2153.12..]..[..2204.57]sp1 ABSTAIN: interior 
+gap[2198.66,2199.00] span[2198.66,2199.00] sp1[2153.12..]..[..2204.57]sp1 ABSTAIN: interior floor(0.34<0.8) 
+gap[2201.58,2202.00] span[2201.58,2201.94] sp1[2153.12..]..[..2204.57]sp1 ABSTAIN: interior floor(0.36<0.8) 
+gap[2202.02,2204.57] span[2204.57,2204.57] sp0[2165.69..]..[..2204.57]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[2205.73,2208.53] span[2205.73,2208.53] sp0[2165.69..]..[..2241.00]sp0 ABSTAIN: interior 
+gap[2209.31,2210.47] span[2209.31,2210.47] sp0[2165.69..]..[..2241.00]sp0 ABSTAIN: interior 
+gap[2212.53,2214.66] span[2212.53,2212.90] sp0[2165.69..]..[..2241.00]sp0 ABSTAIN: interior floor(0.37<0.8) 
+gap[2215.77,2218.54] span[2218.35,2218.54] sp0[2165.69..]..[..2241.00]sp0 ABSTAIN: interior floor(0.19<0.8) 
+gap[2219.91,2224.11] span[2219.91,2220.34] sp0[2165.69..]..[..2241.00]sp0 ABSTAIN: interior floor(0.43<0.8) 
+gap[2226.83,2228.50] span[2226.83,2228.50] sp0[2165.69..]..[..2241.00]sp0 ABSTAIN: interior 
+gap[2230.99,2234.42] span[2230.99,2231.43] sp0[2165.69..]..[..2241.00]sp0 ABSTAIN: interior floor(0.44<0.8) 
+gap[2236.97,2237.42] span[2236.97,2237.42] sp0[2165.69..]..[..2241.00]sp0 ABSTAIN: interior floor(0.46<0.8) 
+gap[2238.15,2238.89] span[2238.15,2238.89] sp0[2165.69..]..[..2241.00]sp0 ABSTAIN: interior floor(0.74<0.8) 
+gap[2239.80,2241.00] span[2239.80,2241.00] sp1[2204.57..]..[..2241.00]sp0 ABSTAIN: best==winner 
+gap[2244.31,2244.95] span[2244.31,2244.95] sp1[2204.57..]..[..2281.72]sp1 ABSTAIN: interior floor(0.64<0.8) 
+gap[2245.45,2246.23] span[2245.45,2246.23] sp1[2204.57..]..[..2281.72]sp1 ABSTAIN: interior floor(0.78<0.8) 
+gap[2250.37,2250.75] span[2250.37,2250.75] sp1[2204.57..]..[..2281.72]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[2251.39,2251.82] span[2251.39,2251.82] sp1[2204.57..]..[..2281.72]sp1 ABSTAIN: interior floor(0.42<0.8) 
+gap[2254.21,2255.66] span[2254.21,2255.66] sp1[2204.57..]..[..2281.72]sp1 ABSTAIN: interior 
+gap[2259.39,2260.00] span[2259.39,2260.00] sp1[2204.57..]..[..2281.72]sp1 ABSTAIN: interior floor(0.61<0.8) 
+gap[2261.57,2263.21] span[2261.57,2263.21] sp1[2204.57..]..[..2281.72]sp1 ABSTAIN: interior 
+gap[2265.27,2266.31] span[2265.27,2266.31] sp1[2204.57..]..[..2281.72]sp1 ABSTAIN: interior 
+gap[2268.78,2270.01] span[2268.78,2270.01] sp1[2204.57..]..[..2281.72]sp1 ABSTAIN: interior 
+gap[2273.52,2273.82] span[2273.52,2273.82] sp1[2204.57..]..[..2281.72]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[2275.53,2276.34] span[2275.53,2276.34] sp1[2204.57..]..[..2281.72]sp1 ABSTAIN: interior 
+gap[2276.62,2276.99] span[2276.62,2276.99] sp1[2204.57..]..[..2281.72]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[2278.19,2279.58] span[2278.19,2279.58] sp1[2204.57..]..[..2281.72]sp1 ABSTAIN: interior 
+gap[2280.74,2281.72] span[2281.72,2281.72] sp0[2241.00..]..[..2281.72]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[2282.93,2284.72] span[2282.93,2284.72] sp0[2241.00..]..[..2287.44]sp0 ABSTAIN: interior 
+gap[2286.50,2287.44] span[2286.50,2287.44] sp1[2281.72..]..[..2287.44]sp0 ABSTAIN: margin(0.029) 
+gap[2290.21,2290.68] span[2290.21,2290.68] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior floor(0.47<0.8) 
+gap[2292.74,2293.43] span[2292.74,2293.43] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior floor(0.69<0.8) 
+gap[2294.26,2295.10] span[2294.26,2295.10] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior 
+gap[2297.78,2298.16] span[2297.78,2298.16] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior floor(0.37<0.8) 
+gap[2299.02,2299.39] span[2299.02,2299.39] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior floor(0.37<0.8) 
+gap[2300.84,2301.16] span[2300.84,2301.16] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior floor(0.32<0.8) 
+gap[2303.25,2304.25] span[2303.25,2304.25] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior 
+gap[2305.31,2306.31] span[2305.31,2306.31] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior 
+gap[2306.71,2307.72] span[2306.71,2307.72] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior 
+gap[2309.36,2309.70] span[2309.36,2309.70] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior floor(0.34<0.8) 
+gap[2316.68,2317.68] span[2316.68,2317.68] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior 
+gap[2319.45,2319.99] span[2319.45,2319.99] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior floor(0.54<0.8) 
+gap[2320.46,2320.90] span[2320.46,2320.90] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior floor(0.44<0.8) 
+gap[2326.69,2327.57] span[2326.69,2327.57] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior 
+gap[2331.08,2331.55] span[2331.08,2331.55] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior floor(0.47<0.8) 
+gap[2332.95,2333.71] span[2332.95,2333.71] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior floor(0.76<0.8) 
+gap[2336.01,2336.53] span[2336.01,2336.53] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior floor(0.52<0.8) 
+gap[2338.99,2341.00] span[2338.99,2341.00] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior 
+gap[2341.64,2342.17] span[2341.64,2342.17] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior floor(0.52<0.8) 
+gap[2343.97,2345.66] span[2343.97,2345.66] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior 
+gap[2346.20,2347.30] span[2346.20,2347.30] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior 
+gap[2349.83,2350.27] span[2349.83,2350.27] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior floor(0.44<0.8) 
+gap[2355.68,2356.14] span[2355.68,2356.14] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior floor(0.46<0.8) 
+gap[2358.43,2358.74] span[2358.43,2358.74] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior floor(0.30<0.8) 
+gap[2359.06,2359.77] span[2359.06,2359.77] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior floor(0.71<0.8) 
+gap[2360.42,2360.81] span[2360.42,2360.81] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior floor(0.39<0.8) 
+gap[2365.22,2366.36] span[2365.22,2366.36] sp0[2287.44..]..[..2369.39]sp0 ABSTAIN: interior 
+gap[2368.85,2369.39] span[2368.85,2369.39] sp1[2289.25..]..[..2369.39]sp0 ABSTAIN: floor(0.54<0.8) 
+gap[2371.22,2372.32] span[2371.22,2372.32] sp1[2289.25..]..[..2389.62]sp1 ABSTAIN: interior 
+gap[2375.46,2376.52] span[2375.46,2376.52] sp1[2289.25..]..[..2389.62]sp1 ABSTAIN: interior 
+gap[2376.86,2379.31] span[2376.86,2379.31] sp1[2289.25..]..[..2389.62]sp1 ABSTAIN: interior 
+gap[2379.75,2380.34] span[2379.75,2380.34] sp1[2289.25..]..[..2389.62]sp1 ABSTAIN: interior floor(0.59<0.8) 
+gap[2381.00,2382.33] span[2381.00,2382.33] sp1[2289.25..]..[..2389.62]sp1 ABSTAIN: interior 
+gap[2389.08,2389.62] span[2389.62,2389.62] sp0[2369.39..]..[..2389.62]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[2391.00,2391.39] span[2391.00,2391.39] sp0[2369.39..]..[..2433.24]sp0 ABSTAIN: interior floor(0.39<0.8) 
+gap[2391.90,2393.11] span[2391.90,2393.11] sp0[2369.39..]..[..2433.24]sp0 ABSTAIN: interior 
+gap[2395.24,2396.27] span[2395.24,2396.27] sp0[2369.39..]..[..2433.24]sp0 ABSTAIN: interior 
+gap[2398.34,2399.29] span[2398.34,2399.29] sp0[2369.39..]..[..2433.24]sp0 ABSTAIN: interior 
+gap[2401.94,2403.24] span[2401.94,2403.24] sp0[2369.39..]..[..2433.24]sp0 ABSTAIN: interior 
+gap[2405.77,2409.83] span[2405.77,2409.83] sp0[2369.39..]..[..2433.24]sp0 ABSTAIN: interior 
+gap[2413.90,2414.48] span[2413.90,2414.48] sp0[2369.39..]..[..2433.24]sp0 ABSTAIN: interior floor(0.57<0.8) 
+gap[2416.20,2416.94] span[2416.20,2416.94] sp0[2369.39..]..[..2433.24]sp0 ABSTAIN: interior floor(0.74<0.8) 
+gap[2417.16,2417.53] span[2417.16,2417.53] sp0[2369.39..]..[..2433.24]sp0 ABSTAIN: interior floor(0.37<0.8) 
+gap[2419.96,2423.18] span[2419.96,2423.18] sp0[2369.39..]..[..2433.24]sp0 ABSTAIN: interior 
+gap[2423.57,2424.23] span[2423.57,2424.23] sp0[2369.39..]..[..2433.24]sp0 ABSTAIN: interior floor(0.66<0.8) 
+gap[2426.78,2427.16] span[2426.78,2427.16] sp0[2369.39..]..[..2433.24]sp0 ABSTAIN: interior floor(0.39<0.8) 
+gap[2431.54,2433.24] span[2431.54,2433.24] sp1[2389.62..]..[..2433.24]sp0 ABSTAIN: margin(0.025) 
+gap[2438.94,2439.30] span[2438.94,2439.30] sp1[2389.62..]..[..2471.33]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[2442.94,2443.84] span[2442.94,2443.84] sp1[2389.62..]..[..2471.33]sp1 ABSTAIN: interior 
+gap[2448.70,2449.00] span[2448.70,2449.00] sp1[2389.62..]..[..2471.33]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[2456.00,2457.00] span[2456.00,2457.00] sp1[2389.62..]..[..2471.33]sp1 ABSTAIN: interior 
+gap[2460.24,2460.98] span[2460.24,2460.98] sp1[2389.62..]..[..2471.33]sp1 ABSTAIN: interior floor(0.74<0.8) 
+gap[2461.56,2462.20] span[2461.56,2462.20] sp1[2389.62..]..[..2471.33]sp1 ABSTAIN: interior floor(0.64<0.8) 
+gap[2462.67,2463.43] span[2462.67,2463.43] sp1[2389.62..]..[..2471.33]sp1 ABSTAIN: interior floor(0.76<0.8) 
+gap[2466.18,2467.99] span[2466.18,2467.99] sp1[2389.62..]..[..2471.33]sp1 ABSTAIN: interior 
+gap[2470.38,2471.33] span[2471.33,2471.33] sp0[2433.24..]..[..2471.33]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[2476.52,2477.00] span[2476.52,2477.00] sp0[2433.24..]..[..2495.44]sp0 ABSTAIN: interior floor(0.47<0.8) 
+gap[2477.93,2478.58] span[2477.93,2478.58] sp0[2433.24..]..[..2495.44]sp0 ABSTAIN: interior floor(0.66<0.8) 
+gap[2488.00,2488.64] span[2488.00,2488.64] sp0[2433.24..]..[..2495.44]sp0 ABSTAIN: interior floor(0.64<0.8) 
+gap[2489.54,2490.01] span[2489.54,2490.01] sp0[2433.24..]..[..2495.44]sp0 ABSTAIN: interior floor(0.47<0.8) 
+gap[2492.74,2493.20] span[2492.74,2493.20] sp0[2433.24..]..[..2495.44]sp0 ABSTAIN: interior floor(0.46<0.8) 
+gap[2500.61,2501.04] span[2500.61,2501.04] sp0[2495.44..]..[..2501.04]sp1 ABSTAIN: floor(0.44<0.8) 
+gap[2507.20,2508.15] span[2507.20,2508.15] sp0[2495.44..]..[..2519.99]sp0 ABSTAIN: interior 
+gap[2514.56,2515.27] span[2514.56,2515.27] sp0[2495.44..]..[..2519.99]sp0 ABSTAIN: interior floor(0.71<0.8) 
+gap[2518.81,2519.99] span[2518.81,2519.82] sp1[2501.04..]..[..2519.99]sp0 ABSTAIN: best==winner 
+gap[2524.21,2526.24] span[2524.21,2526.24] sp0[2519.99..]..[..2526.24]sp1 ABSTAIN: margin(0.012) 
+gap[2526.90,2527.23] span[2526.90,2527.23] sp0[2519.99..]..[..2536.95]sp0 ABSTAIN: interior floor(0.34<0.8) 
+gap[2530.83,2531.18] span[2530.83,2531.18] sp0[2519.99..]..[..2536.95]sp0 ABSTAIN: interior floor(0.35<0.8) 
+gap[2531.59,2531.99] span[2531.59,2531.74] sp0[2519.99..]..[..2536.95]sp0 ABSTAIN: interior floor(0.15<0.8) 
+gap[2532.03,2535.00] span[2534.91,2535.00] sp0[2519.99..]..[..2536.95]sp0 ABSTAIN: interior floor(0.09<0.8) 
+gap[2536.45,2536.95] span[2536.95,2536.95] sp1[2526.24..]..[..2536.95]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[2540.16,2540.95] span[2540.16,2540.95] sp1[2526.24..]..[..2548.01]sp1 ABSTAIN: interior floor(0.79<0.8) 
+gap[2542.30,2543.32] span[2542.30,2543.32] sp1[2526.24..]..[..2548.01]sp1 ABSTAIN: interior 
+gap[2543.92,2545.22] span[2543.92,2545.22] sp1[2526.24..]..[..2548.01]sp1 ABSTAIN: interior 
+gap[2547.15,2548.01] span[2547.15,2548.01] sp0[2536.95..]..[..2548.01]sp1 ABSTAIN: margin(0.003) 
+gap[2549.17,2549.51] span[2549.17,2549.51] sp0[2536.95..]..[..2559.43]sp0 ABSTAIN: interior floor(0.34<0.8) 
+gap[2558.67,2559.43] span[2559.43,2559.43] sp1[2548.01..]..[..2559.43]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[2562.20,2562.69] span[2562.20,2562.69] sp1[2548.01..]..[..2590.99]sp1 ABSTAIN: interior floor(0.49<0.8) 
+gap[2567.72,2568.54] span[2567.72,2568.54] sp1[2548.01..]..[..2590.99]sp1 ABSTAIN: interior 
+gap[2569.08,2569.42] span[2569.08,2569.42] sp1[2548.01..]..[..2590.99]sp1 ABSTAIN: interior floor(0.34<0.8) 
+gap[2576.68,2577.00] span[2576.68,2577.00] sp1[2548.01..]..[..2590.99]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[2578.60,2578.97] span[2578.60,2578.97] sp1[2548.01..]..[..2590.99]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[2585.99,2586.40] span[2585.99,2586.40] sp1[2548.01..]..[..2590.99]sp1 ABSTAIN: interior floor(0.40<0.8) 
+gap[2592.25,2593.15] span[2592.25,2593.15] sp0[2559.43..]..[..2621.36]sp0 ABSTAIN: interior 
+gap[2595.12,2595.95] span[2595.12,2595.95] sp0[2559.43..]..[..2621.36]sp0 ABSTAIN: interior 
+gap[2599.83,2600.17] span[2599.83,2600.17] sp0[2559.43..]..[..2621.36]sp0 ABSTAIN: interior floor(0.34<0.8) 
+gap[2604.00,2604.99] span[2604.00,2604.99] sp0[2559.43..]..[..2621.36]sp0 ABSTAIN: interior 
+gap[2606.92,2608.40] span[2606.92,2608.40] sp0[2559.43..]..[..2621.36]sp0 ABSTAIN: interior 
+gap[2611.49,2612.79] span[2611.49,2612.79] sp0[2559.43..]..[..2621.36]sp0 ABSTAIN: interior 
+gap[2613.16,2614.83] span[2613.16,2614.83] sp0[2559.43..]..[..2621.36]sp0 ABSTAIN: interior 
+gap[2618.53,2619.68] span[2618.53,2619.68] sp0[2559.43..]..[..2621.36]sp0 ABSTAIN: interior 
+gap[2620.74,2621.36] span[2621.36,2621.36] sp1[2590.99..]..[..2621.36]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[2623.47,2623.88] span[2623.47,2623.88] sp1[2590.99..]..[..2630.75]sp1 ABSTAIN: interior floor(0.41<0.8) 
+gap[2626.56,2627.17] span[2626.56,2627.17] sp1[2590.99..]..[..2630.75]sp1 ABSTAIN: interior floor(0.61<0.8) 
+gap[2628.92,2629.72] span[2628.92,2629.72] sp1[2590.99..]..[..2630.75]sp1 ABSTAIN: interior floor(0.79<0.8) 
+gap[2635.98,2636.85] span[2635.98,2636.85] sp0[2621.36..]..[..2641.01]sp0 ABSTAIN: interior 
+gap[2637.04,2638.68] span[2637.04,2638.68] sp0[2621.36..]..[..2641.01]sp0 ABSTAIN: interior 
+gap[2639.74,2641.01] span[2639.74,2641.01] sp1[2630.75..]..[..2641.01]sp0 ABSTAIN: margin(0.007) 
+gap[2641.63,2645.85] span[2641.63,2645.85] sp1[2630.75..]..[..2666.23]sp1 ABSTAIN: interior 
+gap[2651.91,2652.53] span[2651.91,2652.53] sp1[2630.75..]..[..2666.23]sp1 ABSTAIN: interior floor(0.62<0.8) 
+gap[2657.31,2657.80] span[2657.31,2657.80] sp1[2630.75..]..[..2666.23]sp1 ABSTAIN: interior floor(0.49<0.8) 
+gap[2659.80,2660.31] span[2659.80,2660.31] sp1[2630.75..]..[..2666.23]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[2660.66,2661.17] span[2660.66,2661.17] sp1[2630.75..]..[..2666.23]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[2661.90,2662.39] span[2661.90,2662.39] sp1[2630.75..]..[..2666.23]sp1 ABSTAIN: interior floor(0.49<0.8) 
+gap[2665.24,2666.23] span[2665.24,2665.86] sp0[2641.01..]..[..2666.23]sp1 ABSTAIN: floor(0.62<0.8) 
+gap[2667.43,2668.14] span[2667.43,2667.71] sp1[2666.23..]..[..2668.14]sp0 ABSTAIN: floor(0.28<0.8) 
+gap[2669.20,2669.61] span[2669.61,2669.61] sp0[2668.14..]..[..2669.61]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[2669.95,2670.33] span[2669.95,2670.33] sp0[2668.14..]..[..2682.33]sp0 ABSTAIN: interior floor(0.39<0.8) 
+gap[2674.52,2677.44] span[2674.92,2677.44] sp0[2668.14..]..[..2682.33]sp0 ABSTAIN: interior 
+gap[2678.43,2679.92] span[2678.43,2679.92] sp0[2668.14..]..[..2682.33]sp0 ABSTAIN: interior 
+gap[2680.86,2682.33] span[2682.33,2682.33] sp1[2669.61..]..[..2682.33]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[2683.53,2683.85] span[2683.85,2683.85] sp0[2682.33..]..[..2683.85]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[2684.88,2686.58] span[2686.58,2686.58] sp1[2683.85..]..[..2686.58]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[2697.65,2697.98] span[2697.65,2697.98] sp1[2683.85..]..[..2750.36]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[2698.50,2699.38] span[2698.50,2699.38] sp1[2683.85..]..[..2750.36]sp1 ABSTAIN: interior 
+gap[2700.83,2701.16] span[2700.83,2701.16] sp1[2683.85..]..[..2750.36]sp1 ABSTAIN: interior floor(0.34<0.8) 
+gap[2704.08,2704.46] span[2704.08,2704.46] sp1[2683.85..]..[..2750.36]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[2707.90,2708.81] span[2707.90,2708.81] sp1[2683.85..]..[..2750.36]sp1 ABSTAIN: interior 
+gap[2709.43,2710.11] span[2709.43,2710.11] sp1[2683.85..]..[..2750.36]sp1 ABSTAIN: interior floor(0.68<0.8) 
+gap[2710.65,2711.61] span[2710.65,2711.61] sp1[2683.85..]..[..2750.36]sp1 ABSTAIN: interior 
+gap[2713.65,2715.26] span[2713.65,2715.26] sp1[2683.85..]..[..2750.36]sp1 ABSTAIN: interior 
+gap[2723.73,2724.18] span[2723.73,2724.18] sp1[2683.85..]..[..2750.36]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[2725.25,2725.55] span[2725.25,2725.55] sp1[2683.85..]..[..2750.36]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[2727.57,2728.60] span[2727.57,2728.60] sp1[2683.85..]..[..2750.36]sp1 ABSTAIN: interior 
+gap[2729.78,2730.31] span[2729.78,2730.31] sp1[2683.85..]..[..2750.36]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[2731.91,2732.35] span[2731.91,2732.35] sp1[2683.85..]..[..2750.36]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[2742.31,2743.94] span[2742.31,2743.94] sp1[2683.85..]..[..2750.36]sp1 ABSTAIN: interior 
+gap[2747.32,2748.26] span[2747.32,2748.26] sp1[2683.85..]..[..2750.36]sp1 ABSTAIN: interior 
+gap[2749.11,2750.36] span[2749.11,2749.96] sp0[2686.58..]..[..2750.36]sp1 ABSTAIN: no-onset 
+gap[2752.87,2753.78] span[2752.87,2753.78] sp0[2686.58..]..[..2773.96]sp0 ABSTAIN: interior 
+gap[2756.50,2760.62] span[2756.50,2760.62] sp0[2686.58..]..[..2773.96]sp0 ABSTAIN: interior 
+gap[2766.99,2768.11] span[2766.99,2768.11] sp0[2686.58..]..[..2773.96]sp0 ABSTAIN: interior 
+gap[2769.83,2770.17] span[2769.83,2770.17] sp0[2686.58..]..[..2773.96]sp0 ABSTAIN: interior floor(0.34<0.8) 
+gap[2772.53,2773.96] span[2773.96,2773.96] sp1[2750.36..]..[..2773.96]sp0 ABSTAIN: floor(0.00<0.8) 
+  -> touches S10_can_you_come_again_trade [2772..2777.54] pin None
+CANDIDATE gap[2775.41,2776.29] sp0[2773.96..]..[..2776.29]sp1 span[2775.41,2776.29] dur 0.88 best sp0 margin 0.061 onset 2775.41 winner Some("sp1")
+  -> touches S10_can_you_come_again_trade [2772..2777.54] pin None
+gap[2778.92,2779.79] span[2778.92,2779.79] sp0[2773.96..]..[..2792.95]sp0 ABSTAIN: interior 
+gap[2781.88,2783.43] span[2781.88,2783.43] sp0[2773.96..]..[..2792.95]sp0 ABSTAIN: interior 
+gap[2784.98,2787.68] span[2784.98,2787.68] sp0[2773.96..]..[..2792.95]sp0 ABSTAIN: interior 
+gap[2788.59,2789.94] span[2788.59,2789.94] sp0[2773.96..]..[..2792.95]sp0 ABSTAIN: interior 
+gap[2790.28,2792.95] span[2790.28,2790.36] sp1[2776.29..]..[..2792.95]sp0 ABSTAIN: floor(0.08<0.8) 
+gap[2793.99,2795.38] span[2793.99,2795.38] sp0[2792.95..]..[..2795.38]sp1 ABSTAIN: margin(0.016) 
+gap[2798.94,2799.78] span[2798.94,2799.78] sp0[2792.95..]..[..2801.86]sp0 ABSTAIN: interior 
+CANDIDATE gap[2801.00,2801.86] sp1[2795.38..]..[..2801.86]sp0 span[2801.00,2801.86] dur 0.86 best sp1 margin 0.054 onset 2801.00 winner Some("sp0")
+  -> touches S12_cynthia_to_ricardo [2801.5..2804.5] pin Some(2802.08)
+gap[2804.52,2805.00] span[2804.52,2805.00] sp1[2795.38..]..[..2821.64]sp1 ABSTAIN: interior floor(0.47<0.8) 
+  -> touches S11_ricardo_stretch [2803..2820] pin None
+  -> touches S12_cynthia_to_ricardo [2801.5..2804.5] pin Some(2802.08)
+gap[2806.65,2807.58] span[2806.65,2807.58] sp1[2795.38..]..[..2821.64]sp1 ABSTAIN: interior 
+  -> touches S11_ricardo_stretch [2803..2820] pin None
+gap[2808.32,2808.95] span[2808.32,2808.95] sp1[2795.38..]..[..2821.64]sp1 ABSTAIN: interior floor(0.62<0.8) 
+  -> touches S11_ricardo_stretch [2803..2820] pin None
+gap[2810.80,2811.70] span[2810.80,2811.70] sp1[2795.38..]..[..2821.64]sp1 ABSTAIN: interior 
+  -> touches S11_ricardo_stretch [2803..2820] pin None
+  -> touches S13_ricardo_to_cynthia [2812..2826.04] pin Some(2821.0)
+gap[2812.74,2813.57] span[2812.74,2813.57] sp1[2795.38..]..[..2821.64]sp1 ABSTAIN: interior 
+  -> touches S11_ricardo_stretch [2803..2820] pin None
+  -> touches S13_ricardo_to_cynthia [2812..2826.04] pin Some(2821.0)
+gap[2814.19,2814.87] span[2814.19,2814.87] sp1[2795.38..]..[..2821.64]sp1 ABSTAIN: interior floor(0.67<0.8) 
+  -> touches S11_ricardo_stretch [2803..2820] pin None
+  -> touches S13_ricardo_to_cynthia [2812..2826.04] pin Some(2821.0)
+gap[2818.33,2818.88] span[2818.33,2818.88] sp1[2795.38..]..[..2821.64]sp1 ABSTAIN: interior floor(0.56<0.8) 
+  -> touches S11_ricardo_stretch [2803..2820] pin None
+  -> touches S13_ricardo_to_cynthia [2812..2826.04] pin Some(2821.0)
+gap[2820.13,2821.64] span[2820.13,2821.64] sp0[2801.86..]..[..2821.64]sp1 ABSTAIN: best==winner 
+  -> touches S11_ricardo_stretch [2803..2820] pin None
+  -> touches S13_ricardo_to_cynthia [2812..2826.04] pin Some(2821.0)
+gap[2823.56,2824.00] span[2823.56,2824.00] sp0[2801.86..]..[..2857.97]sp0 ABSTAIN: interior floor(0.44<0.8) 
+  -> touches S13_ricardo_to_cynthia [2812..2826.04] pin Some(2821.0)
+gap[2826.87,2827.64] span[2826.87,2827.64] sp0[2801.86..]..[..2857.97]sp0 ABSTAIN: interior floor(0.78<0.8) 
+gap[2828.10,2829.11] span[2828.10,2829.11] sp0[2801.86..]..[..2857.97]sp0 ABSTAIN: interior 
+gap[2831.37,2831.95] span[2831.37,2831.95] sp0[2801.86..]..[..2857.97]sp0 ABSTAIN: interior floor(0.57<0.8) 
+gap[2833.80,2834.58] span[2833.80,2834.58] sp0[2801.86..]..[..2857.97]sp0 ABSTAIN: interior floor(0.78<0.8) 
+gap[2835.39,2835.79] span[2835.39,2835.79] sp0[2801.86..]..[..2857.97]sp0 ABSTAIN: interior floor(0.40<0.8) 
+gap[2839.71,2840.10] span[2839.71,2840.10] sp0[2801.86..]..[..2857.97]sp0 ABSTAIN: interior floor(0.39<0.8) 
+gap[2841.67,2842.63] span[2841.67,2842.63] sp0[2801.86..]..[..2857.97]sp0 ABSTAIN: interior 
+gap[2845.33,2847.57] span[2845.33,2847.57] sp0[2801.86..]..[..2857.97]sp0 ABSTAIN: interior 
+gap[2850.42,2852.94] span[2850.42,2852.94] sp0[2801.86..]..[..2857.97]sp0 ABSTAIN: interior 
+gap[2856.03,2857.97] span[2857.97,2857.97] sp1[2821.64..]..[..2857.97]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[2858.61,2859.55] span[2858.61,2859.55] sp1[2821.64..]..[..2864.67]sp1 ABSTAIN: interior 
+gap[2859.99,2861.09] span[2859.99,2861.09] sp1[2821.64..]..[..2864.67]sp1 ABSTAIN: interior 
+gap[2863.86,2864.67] span[2864.67,2864.67] sp0[2857.97..]..[..2864.67]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[2868.41,2872.29] span[2868.41,2872.29] sp0[2857.97..]..[..2877.39]sp0 ABSTAIN: interior 
+gap[2873.46,2873.96] span[2873.46,2873.96] sp0[2857.97..]..[..2877.39]sp0 ABSTAIN: interior floor(0.51<0.8) 
+gap[2874.29,2874.99] span[2874.29,2874.99] sp0[2857.97..]..[..2877.39]sp0 ABSTAIN: interior floor(0.71<0.8) 
+gap[2876.60,2877.39] span[2877.39,2877.39] sp1[2864.67..]..[..2877.39]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[2881.85,2882.32] span[2882.32,2882.32] sp1[2880.68..]..[..2882.32]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[2887.62,2888.36] span[2887.62,2888.36] sp1[2880.68..]..[..2896.70]sp1 ABSTAIN: interior floor(0.74<0.8) 
+gap[2894.42,2895.23] span[2894.42,2895.23] sp1[2880.68..]..[..2896.70]sp1 ABSTAIN: interior 
+gap[2900.39,2901.93] span[2900.39,2901.93] sp0[2882.32..]..[..2919.17]sp0 ABSTAIN: interior 
+gap[2903.01,2904.00] span[2903.01,2904.00] sp0[2882.32..]..[..2919.17]sp0 ABSTAIN: interior 
+gap[2905.00,2919.17] span[2905.00,2905.29] sp1[2896.70..]..[..2919.17]sp0 ABSTAIN: floor(0.29<0.8) 
+gap[2923.05,2923.44] span[2923.05,2923.44] sp1[2896.70..]..[..2938.90]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[2924.17,2925.79] span[2924.17,2924.53] sp1[2896.70..]..[..2938.90]sp1 ABSTAIN: interior floor(0.36<0.8) 
+gap[2930.88,2931.69] span[2931.60,2931.69] sp1[2896.70..]..[..2938.90]sp1 ABSTAIN: interior floor(0.09<0.8) 
+CANDIDATE gap[2932.99,2938.90] sp0[2919.17..]..[..2938.90]sp1 span[2932.99,2938.90] dur 5.91 best sp1 margin 0.106 onset 2932.99 winner Some("sp0")
+gap[2941.79,2943.03] span[2941.79,2943.03] sp0[2919.17..]..[..2985.49]sp0 ABSTAIN: interior 
+gap[2945.45,2946.41] span[2945.45,2946.41] sp0[2919.17..]..[..2985.49]sp0 ABSTAIN: interior 
+gap[2948.35,2949.36] span[2948.35,2949.36] sp0[2919.17..]..[..2985.49]sp0 ABSTAIN: interior 
+gap[2950.14,2952.26] span[2950.14,2952.26] sp0[2919.17..]..[..2985.49]sp0 ABSTAIN: interior 
+gap[2953.73,2956.33] span[2953.73,2956.33] sp0[2919.17..]..[..2985.49]sp0 ABSTAIN: interior 
+gap[2959.76,2960.43] span[2959.76,2960.43] sp0[2919.17..]..[..2985.49]sp0 ABSTAIN: interior floor(0.68<0.8) 
+gap[2963.55,2964.94] span[2963.55,2964.94] sp0[2919.17..]..[..2985.49]sp0 ABSTAIN: interior 
+gap[2966.64,2966.96] span[2966.64,2966.96] sp0[2919.17..]..[..2985.49]sp0 ABSTAIN: interior floor(0.32<0.8) 
+gap[2970.73,2971.35] span[2970.73,2971.35] sp0[2919.17..]..[..2985.49]sp0 ABSTAIN: interior floor(0.62<0.8) 
+gap[2975.38,2975.84] span[2975.38,2975.84] sp0[2919.17..]..[..2985.49]sp0 ABSTAIN: interior floor(0.46<0.8) 
+gap[2977.90,2978.49] span[2977.90,2978.49] sp0[2919.17..]..[..2985.49]sp0 ABSTAIN: interior floor(0.59<0.8) 
+gap[2980.97,2981.66] span[2980.97,2981.66] sp0[2919.17..]..[..2985.49]sp0 ABSTAIN: interior floor(0.69<0.8) 
+gap[2982.00,2982.69] span[2982.00,2982.69] sp0[2919.17..]..[..2985.49]sp0 ABSTAIN: interior floor(0.69<0.8) 
+gap[2983.48,2983.94] span[2983.48,2983.94] sp0[2919.17..]..[..2985.49]sp0 ABSTAIN: interior floor(0.46<0.8) 
+gap[2984.24,2985.49] span[2985.49,2985.49] sp1[2938.90..]..[..2985.49]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[2987.70,2988.90] span[2987.70,2988.90] sp0[2985.49..]..[..2988.90]sp1 ABSTAIN: margin(0.045) 
+gap[2989.74,2991.08] span[2991.08,2991.08] sp1[2988.90..]..[..2991.08]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[2996.26,2996.98] span[2996.26,2996.98] sp1[2988.90..]..[..3018.75]sp1 ABSTAIN: interior floor(0.73<0.8) 
+gap[2997.52,2998.18] span[2997.52,2998.18] sp1[2988.90..]..[..3018.75]sp1 ABSTAIN: interior floor(0.66<0.8) 
+gap[3003.19,3003.77] span[3003.19,3003.77] sp1[2988.90..]..[..3018.75]sp1 ABSTAIN: interior floor(0.57<0.8) 
+gap[3004.07,3005.00] span[3004.07,3005.00] sp1[2988.90..]..[..3018.75]sp1 ABSTAIN: interior 
+gap[3006.43,3006.97] span[3006.43,3006.97] sp1[2988.90..]..[..3018.75]sp1 ABSTAIN: interior floor(0.54<0.8) 
+gap[3013.99,3015.82] span[3013.99,3015.82] sp1[2988.90..]..[..3018.75]sp1 ABSTAIN: interior 
+gap[3017.72,3018.75] span[3017.72,3018.75] sp0[2991.08..]..[..3018.75]sp1 ABSTAIN: best==winner 
+gap[3019.78,3020.19] span[3019.78,3020.19] sp0[2991.08..]..[..3029.75]sp0 ABSTAIN: interior floor(0.41<0.8) 
+gap[3025.60,3026.01] span[3025.60,3026.01] sp0[2991.08..]..[..3029.75]sp0 ABSTAIN: interior floor(0.41<0.8) 
+gap[3027.75,3029.75] span[3027.75,3029.75] sp1[3018.75..]..[..3029.75]sp0 ABSTAIN: margin(0.042) 
+gap[3040.30,3040.72] span[3040.30,3040.72] sp1[3018.75..]..[..3090.22]sp1 ABSTAIN: interior floor(0.42<0.8) 
+gap[3043.37,3043.68] span[3043.37,3043.68] sp1[3018.75..]..[..3090.22]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[3058.80,3059.34] span[3058.80,3059.34] sp1[3018.75..]..[..3090.22]sp1 ABSTAIN: interior floor(0.54<0.8) 
+gap[3061.77,3062.22] span[3061.77,3062.22] sp1[3018.75..]..[..3090.22]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[3065.55,3065.87] span[3065.55,3065.87] sp1[3018.75..]..[..3090.22]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[3070.54,3071.15] span[3070.54,3071.15] sp1[3018.75..]..[..3090.22]sp1 ABSTAIN: interior floor(0.61<0.8) 
+gap[3072.31,3072.75] span[3072.31,3072.75] sp1[3018.75..]..[..3090.22]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[3077.44,3077.95] span[3077.44,3077.95] sp1[3018.75..]..[..3090.22]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[3084.26,3084.99] span[3084.26,3084.99] sp1[3018.75..]..[..3090.22]sp1 ABSTAIN: interior floor(0.73<0.8) 
+gap[3085.48,3086.15] span[3085.48,3086.15] sp1[3018.75..]..[..3090.22]sp1 ABSTAIN: interior floor(0.68<0.8) 
+gap[3089.80,3090.22] span[3089.80,3090.22] sp0[3029.75..]..[..3090.22]sp1 ABSTAIN: floor(0.42<0.8) 
+gap[3092.99,3093.46] span[3092.99,3093.46] sp0[3029.75..]..[..3141.18]sp0 ABSTAIN: interior floor(0.47<0.8) 
+gap[3096.66,3098.00] span[3096.66,3098.00] sp0[3029.75..]..[..3141.18]sp0 ABSTAIN: interior 
+gap[3099.28,3101.22] span[3099.28,3101.22] sp0[3029.75..]..[..3141.18]sp0 ABSTAIN: interior 
+gap[3104.09,3104.58] span[3104.09,3104.58] sp0[3029.75..]..[..3141.18]sp0 ABSTAIN: interior floor(0.49<0.8) 
+gap[3109.69,3110.00] span[3109.69,3110.00] sp0[3029.75..]..[..3141.18]sp0 ABSTAIN: interior floor(0.30<0.8) 
+gap[3111.29,3112.00] span[3111.29,3112.00] sp0[3029.75..]..[..3141.18]sp0 ABSTAIN: interior floor(0.71<0.8) 
+gap[3113.40,3113.83] span[3113.40,3113.83] sp0[3029.75..]..[..3141.18]sp0 ABSTAIN: interior floor(0.42<0.8) 
+gap[3116.41,3116.85] span[3116.41,3116.85] sp0[3029.75..]..[..3141.18]sp0 ABSTAIN: interior floor(0.44<0.8) 
+gap[3123.51,3124.51] span[3123.51,3124.51] sp0[3029.75..]..[..3141.18]sp0 ABSTAIN: interior 
+gap[3125.93,3126.63] span[3125.93,3126.63] sp0[3029.75..]..[..3141.18]sp0 ABSTAIN: interior floor(0.71<0.8) 
+gap[3128.09,3128.47] span[3128.09,3128.47] sp0[3029.75..]..[..3141.18]sp0 ABSTAIN: interior floor(0.39<0.8) 
+gap[3129.74,3130.53] span[3129.74,3130.53] sp0[3029.75..]..[..3141.18]sp0 ABSTAIN: interior floor(0.79<0.8) 
+gap[3139.22,3141.18] span[3139.22,3139.56] sp1[3090.22..]..[..3141.18]sp0 ABSTAIN: floor(0.34<0.8) 
+gap[3147.14,3147.59] span[3147.14,3147.59] sp1[3090.22..]..[..3169.39]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[3150.43,3150.98] span[3150.43,3150.98] sp1[3090.22..]..[..3169.39]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[3152.67,3153.52] span[3152.67,3153.52] sp1[3090.22..]..[..3169.39]sp1 ABSTAIN: interior 
+gap[3155.68,3156.86] span[3155.68,3156.86] sp1[3090.22..]..[..3169.39]sp1 ABSTAIN: interior 
+gap[3159.78,3160.33] span[3159.78,3160.33] sp1[3090.22..]..[..3169.39]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[3166.41,3166.91] span[3166.41,3166.91] sp1[3090.22..]..[..3169.39]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[3170.56,3171.40] span[3170.56,3171.40] sp0[3141.18..]..[..3173.90]sp0 ABSTAIN: interior 
+gap[3172.87,3173.90] span[3173.90,3173.90] sp1[3169.39..]..[..3173.90]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[3175.18,3176.65] span[3175.18,3176.65] sp1[3169.39..]..[..3254.02]sp1 ABSTAIN: interior 
+gap[3183.23,3183.99] span[3183.23,3183.99] sp1[3169.39..]..[..3254.02]sp1 ABSTAIN: interior floor(0.76<0.8) 
+gap[3186.24,3186.76] span[3186.24,3186.76] sp1[3169.39..]..[..3254.02]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[3190.10,3190.81] span[3190.10,3190.81] sp1[3169.39..]..[..3254.02]sp1 ABSTAIN: interior floor(0.71<0.8) 
+gap[3199.16,3199.60] span[3199.16,3199.60] sp1[3169.39..]..[..3254.02]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[3204.02,3204.55] span[3204.02,3204.55] sp1[3169.39..]..[..3254.02]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[3212.95,3213.54] span[3212.95,3213.54] sp1[3169.39..]..[..3254.02]sp1 ABSTAIN: interior floor(0.59<0.8) 
+gap[3223.94,3224.27] span[3223.94,3224.27] sp1[3169.39..]..[..3254.02]sp1 ABSTAIN: interior floor(0.34<0.8) 
+gap[3229.61,3229.98] span[3229.61,3229.98] sp1[3169.39..]..[..3254.02]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[3238.79,3239.19] span[3238.79,3239.19] sp1[3169.39..]..[..3254.02]sp1 ABSTAIN: interior floor(0.40<0.8) 
+gap[3239.65,3240.30] span[3239.65,3240.30] sp1[3169.39..]..[..3254.02]sp1 ABSTAIN: interior floor(0.66<0.8) 
+gap[3245.23,3245.59] span[3245.23,3245.59] sp1[3169.39..]..[..3254.02]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[3252.69,3252.99] span[3252.69,3252.99] sp1[3169.39..]..[..3254.02]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[3256.49,3258.24] span[3256.49,3258.24] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior 
+gap[3260.79,3261.16] span[3260.79,3261.16] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior floor(0.37<0.8) 
+gap[3261.89,3262.51] span[3261.89,3262.51] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior floor(0.62<0.8) 
+gap[3263.83,3264.49] span[3263.83,3264.49] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior floor(0.66<0.8) 
+gap[3265.80,3266.34] span[3265.80,3266.34] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior floor(0.54<0.8) 
+gap[3269.72,3270.17] span[3269.72,3270.17] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior floor(0.46<0.8) 
+gap[3275.52,3276.11] span[3275.52,3276.11] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior floor(0.59<0.8) 
+gap[3277.67,3278.64] span[3277.67,3278.64] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior 
+gap[3279.29,3279.84] span[3279.29,3279.84] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior floor(0.56<0.8) 
+gap[3283.23,3283.93] span[3283.23,3283.93] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior floor(0.69<0.8) 
+gap[3288.94,3289.49] span[3288.94,3289.49] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior floor(0.56<0.8) 
+gap[3291.99,3294.56] span[3291.99,3294.56] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior 
+gap[3295.00,3295.45] span[3295.00,3295.45] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior floor(0.46<0.8) 
+gap[3299.28,3300.01] span[3299.28,3300.01] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior floor(0.73<0.8) 
+gap[3300.23,3300.53] span[3300.23,3300.53] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior floor(0.30<0.8) 
+gap[3302.45,3302.99] span[3302.45,3302.99] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior floor(0.54<0.8) 
+gap[3303.33,3310.00] span[3303.33,3303.70] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior floor(0.37<0.8) 
+gap[3310.01,3311.26] span[3311.07,3311.26] sp0[3173.90..]..[..3314.47]sp0 ABSTAIN: interior floor(0.19<0.8) 
+gap[3313.34,3314.47] span[3314.47,3314.47] sp1[3254.02..]..[..3314.47]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[3315.30,3316.09] span[3316.09,3316.09] sp0[3314.47..]..[..3316.09]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[3319.90,3320.54] span[3319.90,3320.54] sp0[3314.47..]..[..3359.68]sp0 ABSTAIN: interior floor(0.64<0.8) 
+gap[3321.22,3321.71] span[3321.22,3321.71] sp0[3314.47..]..[..3359.68]sp0 ABSTAIN: interior floor(0.49<0.8) 
+gap[3325.71,3326.67] span[3325.71,3326.67] sp0[3314.47..]..[..3359.68]sp0 ABSTAIN: interior 
+gap[3332.69,3333.10] span[3332.69,3333.10] sp0[3314.47..]..[..3359.68]sp0 ABSTAIN: interior floor(0.41<0.8) 
+gap[3339.17,3340.00] span[3339.17,3340.00] sp0[3314.47..]..[..3359.68]sp0 ABSTAIN: interior 
+gap[3342.72,3343.53] span[3342.72,3343.53] sp0[3314.47..]..[..3359.68]sp0 ABSTAIN: interior 
+gap[3346.45,3346.79] span[3346.45,3346.79] sp0[3314.47..]..[..3359.68]sp0 ABSTAIN: interior floor(0.34<0.8) 
+gap[3350.77,3351.38] span[3350.77,3351.38] sp0[3314.47..]..[..3359.68]sp0 ABSTAIN: interior floor(0.61<0.8) 
+gap[3353.27,3353.77] span[3353.27,3353.77] sp0[3314.47..]..[..3359.68]sp0 ABSTAIN: interior floor(0.51<0.8) 
+gap[3355.12,3355.68] span[3355.12,3355.68] sp0[3314.47..]..[..3359.68]sp0 ABSTAIN: interior floor(0.56<0.8) 
+gap[3356.84,3359.68] span[3356.84,3359.68] sp1[3316.09..]..[..3359.68]sp0 ABSTAIN: margin(0.038) 
+gap[3369.48,3370.01] span[3369.48,3370.01] sp0[3359.68..]..[..3370.01]sp1 ABSTAIN: floor(0.52<0.8) 
+gap[3372.99,3374.39] span[3372.99,3374.39] sp0[3359.68..]..[..3392.77]sp0 ABSTAIN: interior 
+gap[3382.68,3384.55] span[3382.68,3384.55] sp0[3359.68..]..[..3392.77]sp0 ABSTAIN: interior 
+gap[3386.00,3388.33] span[3386.00,3388.33] sp0[3359.68..]..[..3392.77]sp0 ABSTAIN: interior 
+gap[3390.31,3392.77] span[3390.31,3390.73] sp1[3370.01..]..[..3392.77]sp0 ABSTAIN: floor(0.42<0.8) 
+CANDIDATE gap[3394.22,3395.39] sp0[3392.77..]..[..3395.39]sp1 span[3394.22,3395.39] dur 1.16 best sp1 margin 0.079 onset 3394.22 winner Some("sp0")
+gap[3400.33,3400.72] span[3400.33,3400.72] sp0[3392.77..]..[..3429.14]sp0 ABSTAIN: interior floor(0.39<0.8) 
+gap[3402.20,3402.57] span[3402.20,3402.57] sp0[3392.77..]..[..3429.14]sp0 ABSTAIN: interior floor(0.37<0.8) 
+gap[3402.93,3403.23] span[3402.93,3403.23] sp0[3392.77..]..[..3429.14]sp0 ABSTAIN: interior floor(0.30<0.8) 
+gap[3405.80,3406.39] span[3405.80,3406.39] sp0[3392.77..]..[..3429.14]sp0 ABSTAIN: interior floor(0.59<0.8) 
+gap[3407.00,3408.62] span[3407.00,3408.62] sp0[3392.77..]..[..3429.14]sp0 ABSTAIN: interior 
+gap[3410.39,3411.32] span[3410.39,3411.32] sp0[3392.77..]..[..3429.14]sp0 ABSTAIN: interior 
+gap[3414.15,3414.76] span[3414.15,3414.76] sp0[3392.77..]..[..3429.14]sp0 ABSTAIN: interior floor(0.61<0.8) 
+gap[3415.62,3417.36] span[3415.62,3417.36] sp0[3392.77..]..[..3429.14]sp0 ABSTAIN: interior 
+gap[3417.83,3418.35] span[3417.83,3418.35] sp0[3392.77..]..[..3429.14]sp0 ABSTAIN: interior floor(0.52<0.8) 
+gap[3418.88,3419.20] span[3418.88,3419.20] sp0[3392.77..]..[..3429.14]sp0 ABSTAIN: interior floor(0.32<0.8) 
+gap[3424.55,3424.93] span[3424.55,3424.93] sp0[3392.77..]..[..3429.14]sp0 ABSTAIN: interior floor(0.39<0.8) 
+gap[3425.74,3426.18] span[3425.74,3426.18] sp0[3392.77..]..[..3429.14]sp0 ABSTAIN: interior floor(0.44<0.8) 
+gap[3428.66,3429.14] span[3428.66,3429.14] sp1[3395.39..]..[..3429.14]sp0 ABSTAIN: floor(0.47<0.8) 
+gap[3435.78,3436.17] span[3435.78,3436.17] sp1[3395.39..]..[..3442.13]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[3445.37,3445.82] span[3445.37,3445.82] sp0[3442.60..]..[..3447.46]sp0 ABSTAIN: interior floor(0.46<0.8) 
+gap[3446.67,3447.46] span[3447.46,3447.46] sp1[3443.48..]..[..3447.46]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[3448.15,3448.69] span[3448.62,3448.69] sp1[3443.48..]..[..3467.31]sp1 ABSTAIN: interior floor(0.07<0.8) 
+gap[3449.86,3450.68] span[3449.86,3450.68] sp1[3443.48..]..[..3467.31]sp1 ABSTAIN: interior 
+gap[3451.28,3452.00] span[3451.28,3452.00] sp1[3443.48..]..[..3467.31]sp1 ABSTAIN: interior floor(0.73<0.8) 
+gap[3454.94,3455.76] span[3454.94,3455.76] sp1[3443.48..]..[..3467.31]sp1 ABSTAIN: interior 
+gap[3460.40,3461.38] span[3460.40,3461.38] sp1[3443.48..]..[..3467.31]sp1 ABSTAIN: interior 
+gap[3462.51,3464.99] span[3462.51,3464.99] sp1[3443.48..]..[..3467.31]sp1 ABSTAIN: interior 
+gap[3465.23,3465.72] span[3465.23,3465.72] sp1[3443.48..]..[..3467.31]sp1 ABSTAIN: interior floor(0.49<0.8) 
+gap[3466.16,3467.31] span[3467.31,3467.31] sp0[3447.46..]..[..3467.31]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[3469.37,3470.01] span[3470.01,3470.01] sp1[3467.31..]..[..3470.01]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[3474.41,3474.88] span[3474.41,3474.88] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.47<0.8) 
+gap[3478.82,3479.12] span[3478.82,3479.12] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[3482.00,3482.68] span[3482.00,3482.68] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.67<0.8) 
+gap[3483.54,3484.65] span[3483.54,3484.65] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior 
+gap[3485.01,3486.17] span[3485.01,3486.17] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior 
+gap[3486.65,3487.10] span[3486.65,3487.10] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[3492.80,3493.31] span[3492.80,3493.31] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[3496.06,3496.47] span[3496.06,3496.47] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.41<0.8) 
+gap[3499.96,3500.67] span[3499.96,3500.67] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.71<0.8) 
+gap[3501.73,3502.71] span[3501.73,3502.71] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior 
+gap[3503.98,3504.45] span[3503.98,3504.45] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.47<0.8) 
+gap[3505.11,3506.00] span[3505.11,3506.00] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior 
+gap[3510.14,3510.78] span[3510.14,3510.78] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.64<0.8) 
+gap[3516.16,3516.78] span[3516.16,3516.78] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.62<0.8) 
+gap[3517.34,3517.71] span[3517.34,3517.71] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[3522.77,3523.38] span[3522.77,3523.38] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.61<0.8) 
+gap[3524.46,3525.12] span[3524.46,3525.12] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.66<0.8) 
+gap[3534.71,3535.63] span[3534.71,3535.63] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior 
+gap[3537.91,3538.72] span[3537.91,3538.72] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior 
+gap[3539.38,3539.80] span[3539.38,3539.80] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.42<0.8) 
+gap[3541.98,3542.86] span[3541.98,3542.86] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior 
+gap[3548.34,3548.83] span[3548.34,3548.83] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.49<0.8) 
+gap[3553.37,3554.28] span[3553.37,3554.28] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior 
+gap[3554.79,3555.61] span[3554.79,3555.61] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior 
+gap[3560.86,3561.84] span[3560.86,3561.84] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior 
+gap[3564.86,3565.97] span[3564.86,3565.97] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior 
+gap[3572.89,3573.42] span[3572.89,3573.42] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[3576.99,3580.74] span[3576.99,3577.38] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[3581.38,3583.00] span[3581.38,3583.00] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior 
+gap[3583.63,3584.06] span[3583.63,3584.06] sp1[3467.31..]..[..3588.23]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[3587.66,3588.23] span[3587.66,3588.00] sp0[3470.01..]..[..3588.23]sp1 ABSTAIN: floor(0.34<0.8) 
+gap[3594.24,3594.78] span[3594.24,3594.78] sp0[3470.01..]..[..3617.98]sp0 ABSTAIN: interior floor(0.54<0.8) 
+gap[3599.34,3601.43] span[3599.34,3601.43] sp0[3470.01..]..[..3617.98]sp0 ABSTAIN: interior 
+gap[3603.15,3603.89] span[3603.15,3603.89] sp0[3470.01..]..[..3617.98]sp0 ABSTAIN: interior floor(0.74<0.8) 
+gap[3607.01,3607.54] span[3607.01,3607.54] sp0[3470.01..]..[..3617.98]sp0 ABSTAIN: interior floor(0.52<0.8) 
+gap[3608.55,3608.92] span[3608.55,3608.92] sp0[3470.01..]..[..3617.98]sp0 ABSTAIN: interior floor(0.37<0.8) 
+gap[3610.83,3611.54] span[3610.83,3611.54] sp0[3470.01..]..[..3617.98]sp0 ABSTAIN: interior floor(0.71<0.8) 
+gap[3614.22,3614.63] span[3614.22,3614.63] sp0[3470.01..]..[..3617.98]sp0 ABSTAIN: interior floor(0.41<0.8) 
+gap[3617.12,3617.98] span[3617.12,3617.74] sp1[3588.23..]..[..3617.98]sp0 ABSTAIN: floor(0.62<0.8) 
+CANDIDATE gap[3619.32,3623.01] sp0[3617.98..]..[..3623.01]sp1 span[3619.32,3623.01] dur 3.70 best sp0 margin 0.076 onset 3619.32 winner Some("sp1")
+gap[3625.75,3627.50] span[3625.75,3627.50] sp0[3617.98..]..[..3629.73]sp0 ABSTAIN: interior 
+gap[3628.75,3629.73] span[3629.73,3629.73] sp1[3623.01..]..[..3629.73]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[3631.33,3631.89] span[3631.89,3631.89] sp0[3629.73..]..[..3631.89]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[3641.12,3641.59] span[3641.12,3641.59] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior floor(0.47<0.8) 
+gap[3642.72,3643.73] span[3642.72,3643.73] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior 
+gap[3649.22,3649.86] span[3649.22,3649.86] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior floor(0.64<0.8) 
+gap[3655.19,3655.77] span[3655.19,3655.77] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior floor(0.57<0.8) 
+gap[3659.75,3660.32] span[3659.75,3660.32] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior floor(0.57<0.8) 
+gap[3661.39,3663.01] span[3661.39,3663.01] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior 
+gap[3664.20,3664.66] span[3664.20,3664.66] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior floor(0.46<0.8) 
+gap[3666.85,3667.31] span[3666.85,3667.31] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior floor(0.46<0.8) 
+gap[3675.17,3675.63] span[3675.17,3675.63] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior floor(0.46<0.8) 
+gap[3677.77,3678.48] span[3677.77,3678.48] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior floor(0.71<0.8) 
+gap[3678.95,3679.85] span[3678.95,3679.85] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior 
+gap[3681.87,3682.60] span[3681.87,3682.60] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior floor(0.73<0.8) 
+gap[3683.37,3683.76] span[3683.37,3683.76] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior floor(0.39<0.8) 
+gap[3688.94,3690.34] span[3688.94,3690.34] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior 
+gap[3690.83,3691.36] span[3690.83,3691.36] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior floor(0.52<0.8) 
+gap[3695.49,3696.72] span[3695.49,3696.72] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior 
+gap[3706.59,3707.00] span[3706.59,3707.00] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior floor(0.40<0.8) 
+gap[3708.87,3711.83] span[3708.87,3711.83] sp0[3629.73..]..[..3713.63]sp0 ABSTAIN: interior 
+gap[3712.58,3713.63] span[3713.63,3713.63] sp1[3631.89..]..[..3713.63]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[3714.20,3715.99] span[3714.20,3715.99] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior 
+gap[3725.09,3725.54] span[3725.09,3725.54] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[3733.64,3734.66] span[3733.64,3734.66] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior 
+gap[3740.02,3740.61] span[3740.02,3740.61] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.59<0.8) 
+gap[3741.05,3741.76] span[3741.05,3741.76] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.71<0.8) 
+gap[3742.23,3742.76] span[3742.23,3742.76] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[3748.26,3748.78] span[3748.26,3748.78] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[3749.39,3750.18] span[3749.39,3750.18] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.79<0.8) 
+gap[3756.98,3757.51] span[3756.98,3757.51] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[3757.91,3758.25] span[3757.91,3758.25] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.34<0.8) 
+gap[3766.94,3767.50] span[3766.94,3767.50] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[3771.46,3771.90] span[3771.46,3771.90] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[3772.54,3773.45] span[3772.54,3773.45] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior 
+gap[3776.96,3777.40] span[3776.96,3777.40] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[3784.12,3784.86] span[3784.12,3784.86] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.74<0.8) 
+gap[3788.18,3788.56] span[3788.18,3788.56] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[3797.45,3798.01] span[3797.45,3798.01] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[3801.85,3802.33] span[3801.85,3802.33] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.47<0.8) 
+gap[3805.60,3805.92] span[3805.60,3805.92] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[3809.48,3810.26] span[3809.48,3810.26] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.78<0.8) 
+gap[3815.96,3816.42] span[3815.96,3816.42] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[3817.87,3818.21] span[3817.87,3818.21] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.34<0.8) 
+gap[3819.37,3819.74] span[3819.37,3819.74] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[3828.63,3829.29] span[3828.63,3829.29] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.66<0.8) 
+gap[3835.76,3836.23] span[3835.76,3836.23] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.47<0.8) 
+gap[3837.95,3838.34] span[3837.95,3838.34] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[3846.94,3847.45] span[3846.94,3847.45] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[3848.23,3848.82] span[3848.23,3848.82] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.59<0.8) 
+gap[3853.95,3854.71] span[3853.95,3854.71] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.76<0.8) 
+gap[3855.33,3856.26] span[3855.33,3856.26] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior 
+gap[3858.98,3859.45] span[3858.98,3859.45] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.47<0.8) 
+gap[3860.16,3861.17] span[3860.16,3861.17] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior 
+gap[3866.25,3866.96] span[3866.25,3866.96] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.71<0.8) 
+gap[3868.68,3869.00] span[3868.68,3869.00] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[3872.21,3873.18] span[3872.21,3873.18] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior 
+gap[3873.91,3875.66] span[3873.91,3875.66] sp1[3631.89..]..[..3879.68]sp1 ABSTAIN: interior 
+gap[3876.07,3879.68] span[3876.07,3879.68] sp0[3713.63..]..[..3879.68]sp1 ABSTAIN: best==winner 
+CANDIDATE gap[3881.28,3882.80] sp1[3879.68..]..[..3882.80]sp0 span[3881.28,3882.80] dur 1.52 best sp1 margin 0.071 onset 3881.36 winner Some("sp0")
+gap[3888.39,3888.89] span[3888.39,3888.89] sp1[3879.68..]..[..3936.94]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[3889.81,3890.16] span[3889.81,3890.16] sp1[3879.68..]..[..3936.94]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[3892.15,3892.64] span[3892.15,3892.64] sp1[3879.68..]..[..3936.94]sp1 ABSTAIN: interior floor(0.49<0.8) 
+gap[3894.46,3895.00] span[3894.46,3895.00] sp1[3879.68..]..[..3936.94]sp1 ABSTAIN: interior floor(0.54<0.8) 
+gap[3898.21,3898.53] span[3898.21,3898.53] sp1[3879.68..]..[..3936.94]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[3904.15,3904.61] span[3904.15,3904.61] sp1[3879.68..]..[..3936.94]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[3905.50,3906.28] span[3905.50,3906.28] sp1[3879.68..]..[..3936.94]sp1 ABSTAIN: interior floor(0.78<0.8) 
+gap[3907.42,3908.69] span[3907.42,3908.69] sp1[3879.68..]..[..3936.94]sp1 ABSTAIN: interior 
+gap[3909.43,3909.95] span[3909.43,3909.95] sp1[3879.68..]..[..3936.94]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[3917.18,3917.95] span[3917.18,3917.95] sp1[3879.68..]..[..3936.94]sp1 ABSTAIN: interior floor(0.78<0.8) 
+gap[3918.58,3919.25] span[3918.58,3919.25] sp1[3879.68..]..[..3936.94]sp1 ABSTAIN: interior floor(0.67<0.8) 
+gap[3927.56,3927.93] span[3927.56,3927.93] sp1[3879.68..]..[..3936.94]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[3928.30,3928.82] span[3928.30,3928.82] sp1[3879.68..]..[..3936.94]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[3929.93,3930.42] span[3929.93,3930.42] sp1[3879.68..]..[..3936.94]sp1 ABSTAIN: interior floor(0.49<0.8) 
+gap[3933.51,3936.94] span[3933.51,3933.90] sp0[3882.80..]..[..3936.94]sp1 ABSTAIN: floor(0.39<0.8) 
+gap[3937.93,3938.42] span[3937.93,3938.42] sp0[3882.80..]..[..3959.94]sp0 ABSTAIN: interior floor(0.49<0.8) 
+gap[3939.54,3939.89] span[3939.54,3939.89] sp0[3882.80..]..[..3959.94]sp0 ABSTAIN: interior floor(0.35<0.8) 
+gap[3940.67,3942.32] span[3940.67,3942.32] sp0[3882.80..]..[..3959.94]sp0 ABSTAIN: interior 
+gap[3942.41,3944.51] span[3942.41,3944.51] sp0[3882.80..]..[..3959.94]sp0 ABSTAIN: interior 
+gap[3945.00,3946.12] span[3945.00,3946.12] sp0[3882.80..]..[..3959.94]sp0 ABSTAIN: interior 
+gap[3952.13,3952.85] span[3952.13,3952.85] sp0[3882.80..]..[..3959.94]sp0 ABSTAIN: interior floor(0.73<0.8) 
+gap[3957.61,3959.94] span[3957.61,3958.02] sp1[3936.94..]..[..3959.94]sp0 ABSTAIN: floor(0.41<0.8) 
+gap[3968.02,3969.19] span[3969.18,3969.19] sp0[3959.94..]..[..3969.19]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[3970.97,3971.60] span[3970.97,3971.60] sp0[3959.94..]..[..3973.42]sp0 ABSTAIN: interior floor(0.62<0.8) 
+gap[3972.39,3973.42] span[3973.42,3973.42] sp1[3969.19..]..[..3973.42]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[3973.81,3974.32] span[3973.81,3974.32] sp1[3969.19..]..[..3987.33]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[3977.66,3978.53] span[3977.66,3978.53] sp1[3969.19..]..[..3987.33]sp1 ABSTAIN: interior 
+gap[3979.19,3980.49] span[3979.19,3980.49] sp1[3969.19..]..[..3987.33]sp1 ABSTAIN: interior 
+gap[3983.28,3983.61] span[3983.28,3983.61] sp1[3969.19..]..[..3987.33]sp1 ABSTAIN: interior floor(0.34<0.8) 
+gap[3985.88,3987.33] span[3987.33,3987.33] sp0[3973.42..]..[..3987.33]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[3987.70,3989.15] span[3987.70,3989.15] sp0[3973.42..]..[..4004.88]sp0 ABSTAIN: interior 
+gap[3990.18,3990.92] span[3990.18,3990.92] sp0[3973.42..]..[..4004.88]sp0 ABSTAIN: interior floor(0.74<0.8) 
+gap[3993.74,3994.65] span[3993.74,3994.65] sp0[3973.42..]..[..4004.88]sp0 ABSTAIN: interior 
+gap[3998.48,3998.99] span[3998.48,3998.99] sp0[3973.42..]..[..4004.88]sp0 ABSTAIN: interior floor(0.51<0.8) 
+gap[4000.56,4001.00] span[4000.56,4001.00] sp0[3973.42..]..[..4004.88]sp0 ABSTAIN: interior floor(0.44<0.8) 
+gap[4003.34,4004.88] span[4003.34,4004.88] sp1[3987.33..]..[..4004.88]sp0 ABSTAIN: margin(0.030) 
+gap[4007.78,4010.01] span[4007.78,4010.01] sp1[3987.33..]..[..4013.25]sp1 ABSTAIN: interior 
+gap[4012.39,4013.25] span[4013.25,4013.25] sp0[4004.88..]..[..4013.25]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[4014.19,4016.05] span[4014.19,4016.05] sp0[4004.88..]..[..4038.64]sp0 ABSTAIN: interior 
+gap[4019.59,4021.33] span[4019.59,4021.33] sp0[4004.88..]..[..4038.64]sp0 ABSTAIN: interior 
+gap[4022.66,4022.98] span[4022.66,4022.98] sp0[4004.88..]..[..4038.64]sp0 ABSTAIN: interior floor(0.32<0.8) 
+gap[4024.25,4026.19] span[4024.25,4026.19] sp0[4004.88..]..[..4038.64]sp0 ABSTAIN: interior 
+gap[4028.81,4029.21] span[4028.81,4029.21] sp0[4004.88..]..[..4038.64]sp0 ABSTAIN: interior floor(0.41<0.8) 
+gap[4033.09,4033.73] span[4033.09,4033.73] sp0[4004.88..]..[..4038.64]sp0 ABSTAIN: interior floor(0.64<0.8) 
+gap[4037.48,4038.64] span[4037.48,4038.21] sp1[4013.25..]..[..4038.64]sp0 ABSTAIN: floor(0.73<0.8) 
+gap[4038.88,4039.99] span[4038.88,4039.99] sp1[4013.25..]..[..4067.99]sp1 ABSTAIN: interior 
+gap[4046.64,4047.11] span[4046.64,4047.11] sp1[4013.25..]..[..4067.99]sp1 ABSTAIN: interior floor(0.47<0.8) 
+gap[4047.99,4050.29] span[4047.99,4050.29] sp1[4013.25..]..[..4067.99]sp1 ABSTAIN: interior 
+gap[4051.00,4051.37] span[4051.00,4051.37] sp1[4013.25..]..[..4067.99]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[4063.21,4063.67] span[4063.21,4063.67] sp1[4013.25..]..[..4067.99]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[4065.29,4066.74] span[4065.29,4066.74] sp1[4013.25..]..[..4067.99]sp1 ABSTAIN: interior 
+gap[4068.58,4070.74] span[4068.58,4070.74] sp0[4038.64..]..[..4121.99]sp0 ABSTAIN: interior 
+gap[4079.92,4080.95] span[4079.92,4080.95] sp0[4038.64..]..[..4121.99]sp0 ABSTAIN: interior 
+gap[4084.59,4085.18] span[4084.59,4085.18] sp0[4038.64..]..[..4121.99]sp0 ABSTAIN: interior floor(0.59<0.8) 
+gap[4086.15,4086.60] span[4086.15,4086.60] sp0[4038.64..]..[..4121.99]sp0 ABSTAIN: interior floor(0.46<0.8) 
+gap[4092.47,4093.76] span[4092.47,4093.76] sp0[4038.64..]..[..4121.99]sp0 ABSTAIN: interior 
+gap[4093.99,4094.35] span[4093.99,4094.35] sp0[4038.64..]..[..4121.99]sp0 ABSTAIN: interior floor(0.35<0.8) 
+gap[4097.00,4098.14] span[4097.00,4098.14] sp0[4038.64..]..[..4121.99]sp0 ABSTAIN: interior 
+gap[4100.09,4100.42] span[4100.09,4100.42] sp0[4038.64..]..[..4121.99]sp0 ABSTAIN: interior floor(0.34<0.8) 
+gap[4101.00,4101.99] span[4101.00,4101.99] sp0[4038.64..]..[..4121.99]sp0 ABSTAIN: interior 
+gap[4105.62,4107.49] span[4105.62,4107.49] sp0[4038.64..]..[..4121.99]sp0 ABSTAIN: interior 
+gap[4112.45,4113.15] span[4112.45,4113.15] sp0[4038.64..]..[..4121.99]sp0 ABSTAIN: interior floor(0.69<0.8) 
+gap[4116.61,4116.99] span[4116.61,4116.99] sp0[4038.64..]..[..4121.99]sp0 ABSTAIN: interior floor(0.39<0.8) 
+gap[4118.99,4119.32] span[4118.99,4119.32] sp0[4038.64..]..[..4121.99]sp0 ABSTAIN: interior floor(0.34<0.8) 
+gap[4121.33,4121.99] span[4121.33,4121.39] sp1[4067.99..]..[..4121.99]sp0 ABSTAIN: floor(0.06<0.8) 
+gap[4122.24,4123.20] span[4122.24,4123.20] sp1[4067.99..]..[..4136.33]sp1 ABSTAIN: interior 
+gap[4125.70,4126.38] span[4125.70,4126.38] sp1[4067.99..]..[..4136.33]sp1 ABSTAIN: interior floor(0.68<0.8) 
+gap[4134.09,4134.90] span[4134.09,4134.90] sp1[4067.99..]..[..4136.33]sp1 ABSTAIN: interior 
+gap[4141.60,4142.00] span[4141.60,4141.77] sp1[4136.33..]..[..4142.00]sp0 ABSTAIN: floor(0.17<0.8) 
+gap[4145.12,4146.22] span[4145.12,4146.22] sp1[4136.33..]..[..4148.75]sp1 ABSTAIN: interior 
+gap[4146.51,4147.27] span[4146.51,4147.27] sp1[4136.33..]..[..4148.75]sp1 ABSTAIN: interior floor(0.76<0.8) 
+gap[4147.88,4148.75] span[4147.88,4148.75] sp0[4142.00..]..[..4148.75]sp1 ABSTAIN: margin(0.025) 
+gap[4156.21,4156.85] span[4156.21,4156.85] sp0[4142.00..]..[..4160.33]sp0 ABSTAIN: interior floor(0.64<0.8) 
+gap[4159.64,4160.33] span[4159.64,4160.17] sp1[4148.75..]..[..4160.33]sp0 ABSTAIN: floor(0.53<0.8) 
+gap[4168.75,4169.26] span[4168.75,4169.26] sp1[4148.75..]..[..4179.87]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[4171.13,4173.29] span[4171.13,4173.29] sp1[4148.75..]..[..4179.87]sp1 ABSTAIN: interior 
+gap[4174.91,4176.26] span[4174.91,4176.26] sp1[4148.75..]..[..4179.87]sp1 ABSTAIN: interior 
+gap[4182.50,4183.57] span[4182.50,4183.57] sp0[4160.33..]..[..4213.42]sp0 ABSTAIN: interior 
+gap[4185.66,4186.25] span[4185.66,4186.25] sp0[4160.33..]..[..4213.42]sp0 ABSTAIN: interior floor(0.59<0.8) 
+gap[4188.21,4188.75] span[4188.21,4188.75] sp0[4160.33..]..[..4213.42]sp0 ABSTAIN: interior floor(0.54<0.8) 
+gap[4189.08,4190.23] span[4189.08,4190.23] sp0[4160.33..]..[..4213.42]sp0 ABSTAIN: interior 
+gap[4191.18,4191.51] span[4191.18,4191.51] sp0[4160.33..]..[..4213.42]sp0 ABSTAIN: interior floor(0.34<0.8) 
+gap[4192.51,4192.91] span[4192.51,4192.91] sp0[4160.33..]..[..4213.42]sp0 ABSTAIN: interior floor(0.40<0.8) 
+gap[4194.84,4195.48] span[4194.84,4195.48] sp0[4160.33..]..[..4213.42]sp0 ABSTAIN: interior floor(0.64<0.8) 
+gap[4198.26,4198.62] span[4198.26,4198.62] sp0[4160.33..]..[..4213.42]sp0 ABSTAIN: interior floor(0.35<0.8) 
+gap[4199.21,4199.85] span[4199.21,4199.85] sp0[4160.33..]..[..4213.42]sp0 ABSTAIN: interior floor(0.64<0.8) 
+gap[4203.51,4204.15] span[4203.51,4204.15] sp0[4160.33..]..[..4213.42]sp0 ABSTAIN: interior floor(0.64<0.8) 
+gap[4211.41,4211.88] span[4211.41,4211.88] sp0[4160.33..]..[..4213.42]sp0 ABSTAIN: interior floor(0.47<0.8) 
+gap[4212.10,4212.59] span[4212.10,4212.59] sp0[4160.33..]..[..4213.42]sp0 ABSTAIN: interior floor(0.49<0.8) 
+gap[4223.78,4224.22] span[4223.78,4224.22] sp1[4179.87..]..[..4233.79]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[4226.43,4226.87] span[4226.43,4226.87] sp1[4179.87..]..[..4233.79]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[4230.26,4230.82] span[4230.26,4230.82] sp1[4179.87..]..[..4233.79]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[4236.59,4237.35] span[4236.59,4237.35] sp0[4213.42..]..[..4244.18]sp0 ABSTAIN: interior floor(0.76<0.8) 
+gap[4237.85,4238.46] span[4237.85,4238.46] sp0[4213.42..]..[..4244.18]sp0 ABSTAIN: interior floor(0.61<0.8) 
+gap[4243.39,4244.18] span[4243.39,4243.71] sp1[4233.79..]..[..4244.18]sp0 ABSTAIN: floor(0.32<0.8) 
+gap[4246.31,4247.00] span[4246.31,4247.00] sp1[4233.79..]..[..4301.61]sp1 ABSTAIN: interior floor(0.69<0.8) 
+gap[4248.50,4249.01] span[4248.50,4249.01] sp1[4233.79..]..[..4301.61]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[4254.26,4254.63] span[4254.26,4254.63] sp1[4233.79..]..[..4301.61]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[4256.85,4257.16] span[4256.85,4257.16] sp1[4233.79..]..[..4301.61]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[4259.35,4259.74] span[4259.35,4259.74] sp1[4233.79..]..[..4301.61]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[4264.90,4266.37] span[4264.90,4266.37] sp1[4233.79..]..[..4301.61]sp1 ABSTAIN: interior 
+gap[4268.46,4269.11] span[4268.46,4269.11] sp1[4233.79..]..[..4301.61]sp1 ABSTAIN: interior floor(0.64<0.8) 
+gap[4269.70,4270.00] span[4269.70,4270.00] sp1[4233.79..]..[..4301.61]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[4275.99,4276.50] span[4275.99,4276.50] sp1[4233.79..]..[..4301.61]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[4277.98,4278.69] span[4277.98,4278.69] sp1[4233.79..]..[..4301.61]sp1 ABSTAIN: interior floor(0.71<0.8) 
+gap[4282.28,4282.99] span[4282.28,4282.99] sp1[4233.79..]..[..4301.61]sp1 ABSTAIN: interior floor(0.71<0.8) 
+gap[4283.09,4283.55] span[4283.09,4283.55] sp1[4233.79..]..[..4301.61]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[4289.64,4290.15] span[4289.64,4290.15] sp1[4233.79..]..[..4301.61]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[4291.62,4292.00] span[4291.62,4292.00] sp1[4233.79..]..[..4301.61]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[4292.98,4293.34] span[4292.98,4293.34] sp1[4233.79..]..[..4301.61]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[4294.72,4295.26] span[4294.72,4295.26] sp1[4233.79..]..[..4301.61]sp1 ABSTAIN: interior floor(0.54<0.8) 
+gap[4300.59,4301.61] span[4301.61,4301.61] sp0[4244.18..]..[..4301.61]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[4303.58,4304.32] span[4303.58,4304.32] sp0[4244.18..]..[..4321.79]sp0 ABSTAIN: interior floor(0.74<0.8) 
+gap[4306.06,4307.14] span[4306.06,4307.14] sp0[4244.18..]..[..4321.79]sp0 ABSTAIN: interior 
+gap[4309.84,4310.77] span[4309.84,4310.77] sp0[4244.18..]..[..4321.79]sp0 ABSTAIN: interior 
+gap[4312.49,4312.91] span[4312.49,4312.91] sp0[4244.18..]..[..4321.79]sp0 ABSTAIN: interior floor(0.42<0.8) 
+gap[4317.38,4317.70] span[4317.38,4317.70] sp0[4244.18..]..[..4321.79]sp0 ABSTAIN: interior floor(0.32<0.8) 
+gap[4322.36,4322.67] span[4322.36,4322.67] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[4326.29,4326.80] span[4326.29,4326.80] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[4327.46,4327.86] span[4327.46,4327.86] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.40<0.8) 
+gap[4333.26,4333.57] span[4333.26,4333.57] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[4335.56,4336.25] span[4335.56,4336.25] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.69<0.8) 
+gap[4339.96,4340.42] span[4339.96,4340.42] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[4343.79,4344.15] span[4343.79,4344.15] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[4347.57,4348.37] span[4347.57,4348.37] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.79<0.8) 
+gap[4349.08,4349.46] span[4349.08,4349.46] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[4352.79,4353.38] span[4352.79,4353.38] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.59<0.8) 
+gap[4360.87,4361.24] span[4360.87,4361.24] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[4362.49,4362.95] span[4362.49,4362.95] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[4366.93,4367.45] span[4366.93,4367.45] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[4374.44,4375.00] span[4374.44,4375.00] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.56<0.8) 
+gap[4376.84,4377.41] span[4376.84,4377.41] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.57<0.8) 
+gap[4378.19,4378.69] span[4378.19,4378.69] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[4379.97,4380.35] span[4379.97,4380.35] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[4382.00,4382.88] span[4382.00,4382.88] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior 
+gap[4385.36,4385.66] span[4385.36,4385.66] sp1[4301.61..]..[..4387.55]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[4386.71,4387.55] span[4387.55,4387.55] sp0[4321.79..]..[..4387.55]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[4390.20,4390.52] span[4390.20,4390.52] sp0[4321.79..]..[..4400.51]sp0 ABSTAIN: interior floor(0.32<0.8) 
+gap[4396.43,4396.85] span[4396.43,4396.85] sp0[4321.79..]..[..4400.51]sp0 ABSTAIN: interior floor(0.42<0.8) 
+gap[4399.40,4400.51] span[4399.40,4400.05] sp1[4387.55..]..[..4400.51]sp0 ABSTAIN: floor(0.65<0.8) 
+gap[4404.38,4405.42] span[4404.38,4405.42] sp1[4387.55..]..[..4432.62]sp1 ABSTAIN: interior 
+gap[4408.27,4408.81] span[4408.27,4408.81] sp1[4387.55..]..[..4432.62]sp1 ABSTAIN: interior floor(0.54<0.8) 
+gap[4410.59,4411.60] span[4410.59,4411.60] sp1[4387.55..]..[..4432.62]sp1 ABSTAIN: interior 
+gap[4420.52,4421.30] span[4420.52,4421.30] sp1[4387.55..]..[..4432.62]sp1 ABSTAIN: interior floor(0.78<0.8) 
+gap[4422.26,4423.56] span[4422.26,4423.56] sp1[4387.55..]..[..4432.62]sp1 ABSTAIN: interior 
+gap[4428.41,4428.86] span[4428.41,4428.86] sp1[4387.55..]..[..4432.62]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[4429.74,4432.62] span[4429.74,4432.62] sp0[4400.51..]..[..4432.62]sp1 ABSTAIN: margin(0.007) 
+gap[4433.84,4434.89] span[4433.84,4434.89] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior 
+gap[4435.86,4436.29] span[4435.86,4436.29] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior floor(0.42<0.8) 
+gap[4440.91,4441.40] span[4440.91,4441.40] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior floor(0.49<0.8) 
+gap[4441.92,4442.33] span[4441.92,4442.33] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior floor(0.41<0.8) 
+gap[4444.10,4444.47] span[4444.10,4444.47] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior floor(0.37<0.8) 
+gap[4445.58,4446.39] span[4445.58,4446.39] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior 
+gap[4447.34,4447.66] span[4447.34,4447.66] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior floor(0.32<0.8) 
+gap[4448.76,4449.25] span[4448.76,4449.25] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior floor(0.49<0.8) 
+gap[4452.00,4452.87] span[4452.00,4452.87] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior 
+gap[4459.96,4460.97] span[4459.96,4460.97] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior 
+gap[4465.21,4465.83] span[4465.21,4465.83] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior floor(0.62<0.8) 
+gap[4468.69,4469.36] span[4468.69,4469.36] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior floor(0.68<0.8) 
+gap[4470.41,4471.23] span[4470.41,4471.23] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior 
+gap[4472.60,4472.97] span[4472.60,4472.97] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior floor(0.37<0.8) 
+gap[4474.37,4475.10] span[4474.37,4475.10] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior floor(0.73<0.8) 
+gap[4476.57,4477.24] span[4476.57,4477.24] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior floor(0.68<0.8) 
+gap[4479.50,4481.00] span[4479.50,4481.00] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior 
+gap[4482.46,4484.75] span[4482.46,4484.75] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior 
+gap[4486.42,4487.21] span[4486.42,4487.21] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior floor(0.79<0.8) 
+gap[4488.18,4489.00] span[4488.18,4489.00] sp0[4400.51..]..[..4489.88]sp0 ABSTAIN: interior 
+gap[4489.17,4489.88] span[4489.88,4489.88] sp1[4432.62..]..[..4489.88]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[4491.08,4491.72] span[4491.08,4491.72] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior floor(0.64<0.8) 
+gap[4497.95,4498.37] span[4497.95,4498.37] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior floor(0.42<0.8) 
+gap[4498.79,4499.82] span[4498.79,4499.82] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior 
+gap[4504.38,4505.00] span[4504.38,4505.00] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior floor(0.62<0.8) 
+gap[4506.37,4506.74] span[4506.37,4506.74] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[4507.63,4507.95] span[4507.63,4507.95] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[4512.39,4512.97] span[4512.39,4512.97] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior floor(0.57<0.8) 
+gap[4514.55,4514.87] span[4514.55,4514.87] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[4515.40,4516.66] span[4515.40,4516.66] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior 
+gap[4521.20,4521.50] span[4521.20,4521.50] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[4523.58,4524.00] span[4523.58,4524.00] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior floor(0.42<0.8) 
+gap[4527.87,4528.39] span[4527.87,4528.39] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[4530.99,4531.36] span[4530.99,4531.36] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior floor(0.37<0.8) 
+gap[4536.54,4537.25] span[4536.54,4537.25] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior floor(0.71<0.8) 
+gap[4540.66,4541.28] span[4540.66,4541.28] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior floor(0.62<0.8) 
+gap[4546.19,4546.72] span[4546.19,4546.72] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[4548.00,4548.39] span[4548.00,4548.39] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[4551.42,4552.08] span[4551.42,4552.08] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior floor(0.66<0.8) 
+gap[4555.00,4555.52] span[4555.00,4555.52] sp1[4432.62..]..[..4558.33]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[4558.02,4558.33] span[4558.02,4558.33] sp0[4489.88..]..[..4558.33]sp1 ABSTAIN: floor(0.30<0.8) 
+gap[4558.68,4559.57] span[4558.68,4559.57] sp0[4489.88..]..[..4586.47]sp0 ABSTAIN: interior 
+gap[4561.99,4563.56] span[4561.99,4563.56] sp0[4489.88..]..[..4586.47]sp0 ABSTAIN: interior 
+gap[4569.63,4570.14] span[4569.63,4570.14] sp0[4489.88..]..[..4586.47]sp0 ABSTAIN: interior floor(0.51<0.8) 
+gap[4570.48,4570.80] span[4570.48,4570.80] sp0[4489.88..]..[..4586.47]sp0 ABSTAIN: interior floor(0.32<0.8) 
+gap[4572.10,4573.01] span[4572.10,4573.01] sp0[4489.88..]..[..4586.47]sp0 ABSTAIN: interior 
+gap[4577.38,4577.73] span[4577.38,4577.73] sp0[4489.88..]..[..4586.47]sp0 ABSTAIN: interior floor(0.35<0.8) 
+gap[4578.85,4579.37] span[4578.85,4579.37] sp0[4489.88..]..[..4586.47]sp0 ABSTAIN: interior floor(0.52<0.8) 
+gap[4583.45,4586.47] span[4586.47,4586.47] sp1[4558.33..]..[..4586.47]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[4587.45,4595.50] span[4587.45,4595.50] sp1[4558.33..]..[..4615.38]sp1 ABSTAIN: interior 
+gap[4596.35,4597.00] span[4596.35,4597.00] sp1[4558.33..]..[..4615.38]sp1 ABSTAIN: interior floor(0.66<0.8) 
+gap[4597.36,4599.48] span[4597.36,4599.48] sp1[4558.33..]..[..4615.38]sp1 ABSTAIN: interior 
+gap[4600.31,4602.18] span[4600.31,4602.18] sp1[4558.33..]..[..4615.38]sp1 ABSTAIN: interior 
+gap[4607.20,4608.43] span[4607.20,4608.43] sp1[4558.33..]..[..4615.38]sp1 ABSTAIN: interior 
+gap[4614.99,4615.38] span[4614.99,4615.38] sp0[4586.47..]..[..4615.38]sp1 ABSTAIN: floor(0.39<0.8) 
+gap[4618.00,4618.86] span[4618.00,4618.86] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior 
+gap[4621.71,4622.20] span[4621.71,4622.20] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior floor(0.49<0.8) 
+gap[4624.88,4626.79] span[4624.88,4626.79] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior 
+gap[4629.99,4630.35] span[4629.99,4630.35] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior floor(0.35<0.8) 
+gap[4632.00,4632.66] span[4632.00,4632.66] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior floor(0.66<0.8) 
+gap[4636.44,4637.18] span[4636.44,4637.18] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior floor(0.74<0.8) 
+gap[4637.66,4637.99] span[4637.66,4637.99] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior floor(0.34<0.8) 
+gap[4639.12,4639.66] span[4639.12,4639.66] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior floor(0.54<0.8) 
+gap[4639.88,4641.13] span[4639.88,4641.13] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior 
+gap[4646.14,4646.95] span[4646.14,4646.95] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior 
+gap[4649.38,4649.91] span[4649.38,4649.91] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior floor(0.52<0.8) 
+gap[4650.56,4650.89] span[4650.56,4650.89] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior floor(0.32<0.8) 
+gap[4652.00,4652.51] span[4652.00,4652.51] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior floor(0.51<0.8) 
+gap[4653.77,4654.65] span[4653.77,4654.65] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior 
+gap[4657.60,4658.31] span[4657.60,4658.31] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior floor(0.71<0.8) 
+gap[4659.24,4659.73] span[4659.24,4659.73] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior floor(0.49<0.8) 
+gap[4660.37,4661.80] span[4660.37,4661.80] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior 
+gap[4662.31,4662.80] span[4662.31,4662.80] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior floor(0.49<0.8) 
+gap[4668.65,4669.75] span[4668.65,4669.75] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior 
+gap[4672.15,4672.55] span[4672.15,4672.55] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior floor(0.41<0.8) 
+gap[4673.72,4674.68] span[4673.72,4674.68] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior 
+gap[4675.67,4676.25] span[4675.67,4676.25] sp0[4586.47..]..[..4682.00]sp0 ABSTAIN: interior floor(0.57<0.8) 
+gap[4681.01,4682.00] span[4681.01,4681.97] sp1[4615.38..]..[..4682.00]sp0 ABSTAIN: margin(0.048) 
+gap[4682.61,4683.05] span[4682.61,4683.05] sp1[4615.38..]..[..4689.43]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[4685.21,4685.60] span[4685.21,4685.60] sp1[4615.38..]..[..4689.43]sp1 ABSTAIN: interior floor(0.39<0.8) 
+gap[4688.28,4689.43] span[4689.43,4689.43] sp0[4682.00..]..[..4689.43]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[4691.79,4692.57] span[4691.79,4692.57] sp1[4689.43..]..[..4692.57]sp0 ABSTAIN: floor(0.78<0.8) 
+gap[4695.96,4696.28] span[4695.96,4696.28] sp1[4689.43..]..[..4703.64]sp1 ABSTAIN: interior floor(0.32<0.8) 
+CANDIDATE gap[4702.52,4703.64] sp0[4692.57..]..[..4703.64]sp1 span[4702.52,4703.64] dur 1.11 best sp1 margin 0.071 onset 4702.52 winner Some("sp0")
+gap[4705.05,4705.85] span[4705.05,4705.85] sp0[4692.57..]..[..4765.87]sp0 ABSTAIN: interior floor(0.79<0.8) 
+gap[4709.96,4710.79] span[4709.96,4710.79] sp0[4692.57..]..[..4765.87]sp0 ABSTAIN: interior 
+gap[4713.86,4714.57] span[4713.86,4714.57] sp0[4692.57..]..[..4765.87]sp0 ABSTAIN: interior floor(0.71<0.8) 
+gap[4716.17,4716.88] span[4716.17,4716.88] sp0[4692.57..]..[..4765.87]sp0 ABSTAIN: interior floor(0.71<0.8) 
+gap[4717.04,4717.41] span[4717.04,4717.41] sp0[4692.57..]..[..4765.87]sp0 ABSTAIN: interior floor(0.37<0.8) 
+gap[4720.01,4720.82] span[4720.01,4720.82] sp0[4692.57..]..[..4765.87]sp0 ABSTAIN: interior 
+gap[4723.73,4724.14] span[4723.73,4724.14] sp0[4692.57..]..[..4765.87]sp0 ABSTAIN: interior floor(0.41<0.8) 
+gap[4725.68,4726.47] span[4725.68,4726.47] sp0[4692.57..]..[..4765.87]sp0 ABSTAIN: interior floor(0.79<0.8) 
+gap[4727.28,4727.68] span[4727.28,4727.68] sp0[4692.57..]..[..4765.87]sp0 ABSTAIN: interior floor(0.40<0.8) 
+gap[4731.09,4731.53] span[4731.09,4731.53] sp0[4692.57..]..[..4765.87]sp0 ABSTAIN: interior floor(0.44<0.8) 
+gap[4735.09,4735.56] span[4735.09,4735.56] sp0[4692.57..]..[..4765.87]sp0 ABSTAIN: interior floor(0.47<0.8) 
+gap[4743.51,4743.95] span[4743.51,4743.95] sp0[4692.57..]..[..4765.87]sp0 ABSTAIN: interior floor(0.44<0.8) 
+gap[4744.15,4744.74] span[4744.15,4744.74] sp0[4692.57..]..[..4765.87]sp0 ABSTAIN: interior floor(0.59<0.8) 
+gap[4746.62,4747.28] span[4746.62,4747.28] sp0[4692.57..]..[..4765.87]sp0 ABSTAIN: interior floor(0.66<0.8) 
+gap[4749.23,4750.72] span[4749.23,4750.72] sp0[4692.57..]..[..4765.87]sp0 ABSTAIN: interior 
+gap[4753.15,4753.65] span[4753.15,4753.65] sp0[4692.57..]..[..4765.87]sp0 ABSTAIN: interior floor(0.51<0.8) 
+gap[4764.30,4765.87] span[4765.87,4765.87] sp1[4703.64..]..[..4765.87]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[4770.17,4770.58] span[4770.17,4770.58] sp1[4703.64..]..[..4777.80]sp1 ABSTAIN: interior floor(0.40<0.8) 
+gap[4771.47,4771.91] span[4771.47,4771.91] sp1[4703.64..]..[..4777.80]sp1 ABSTAIN: interior floor(0.44<0.8) 
+gap[4775.88,4776.18] span[4775.88,4776.18] sp1[4703.64..]..[..4777.80]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[4777.45,4777.80] span[4777.80,4777.80] sp0[4765.87..]..[..4777.80]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[4779.98,4780.47] span[4779.98,4780.47] sp0[4765.87..]..[..4813.98]sp0 ABSTAIN: interior floor(0.49<0.8) 
+gap[4791.00,4791.86] span[4791.00,4791.86] sp0[4765.87..]..[..4813.98]sp0 ABSTAIN: interior 
+gap[4792.16,4792.80] span[4792.16,4792.80] sp0[4765.87..]..[..4813.98]sp0 ABSTAIN: interior floor(0.64<0.8) 
+gap[4797.26,4797.90] span[4797.26,4797.90] sp0[4765.87..]..[..4813.98]sp0 ABSTAIN: interior floor(0.64<0.8) 
+gap[4801.48,4802.30] span[4801.48,4802.30] sp0[4765.87..]..[..4813.98]sp0 ABSTAIN: interior 
+gap[4803.57,4804.28] span[4803.57,4804.28] sp0[4765.87..]..[..4813.98]sp0 ABSTAIN: interior floor(0.71<0.8) 
+gap[4809.22,4810.35] span[4809.22,4810.35] sp0[4765.87..]..[..4813.98]sp0 ABSTAIN: interior 
+gap[4810.59,4811.30] span[4810.59,4811.30] sp0[4765.87..]..[..4813.98]sp0 ABSTAIN: interior floor(0.71<0.8) 
+gap[4812.13,4813.98] span[4813.98,4813.98] sp1[4777.80..]..[..4813.98]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[4814.49,4814.96] span[4814.49,4814.96] sp1[4777.80..]..[..4824.83]sp1 ABSTAIN: interior floor(0.47<0.8) 
+gap[4817.26,4817.61] span[4817.26,4817.61] sp1[4777.80..]..[..4824.83]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[4818.37,4818.72] span[4818.37,4818.72] sp1[4777.80..]..[..4824.83]sp1 ABSTAIN: interior floor(0.35<0.8) 
+gap[4820.68,4821.20] span[4820.68,4821.20] sp1[4777.80..]..[..4824.83]sp1 ABSTAIN: interior floor(0.52<0.8) 
+gap[4823.62,4824.12] span[4823.62,4824.12] sp1[4777.80..]..[..4824.83]sp1 ABSTAIN: interior floor(0.51<0.8) 
+gap[4824.38,4824.83] span[4824.83,4824.83] sp0[4813.98..]..[..4824.83]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[4828.61,4829.10] span[4828.61,4829.10] sp0[4813.98..]..[..4842.35]sp0 ABSTAIN: interior floor(0.49<0.8) 
+gap[4833.49,4834.15] span[4833.49,4834.15] sp0[4813.98..]..[..4842.35]sp0 ABSTAIN: interior floor(0.66<0.8) 
+gap[4835.14,4835.78] span[4835.14,4835.78] sp0[4813.98..]..[..4842.35]sp0 ABSTAIN: interior floor(0.64<0.8) 
+gap[4841.35,4842.35] span[4842.35,4842.35] sp1[4824.83..]..[..4842.35]sp0 ABSTAIN: floor(0.00<0.8) 
+gap[4842.80,4844.26] span[4842.80,4843.92] sp1[4824.83..]..[..4859.44]sp1 ABSTAIN: interior 
+gap[4847.75,4848.36] span[4847.75,4848.36] sp1[4824.83..]..[..4859.44]sp1 ABSTAIN: interior floor(0.61<0.8) 
+gap[4857.00,4857.74] span[4857.00,4857.74] sp1[4824.83..]..[..4859.44]sp1 ABSTAIN: interior floor(0.74<0.8) 
+gap[4866.65,4867.12] span[4866.65,4867.12] sp1[4863.83..]..[..4880.67]sp1 ABSTAIN: interior floor(0.47<0.8) 
+gap[4868.00,4868.66] span[4868.00,4868.66] sp1[4863.83..]..[..4880.67]sp1 ABSTAIN: interior floor(0.66<0.8) 
+gap[4869.23,4869.53] span[4869.23,4869.53] sp1[4863.83..]..[..4880.67]sp1 ABSTAIN: interior floor(0.30<0.8) 
+gap[4872.00,4872.45] span[4872.00,4872.45] sp1[4863.83..]..[..4880.67]sp1 ABSTAIN: interior floor(0.46<0.8) 
+gap[4873.43,4873.75] span[4873.43,4873.75] sp1[4863.83..]..[..4880.67]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[4877.50,4877.82] span[4877.50,4877.82] sp1[4863.83..]..[..4880.67]sp1 ABSTAIN: interior floor(0.32<0.8) 
+gap[4880.30,4880.67] span[4880.67,4880.67] sp0[4865.25..]..[..4880.67]sp1 ABSTAIN: floor(0.00<0.8) 
+gap[4881.20,4881.80] span[4881.20,4881.80] sp0[4865.25..]..[..4934.79]sp0 ABSTAIN: interior floor(0.61<0.8) 
+gap[4891.00,4891.45] span[4891.00,4891.45] sp0[4865.25..]..[..4934.79]sp0 ABSTAIN: interior floor(0.46<0.8) 
+gap[4893.01,4893.41] span[4893.01,4893.41] sp0[4865.25..]..[..4934.79]sp0 ABSTAIN: interior floor(0.40<0.8) 
+gap[4896.72,4897.83] span[4896.72,4897.83] sp0[4865.25..]..[..4934.79]sp0 ABSTAIN: interior 
+gap[4898.81,4899.64] span[4898.81,4899.64] sp0[4865.25..]..[..4934.79]sp0 ABSTAIN: interior 
+gap[4903.52,4904.25] span[4903.52,4904.25] sp0[4865.25..]..[..4934.79]sp0 ABSTAIN: interior floor(0.73<0.8) 
+gap[4907.47,4908.58] span[4907.47,4908.58] sp0[4865.25..]..[..4934.79]sp0 ABSTAIN: interior 
+gap[4912.67,4912.99] span[4912.67,4912.99] sp0[4865.25..]..[..4934.79]sp0 ABSTAIN: interior floor(0.32<0.8) 
+gap[4914.91,4915.42] span[4914.91,4915.42] sp0[4865.25..]..[..4934.79]sp0 ABSTAIN: interior floor(0.51<0.8) 
+gap[4917.90,4918.67] span[4917.90,4918.67] sp0[4865.25..]..[..4934.79]sp0 ABSTAIN: interior floor(0.78<0.8) 
+gap[4919.35,4920.18] span[4919.35,4920.18] sp0[4865.25..]..[..4934.79]sp0 ABSTAIN: interior 
+gap[4922.78,4924.70] span[4922.78,4924.70] sp0[4865.25..]..[..4934.79]sp0 ABSTAIN: interior 
+gap[4926.99,4927.80] span[4926.99,4927.80] sp0[4865.25..]..[..4934.79]sp0 ABSTAIN: interior 
+gap[4929.88,4930.40] span[4929.88,4930.40] sp0[4865.25..]..[..4934.79]sp0 ABSTAIN: interior floor(0.52<0.8) 
+gap[4934.06,4934.79] span[4934.06,4934.79] sp1[4880.67..]..[..4934.79]sp0 ABSTAIN: floor(0.73<0.8) 
+PROBE: whole-meeting candidates = 11
+
+=== 1.5 controls: longest no-text gaps under the same gates ===
+CONTROL gap[1878.24,1881.78] dur 3.54 best sp0 margin 0.026 onset Some(1881.078125) (base -84 peak -39) winner Some("sp1@0")
+CONTROL gap[2532.03,2535.00] dur 2.97 best sp0 margin 0.035 onset Some(2532.1462500000002) (base -68 peak -39) winner Some("sp1@0")
+CONTROL gap[928.40,930.89] dur 2.50 best sp0 margin 0.054 onset Some(928.3950000000001) (base -89 peak -48) winner Some("sp1@0")
+CONTROL gap[3.61,5.81] dur 2.19 best sp1 margin 0.050 onset Some(3.71125) (base -90 peak -63) winner Some("sp0@0")
+CONTROL gap[39.93,41.98] dur 2.06 best sp0 margin 0.004 onset None (base -55 peak -42) winner Some("sp1@1029")
+CONTROL gap[1898.69,1900.61] dur 1.92 best sp1 margin 0.140 onset Some(1898.6906250000002) (base -67 peak -42) winner Some("sp1@0")
+CONTROL gap[1901.17,1902.99] dur 1.82 best sp1 margin 0.070 onset Some(1901.17125) (base -61 peak -26) winner Some("sp1@0")
+CONTROL gap[1883.18,1884.99] dur 1.81 best sp0 margin 0.036 onset Some(1883.1825000000001) (base -80 peak -46) winner Some("sp1@0")
+
+=== 1.6 post-splice rehearsal (splice AT ONSET) ===
+POST TURN 7.29-16.12 c1 lowconf
+POST TURN 16.12-18.77 c0 lowconf
+POST TURN 18.77-24.49 c1
+REHEARSAL S2b (change@15.8 in [15.0,16.8] tol 0.75): PASS (changes [16.115625])
+REHEARSAL S1 [9.38,11.8] single_voice: PASS
+REHEARSAL S3 [15.5,20.83] single_voice: FAIL
+PROBE: done
+test gap_rescue_signals ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 241.05s
+
