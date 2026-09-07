@@ -1041,39 +1041,28 @@ const RESCUE_TIE_EPS_MS: i64 = 100;
 /// both readings agree).
 fn rescue_borrow_winner(turns: &[(f64, f64, u32)], mid_ms: i64, borrow_cap_ms: i64) -> Option<u32> {
     let mut best: Option<(u32, i64)> = None;
-    let mut second: Option<i64> = None;
     for (s, e, l) in turns {
         let d = rescue_dist_ms(mid_ms, (*s * 1000.0) as i64, (*e * 1000.0) as i64);
         if d > borrow_cap_ms {
             continue;
         }
-        if best.is_none() || d < best.map(|(_, bd)| bd).unwrap_or(i64::MAX) {
-            if let Some((bl, bd)) = best {
-                if second.is_none() || bd < second.unwrap_or(i64::MAX) {
-                    second = Some(bd);
-                }
-            }
-            best = Some((*l, d));
-        } else if second.is_none() || d < second.unwrap_or(i64::MAX) {
-            second = Some(d);
+        match best {
+            Some((_, bd)) if d >= bd => {}
+            _ => best = Some((*l, d)),
         }
     }
-    let (Some((bl, bd)), sd) = (best, second) else {
+    let Some((bl, bd)) = best else {
         return None;
     };
-    if let Some(sd) = sd {
-        if sd - bd <= RESCUE_TIE_EPS_MS {
-            // the second-nearest edge belongs to a turn whose label may differ;
-            // find its label (any turn at that distance) — same label → both
-            // readings agree, different → geometry abstains
-            let second_label = turns.iter().find_map(|(s, e, l)| {
-                let d = rescue_dist_ms(mid_ms, (*s * 1000.0) as i64, (*e * 1000.0) as i64);
-                (d == sd && *l != bl).then_some(*l)
-            });
-            if second_label.is_some() {
-                return None;
-            }
-        }
+    // abstain when ANY different-label turn edges within the tie epsilon of
+    // the best distance (geometry indeterminate; voice decides)
+    let contested = turns.iter().any(|(s, e, l)| {
+        *l != bl
+            && rescue_dist_ms(mid_ms, (*s * 1000.0) as i64, (*e * 1000.0) as i64) - bd
+                <= RESCUE_TIE_EPS_MS
+    });
+    if contested {
+        return None;
     }
     Some(bl)
 }
@@ -1101,14 +1090,14 @@ pub fn rescue_candidates(
     let mut out = Vec::new();
     for gap in gaps {
         // (2) distinct flanks by adjacency; meeting-edge and interior abstain
-        let Some(&(la, _le, lc)) = turns
+        let Some(&(_la, _le, lc)) = turns
             .iter()
             .filter(|(_, e, _)| *e <= gap.gap_start_secs + 1e-9)
             .last()
         else {
             continue;
         };
-        let Some(&(ra, _re, rc)) = turns
+        let Some(&(_ra, _re, rc)) = turns
             .iter()
             .find(|(s, _, _)| *s >= gap.gap_end_secs - 1e-9)
         else {
