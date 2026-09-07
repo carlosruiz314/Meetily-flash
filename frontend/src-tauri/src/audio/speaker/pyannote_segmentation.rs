@@ -179,16 +179,66 @@ impl FrameMassesOutput {
     /// Gate-iteration cache: the pyannote pass costs ~16 min on the reference
     /// meeting; engine-logic iterations must not re-pay it. The cached file is
     /// the exact `frame_masses` result (same models/geometry), so loading it
-    /// is equivalent to re-running inference.
-    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+    /// is equivalent to re-running inference — PROVIDED the inputs still
+    /// match. A sidecar `<path>.meta.json` records the provenance (model
+    /// content hash + geometry + format version); `load` treats a missing or
+    /// mismatched sidecar as a cache miss. The format version must be bumped
+    /// whenever `frame_masses` output semantics change — a stale cache once
+    /// validated the fixture against input the app no longer produces
+    /// (2026-09-06).
+    pub const CACHE_FORMAT_VERSION: u32 = 1;
+
+    pub fn save(&self, path: &std::path::Path, prov: &CacheProvenance) -> std::io::Result<()> {
         let file = std::io::BufWriter::new(std::fs::File::create(path)?);
-        serde_json::to_writer(file, self).map_err(|e| std::io::Error::other(e.to_string()))
+        serde_json::to_writer(file, self).map_err(|e| std::io::Error::other(e.to_string()))?;
+        let meta_path = path.with_extension("meta.json");
+        let meta = serde_json::to_string(prov).map_err(|e| std::io::Error::other(e.to_string()))?;
+        std::fs::write(meta_path, meta)
     }
 
-    pub fn load(path: &std::path::Path) -> std::io::Result<Self> {
+    pub fn load(path: &std::path::Path, prov: &CacheProvenance) -> std::io::Result<Self> {
+        let meta_path = path.with_extension("meta.json");
+        let stored: CacheProvenance = serde_json::from_str(
+            &std::fs::read_to_string(&meta_path)?,
+        )
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+        if stored != *prov {
+            return Err(std::io::Error::other(format!(
+                "cache provenance mismatch: stored {stored:?} vs current {prov:?}"
+            )));
+        }
         let file = std::io::BufReader::new(std::fs::File::open(path)?);
         serde_json::from_reader(file).map_err(|e| std::io::Error::other(e.to_string()))
     }
+}
+
+/// Provenance of a frame-mass cache file: what model bytes and geometry
+/// produced it. Written beside the cache; verified on load.
+#[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug, Clone)]
+pub struct CacheProvenance {
+    pub model_hash: String,
+    pub frame_shift: f64,
+    pub window_samples: usize,
+    pub step_samples: usize,
+    pub format_version: u32,
+}
+
+/// FNV-1a 64-bit over the model bytes — a staleness fingerprint, not
+/// security. Full-file read (~40MB, once per gate run).
+pub fn cache_provenance(model_path: &std::path::Path) -> std::io::Result<CacheProvenance> {
+    let data = std::fs::read(model_path)?;
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in &data {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    Ok(CacheProvenance {
+        model_hash: format!("{hash:016x}"),
+        frame_shift: FRAME_SHIFT,
+        window_samples: WINDOW_SAMPLES,
+        step_samples: STEP_SAMPLES,
+        format_version: FrameMassesOutput::CACHE_FORMAT_VERSION,
+    })
 }
 
 /// Per-speaker median filter (majority vote over a 2*rad+1 kernel, clamped

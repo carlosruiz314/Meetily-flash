@@ -152,6 +152,147 @@ pub fn label_change_candidates(
     out
 }
 
+/// Margin from each edge of a window track treated as untrustworthy for
+/// attesting a split (the window's own decode is least reliable there).
+/// Mid-window decodes are pyannote's most confident (measured: slot-consistent
+/// at ≥0.99 across every covering window in the fixture meeting).
+pub const TRUST_EDGE_SECS: f64 = 2.0;
+
+/// Trust-zone label track: for each frame, the label from the covering window
+/// whose CENTER is nearest. Merged-track seams overwrite mid-window decodes
+/// with edge-of-window ones (the merged flips land on integer-second window
+/// seams — measured), so the trust zone is reconstructed from the per-window
+/// tracks the engine already holds. Frames no window covers stay silence.
+pub fn trust_zone_track(
+    window_tracks: &[(f64, Vec<u8>)],
+    n_frames: usize,
+    frame_shift: f64,
+) -> Vec<u8> {
+    let mut out = vec![SILENCE_LABEL; n_frames];
+    let mut best_dist = vec![f64::INFINITY; n_frames];
+    for (start_secs, track) in window_tracks {
+        let center = *start_secs + track.len() as f64 * frame_shift / 2.0;
+        let start_f = (start_secs / frame_shift).round();
+        for (li, &lab) in track.iter().enumerate() {
+            let fi_f = start_f + li as f64;
+            if fi_f < 0.0 {
+                continue;
+            }
+            let fi = fi_f as usize;
+            if fi >= n_frames {
+                break;
+            }
+            let d = (fi as f64 * frame_shift - center).abs();
+            if d < best_dist[fi] {
+                best_dist[fi] = d;
+                out[fi] = lab;
+            }
+        }
+    }
+    out
+}
+
+/// Speaker-slot change candidates inside a run: positions where the
+/// mode-filtered track flips between two DIFFERENT speaker slots, either
+/// directly or across a short absorbed silence (the measured handoff shape
+/// slot-A → silence(<0.3s) → slot-B — `speech_runs` absorbs the pause, so
+/// the slot contrast inside the run is the only trace left). The candidate
+/// frame is the flip for direct transitions, the silence midpoint for
+/// mediated ones.
+pub fn slot_change_candidates(track: &[u8], run: &SpeechRun, radius: usize) -> Vec<usize> {
+    let end = run.end_frame.min(track.len());
+    if run.start_frame >= end {
+        return Vec::new();
+    }
+    let filtered = mode_filter_labels(&track[run.start_frame..end], radius);
+    let mut out = Vec::new();
+    let mut last_speaker: Option<u8> = None;
+    let mut silence_start: Option<usize> = None;
+    for (i, &lab) in filtered.iter().enumerate() {
+        if lab == SILENCE_LABEL {
+            if silence_start.is_none() {
+                silence_start = Some(i);
+            }
+            continue;
+        }
+        if let Some(prev) = last_speaker {
+            if lab != prev {
+                let local = match silence_start {
+                    Some(s) => (s + i) / 2,
+                    None => i,
+                };
+                out.push(run.start_frame + local);
+            }
+        }
+        last_speaker = Some(lab);
+        silence_start = None;
+    }
+    out
+}
+
+/// One window's slot-change events (absolute seconds) plus the trust zone it
+/// can attest splits in.
+pub struct WindowSlotEvents {
+    pub trust_lo: f64,
+    pub trust_hi: f64,
+    pub events: Vec<f64>,
+}
+
+/// Precompute per-window slot-change events (see `slot_change_candidates`)
+/// and trust-zone bounds, so split corroboration is a lookup.
+pub fn window_slot_events(
+    window_tracks: &[(f64, Vec<u8>)],
+    frame_shift: f64,
+    radius: usize,
+) -> Vec<WindowSlotEvents> {
+    window_tracks
+        .iter()
+        .map(|(start_secs, track)| {
+            let events = slot_change_candidates(
+                track,
+                &SpeechRun {
+                    start_frame: 0,
+                    end_frame: track.len(),
+                },
+                radius,
+            )
+            .into_iter()
+            .map(|f| *start_secs + frame_time(f, frame_shift))
+            .collect();
+            let win_end = *start_secs + track.len() as f64 * frame_shift;
+            WindowSlotEvents {
+                trust_lo: start_secs + TRUST_EDGE_SECS,
+                trust_hi: win_end - TRUST_EDGE_SECS,
+                events,
+            }
+        })
+        .collect()
+}
+
+/// Trust-zone split corroboration: of the windows whose trust zone contains
+/// the split time, AT LEAST TWO must show a slot-change event within
+/// `tolerance_secs` of it in their OWN track (unanimity is not required —
+/// window decodes near a real handoff legitimately disagree on
+/// micro-timing). Window-local slot identities are never compared across
+/// windows — each window only attests that A change happens there (same
+/// principle as `corroborate_split`). Known blind zone: meeting edges —
+/// before the first ~2s and after the last ~2s fewer than two trust zones
+/// overlap, so splits there cannot reach the 2-window threshold and are
+/// deliberately not attested (single-window attestation is the
+/// seam-artifact class this mechanism exists to reject).
+pub fn corroborate_slot_change(
+    windows: &[WindowSlotEvents],
+    split_secs: f64,
+    tolerance_secs: f64,
+) -> bool {
+    windows
+        .iter()
+        .filter(|w| split_secs >= w.trust_lo && split_secs < w.trust_hi)
+        .filter(|w| w.events.iter().any(|&e| (e - split_secs).abs() <= tolerance_secs))
+        .count()
+        >= 2
+}
+
 /// Cross-window split corroboration (spec step 2): the TWO windows adjacent
 /// to the split time (the last two windows starting at or before it) must
 /// EACH show a label-change event within `tolerance` of the candidate time in
@@ -550,15 +691,53 @@ pub fn derive_pieces(
     frame_shift: f64,
     radius: usize,
 ) -> Vec<PieceSpan> {
+    let tz = trust_zone_track(window_tracks, labels.len(), frame_shift);
+    let window_events = window_slot_events(window_tracks, frame_shift, radius);
     let mut out = Vec::new();
     for run in runs {
         let mut bounds = vec![run.start_frame];
+        // Proximity predicate shared by both candidate sources: a candidate
+        // within SPLIT_TOLERANCE_SECS of an accepted bound or the run edge
+        // is dropped — seam artifacts ride a real transition's attestations,
+        // and two bounds <0.7s apart persist as a sliver piece (measured
+        // live: 30-80ms phantom turns at sp0→sp1 handoffs).
+        let end_t = frame_time(run.end_frame, frame_shift);
+        let too_close = |t: f64, bounds: &[usize]| {
+            bounds
+                .iter()
+                .any(|&b| (frame_time(b, frame_shift) - t).abs() <= SPLIT_TOLERANCE_SECS)
+                || (end_t - t).abs() <= SPLIT_TOLERANCE_SECS
+        };
         for cand in label_change_candidates(labels, run, radius) {
             let t = frame_time(cand, frame_shift);
+            if too_close(t, &bounds) {
+                continue;
+            }
             if corroborate_split(window_tracks, t, frame_shift, SPLIT_TOLERANCE_SECS, radius) {
                 bounds.push(cand);
             }
         }
+        // Trust-zone slot-change candidates: the merged track's seam
+        // overwrites plus the <0.3s silence absorption hide short-pause
+        // handoffs (slot-A → silence → slot-B); the per-window trust zones
+        // still attest them.
+        for cand in slot_change_candidates(&tz, run, radius) {
+            let t = frame_time(cand, frame_shift);
+            if too_close(t, &bounds) {
+                continue;
+            }
+            if corroborate_slot_change(&window_events, t, SPLIT_TOLERANCE_SECS) {
+                bounds.push(cand);
+            }
+        }
+        bounds.sort_unstable();
+        bounds.dedup();
+        // Strictly interior bounds only — a bound equal to a run edge would
+        // emit a zero-width piece, which persists as a zero-duration turn
+        // (measured live: a 12.07s zero-width piece shredded a sentence and
+        // its turn mapped to no speaker entity).
+        bounds.retain(|&b| b > run.start_frame && b < run.end_frame);
+        bounds.insert(0, run.start_frame);
         bounds.push(run.end_frame);
         for pair in bounds.windows(2) {
             if pair[1] > pair[0] {
@@ -1092,6 +1271,121 @@ mod tests {
         assert_eq!(pieces.len(), 2, "{:?}", pieces);
         assert!((pieces[0].end_secs - 5.5).abs() < 0.1, "{:?}", pieces);
         assert!(pieces[1].end_secs > pieces[1].start_secs);
+    }
+
+    // ---- trust-zone slot-change splits (closure-gap fix) ----
+
+    #[test]
+    fn trust_zone_track_center_nearest_window_wins() {
+        let shift = 0.1;
+        // w1 covers 0–10s (center 5.0), flips to label 2 at 8.0;
+        // w2 covers 5–15s (center 10.0), flips to label 1 at 10.0.
+        let mut w1 = vec![0u8; 100];
+        w1[80..].fill(2);
+        let mut w2 = vec![0u8; 100];
+        w2[50..].fill(1);
+        let tz = trust_zone_track(&[(0.0, w1), (5.0, w2)], 150, shift);
+        assert_eq!(tz[40], 0, "only w1 covers 4.0s");
+        // 8.5s: w1 says 2 (dist 3.5), w2 says 0 (dist 1.5) → w2 wins.
+        assert_eq!(tz[85], 0);
+        // 12.0s: only w2 covers → its label.
+        assert_eq!(tz[120], 1);
+    }
+
+    #[test]
+    fn slot_change_candidates_fire_across_absorbed_silence() {
+        // spk0 ×20 (2.0s), silence ×2 (0.2s — below MIN_RUN_SECS, absorbed by
+        // speech_runs), spk1 ×20. One run; the mediated handoff lands on the
+        // silence midpoint.
+        let mut track = vec![0u8; 20];
+        track.extend(vec![SILENCE_LABEL; 2]);
+        track.extend(vec![1u8; 20]);
+        let run = SpeechRun { start_frame: 0, end_frame: track.len() };
+        let cands = slot_change_candidates(&track, &run, 0);
+        assert_eq!(cands, vec![21], "midpoint of the 2-frame silence");
+    }
+
+    #[test]
+    fn slot_change_candidates_ignores_same_slot_pause() {
+        let mut track = vec![0u8; 10];
+        track.extend(vec![SILENCE_LABEL; 3]);
+        track.extend(vec![0u8; 12]);
+        let run = SpeechRun { start_frame: 0, end_frame: track.len() };
+        assert!(slot_change_candidates(&track, &run, 1).is_empty());
+    }
+
+    #[test]
+    fn derive_pieces_splits_at_trust_zone_mediated_change() {
+        let shift = 270.0 / 16000.0;
+        // Merged labels: one continuous spk0 run (the seam-smoothed view).
+        // Both covering windows' own tracks show spk0 → silence → spk1 at the
+        // same absolute time inside their trust zones → must split there.
+        let split_t = 8.0f64;
+        let n = 1200;
+        let labels = vec![0u8; n];
+        let mediated = |w: f64| {
+            let mut t = vec![0u8; 591];
+            let s = ((split_t - w) / shift).round() as usize;
+            t[s..s + 12].fill(SILENCE_LABEL);
+            t[s + 12..].fill(1);
+            t
+        };
+        let tracks = vec![(5.0f64, mediated(5.0)), (6.0f64, mediated(6.0))];
+        let run = SpeechRun { start_frame: 0, end_frame: n };
+        let pieces = derive_pieces(&labels, &[run], &tracks, shift, 0);
+        assert_eq!(pieces.len(), 2, "{:?}", pieces);
+        assert!(
+            (pieces[0].end_secs - split_t).abs() < 0.25,
+            "{:?}",
+            pieces
+        );
+    }
+
+    #[test]
+    fn derive_pieces_requires_two_attesting_windows() {
+        let shift = 270.0 / 16000.0;
+        let split_t = 8.0f64;
+        let n = 1200;
+        let labels = vec![0u8; n];
+        let mut w5 = vec![0u8; 591];
+        let s5 = ((split_t - 5.0) / shift).round() as usize;
+        w5[s5..s5 + 12].fill(SILENCE_LABEL);
+        w5[s5 + 12..].fill(1);
+        let w6 = vec![0u8; 591]; // sees no change
+        let tracks = vec![(5.0f64, w5), (6.0f64, w6)];
+        let run = SpeechRun { start_frame: 0, end_frame: n };
+        let pieces = derive_pieces(&labels, &[run], &tracks, shift, 0);
+        assert_eq!(pieces.len(), 1, "{:?}", pieces);
+    }
+
+    #[test]
+    fn derive_pieces_drops_sliver_candidate_near_run_end() {
+        let shift = 270.0 / 16000.0;
+        // A corroborated mediated change 0.31s before the run end must be
+        // dropped by the proximity guard (sliver class): a split there would
+        // emit a sub-floor sliver piece.
+        let n = 602usize; // run end 10.16s
+        let labels = vec![0u8; n];
+        let mediated = |w: f64| {
+            let mut t = vec![0u8; 591];
+            let s = ((9.85 - w) / shift).round() as usize;
+            t[s..s + 12].fill(SILENCE_LABEL);
+            t[s + 12..].fill(1);
+            t
+        };
+        let tracks = vec![
+            (4.0f64, mediated(4.0)),
+            (5.0f64, mediated(5.0)),
+            (6.0f64, mediated(6.0)),
+        ];
+        let run = SpeechRun { start_frame: 0, end_frame: n };
+        let pieces = derive_pieces(&labels, &[run], &tracks, shift, 0);
+        assert_eq!(
+            pieces.len(),
+            1,
+            "candidate within tolerance of run end must drop: {:?}",
+            pieces
+        );
     }
 
     // ---- phantom centroids (3.2) ----

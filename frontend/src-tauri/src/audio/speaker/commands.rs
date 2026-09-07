@@ -757,6 +757,21 @@ pub async fn run_diarization_for_meeting(
     let mut aligned = align_transcripts_with_diarization(transcripts, &diarization_segs);
 
     // Step 7: Temporal assignment for "Unknown Speaker" labels.
+    //
+    // Engine path: a token/unit sliver that falls between turn spans is
+    // boundary imprecision (silence plus Whisper timestamp lag), so it takes
+    // the label of the nearest turn span BY EDGE DISTANCE (0 when contained)
+    // — no "Unknown Speaker" badge WITHIN the cap. Edge distance, not
+    // fragment midpoint proximity: midpoints fail for long rows that trail
+    // into silence (a 2s tail of a 10s row sits 5s from its own row's labeled
+    // midpoint) and can borrow across a real speaker change. The cap sits
+    // just past the measured p95 of inter-turn gaps; a sliver beyond it
+    // (e.g. words inside a multi-second silence) stays Unknown — confident
+    // misattribution is worse than an honest badge there. Legacy
+    // (chunk-grid) paths keep the ORIGINAL
+    // unconditional fragment-midpoint borrow with its source-based exemption,
+    // unchanged (proportional-tail Unknowns there must survive as Unknown
+    // rather than be borrowed onto a nearby speaker).
     let labeled_midpoints: Vec<(i64, String)> = aligned
         .iter()
         .filter(|s| s.speaker != "Unknown Speaker")
@@ -765,17 +780,16 @@ pub async fn run_diarization_for_meeting(
             (mid, s.speaker.clone())
         })
         .collect();
-
     let mut temporal_assigned = 0u64;
-    for seg in &mut aligned {
-        // Proportional-tail Unknowns (speaker_source == Unknown) carry words
-        // that fall outside every diarization segment — they must survive as
-        // "Unknown Speaker" rather than be borrowed onto a nearby speaker.
-        // Token-path gap Unknowns (speaker_source == Auto) remain eligible.
-        if seg.speaker == "Unknown Speaker"
-            && seg.speaker_source != SpeakerSource::Unknown
-            && !labeled_midpoints.is_empty()
-        {
+    if let Some(turns) = engine_turns.as_deref() {
+        temporal_assigned += assign_engine_gap_fragments(&mut aligned, turns, GAP_BORROW_MAX_MS) as u64;
+    } else if !labeled_midpoints.is_empty() {
+        for seg in &mut aligned {
+            if seg.speaker != "Unknown Speaker"
+                || seg.speaker_source == SpeakerSource::Unknown
+            {
+                continue;
+            }
             let mid = (seg.audio_start_ms + seg.audio_end_ms) / 2;
             let nearest = labeled_midpoints
                 .iter()
@@ -804,27 +818,41 @@ pub async fn run_diarization_for_meeting(
             s
         })
         .collect();
+    // Re-merge consecutive same-speaker fragments of one source row. The
+    // aligner splits rows at every label change; without this, a sentence
+    // whose tokens straddle turn boundaries persists as chopped fragments
+    // (measured live: "…you've | aged like | five years." across three rows,
+    // 128 Unknown slivers meeting-wide, overlapping fragment spans).
+    let aligned = merge_same_label_fragments(aligned);
     let segments_labeled = SpeakerRepository::persist_aligned_groups(pool, aligned, manual_rederive)
         .await
         .map_err(|e| e.to_string())?
         as u64;
 
     if engine_turns.is_some() {
-        // D9: the engine's turns are final — persist-path consolidation does
-        // not re-run over success-path output.
+        // D9 (amended 2026-09-06): the engine's turn boundaries are final and
+        // consolidation does not re-derive clusters — but the same-speaker
+        // ROW merge below is a rendering repair without which the live
+        // meeting's persisted shreds survived every re-run (measured
+        // 2026-09-06). Known residual: consolidation DELETES absorbed rows,
+        // so an adjacent same-speaker turn pair (the over-cap path emits
+        // them, gap 0) merges into one row and the second turn's first-row
+        // continuation stamp is lost — the row falls back to the text
+        // heuristic, which computes the same fact for same-speaker
+        // continuations. Accepted; revisit if a consumer needs the engine
+        // fact per turn.
         log::info!(
-            "DIARIZATION: engine turns are final — consolidation skipped (D9)"
-        );
-    } else {
-        let (turns, absorbed) = SpeakerRepository::consolidate_meeting_turns(pool, meeting_id)
-            .await
-            .map_err(|e| e.to_string())?;
-        log::info!(
-            "DIARIZATION: consolidated {} fragments into {} speaker turns",
-            absorbed,
-            turns
+            "DIARIZATION: engine turns are final — row-level same-speaker merge only (D9 amended)"
         );
     }
+    let (turns, absorbed) = SpeakerRepository::consolidate_meeting_turns(pool, meeting_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    log::info!(
+        "DIARIZATION: consolidated {} fragments into {} speaker turns",
+        absorbed,
+        turns
+    );
 
     if let Some(turns) = &engine_turns {
         stamp_continuation_facts(pool, meeting_id, turns).await?;
@@ -858,12 +886,116 @@ pub async fn run_diarization_for_meeting(
     })
 }
 
+/// Engine-path gap borrow: every "Unknown Speaker" fragment takes the label
+/// of the nearest engine turn span BY EDGE DISTANCE (0 when contained) when
+/// within `cap_ms` — no Unknown badge WITHIN the cap; beyond it the fragment
+/// stays Unknown (confident misattribution is worse than an honest badge).
+/// Edge distance, not fragment-midpoint proximity: midpoints fail for long
+/// rows that trail into silence (a 2s tail of a 10s row sits 5s from its own
+/// row's labeled midpoint) and can borrow across a real speaker change. Cap
+/// measured on the reference meeting's fresh production input: inter-turn
+/// gaps p50 0.86s, p90 1.86s, p95 2.84s, p99 5.91s (163 gaps) — 3.0s sits
+/// just past p95. Returns the number of fragments assigned. Public for the
+/// ear-truth gate, which asserts the render layer end-to-end.
+pub fn assign_engine_gap_fragments(
+    aligned: &mut [crate::audio::speaker::alignment::AlignedSegment],
+    turns: &[super::run_engine::EngineTurn],
+    cap_ms: i64,
+) -> usize {
+    use crate::audio::speaker::alignment::DiarizationSegment;
+    let spans: Vec<DiarizationSegment> = turns
+        .iter()
+        .map(|t| DiarizationSegment {
+            start_ms: (t.start_seconds * 1000.0) as i64,
+            end_ms: (t.end_seconds * 1000.0) as i64,
+            speaker_id: t.speaker_id,
+        })
+        .collect();
+    let mut assigned = 0usize;
+    for seg in aligned.iter_mut() {
+        if seg.speaker != "Unknown Speaker" || spans.is_empty() {
+            continue;
+        }
+        let mid = (seg.audio_start_ms + seg.audio_end_ms) / 2;
+        if let Some((dist, speaker_id)) = nearest_turn_span(&spans, mid) {
+            if dist <= cap_ms {
+                seg.speaker = format!("Speaker {}", speaker_id);
+                assigned += 1;
+            }
+        }
+    }
+    assigned
+}
+
+/// Gap-borrow cap: inter-turn gaps measured on the reference meeting's fresh
+/// production input — p50 0.86s, p90 1.86s, p95 2.84s, p99 5.91s (163 gaps,
+/// 2026-09-06 fresh-input gate run); the cap sits just past p95. Public so
+/// the render gate validates the same number production uses.
+pub const GAP_BORROW_MAX_MS: i64 = 3_000;
+
+/// Distance from `t` to the nearest diarization span (0 when contained),
+/// with that span's speaker id. Containment check is start-inclusive,
+/// end-exclusive, matching `speaker_at_time`.
+pub fn nearest_turn_span(
+    segs: &[crate::audio::speaker::alignment::DiarizationSegment],
+    t: i64,
+) -> Option<(i64, u32)> {
+    segs.iter()
+        .map(|s| {
+            let d = if t >= s.start_ms && t < s.end_ms {
+                0
+            } else if t < s.start_ms {
+                s.start_ms - t
+            } else {
+                t - s.end_ms
+            };
+            (d, s.speaker_id)
+        })
+        .min_by_key(|(d, _)| *d)
+}
+
 pub struct DiarizationResult {
     pub segments_labeled: u64,
     pub speaker_count: usize,
     /// Manual speaker names that could not re-attach to any cluster in this
     /// run (explicit re-run path only; empty otherwise).
     pub unmatched_manual_names: Vec<String>,
+}
+
+/// Merge consecutive same-speaker fragments of one source row into a single
+/// segment (span = union, text joined in encounter order). Different source
+/// rows never merge — summary/action-item bookkeeping stays per row.
+pub fn merge_same_label_fragments(
+    aligned: Vec<crate::audio::speaker::alignment::AlignedSegment>,
+) -> Vec<crate::audio::speaker::alignment::AlignedSegment> {
+    let mut out: Vec<crate::audio::speaker::alignment::AlignedSegment> = Vec::new();
+    for seg in aligned {
+        if let Some(last) = out.last_mut() {
+            if last.original_id == seg.original_id && last.speaker == seg.speaker {
+                last.audio_start_ms = last.audio_start_ms.min(seg.audio_start_ms);
+                last.audio_end_ms = last.audio_end_ms.max(seg.audio_end_ms);
+                // CJK runs carry no inter-word spaces; injecting one between
+                // merged character runs corrupts the text.
+                let cjk_junction = last.text.ends_with(is_cjk)
+                    || seg.text.starts_with(is_cjk);
+                if cjk_junction {
+                    last.text.push_str(&seg.text);
+                } else {
+                    last.text.push(' ');
+                    last.text.push_str(&seg.text);
+                }
+                continue;
+            }
+        }
+        out.push(seg);
+    }
+    out
+}
+
+fn is_cjk(c: char) -> bool {
+    // Chinese and Japanese are written without inter-word spaces; Korean is
+    // not (Hangul uses spaces), so Hangul must stay out of this class.
+    matches!(c as u32, 0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF)
 }
 
 /// Store the engine's continuation fact on each turn's FIRST persisted row
@@ -1314,6 +1446,84 @@ pub fn enforce_max_speakers_cap(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn frag(id: &str, text: &str, start: i64, end: i64, speaker: &str) -> crate::audio::speaker::alignment::AlignedSegment {
+        crate::audio::speaker::alignment::AlignedSegment {
+            original_id: id.to_string(),
+            text: text.to_string(),
+            audio_start_ms: start,
+            audio_end_ms: end,
+            speaker: speaker.to_string(),
+            speaker_source: crate::audio::speaker::alignment::SpeakerSource::Auto,
+        }
+    }
+
+    #[test]
+    fn merge_same_label_fragments_joins_sentence_shreds() {
+        // The measured live shred: one Whisper row split three ways, middle
+        // sliver Unknown → borrowed to Speaker 0 → all three merge back.
+        let aligned = vec![
+            frag("r1", "good. You? I don't like you've", 9380, 12070, "Speaker 0"),
+            frag("r1", "aged like", 12070, 12070, "Speaker 0"),
+            frag("r1", "five years.", 12070, 13030, "Speaker 0"),
+            frag("r2", "Yeah. That's right.", 13410, 14780, "Speaker 1"),
+        ];
+        let merged = merge_same_label_fragments(aligned);
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].text, "good. You? I don't like you've aged like five years.");
+        assert_eq!(merged[0].audio_start_ms, 9380);
+        assert_eq!(merged[0].audio_end_ms, 13030);
+        assert_eq!(merged[1].speaker, "Speaker 1");
+    }
+
+    #[test]
+    fn merge_same_label_fragments_keeps_real_speaker_changes() {
+        let aligned = vec![
+            frag("r1", "Yeah, for Paul ina, right? Where is", 32650, 36080, "Speaker 0"),
+            frag("r1", "Ricardo", 36080, 38640, "Speaker 1"),
+        ];
+        let merged = merge_same_label_fragments(aligned);
+        assert_eq!(merged.len(), 2, "a genuine label change still splits the row");
+    }
+
+    #[test]
+    fn merge_same_label_fragments_never_crosses_source_rows() {
+        let aligned = vec![
+            frag("r1", "Okay. I have some updates.", 16200, 20000, "Speaker 0"),
+            frag("r2", "hopefully. Okay. Let's go.", 20810, 24480, "Speaker 0"),
+        ];
+        let merged = merge_same_label_fragments(aligned);
+        assert_eq!(merged.len(), 2, "different source rows stay separate");
+    }
+
+    #[test]
+    fn merge_joins_cjk_runs_without_space() {
+        let aligned = vec![
+            frag("r1", "地块", 100, 200, "Speaker 0"),
+            frag("r1", "规划", 200, 300, "Speaker 0"),
+        ];
+        let merged = merge_same_label_fragments(aligned);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "地块规划");
+    }
+
+    #[test]
+    fn nearest_turn_span_containment_is_zero_distance() {
+        use crate::audio::speaker::alignment::DiarizationSegment;
+        let turns = vec![
+            DiarizationSegment { start_ms: 0, end_ms: 8000, speaker_id: 0 },
+            DiarizationSegment { start_ms: 12000, end_ms: 20000, speaker_id: 1 },
+        ];
+        // Midpoint inside a span → that span, distance 0.
+        assert_eq!(nearest_turn_span(&turns, 4000), Some((0, 0)));
+        // The measured failure shape: a row tail [8000,10000] (mid 9000)
+        // trailing past its own turn — nearest EDGE is its own turn at 1000ms.
+        assert_eq!(nearest_turn_span(&turns, 9000), Some((1000, 0)));
+        // Between turns, closer to the next span's start.
+        assert_eq!(nearest_turn_span(&turns, 11000), Some((1000, 1)));
+        // Past the last span's end.
+        assert_eq!(nearest_turn_span(&turns, 25000), Some((5000, 1)));
+    }
 
     // Task 4.2 pin: the model-absent gate ("speaker models not found" skip).
     #[test]
