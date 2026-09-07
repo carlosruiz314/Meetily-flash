@@ -35,5 +35,5 @@
 
 ## 5. Verification
 
-- [ ] 5.1 Adversarial review pass on the diff to convergence (verify-before-implement on findings)
+- [x] 5.1 Adversarial review pass on the diff to convergence (verify-before-implement on findings)
 - [ ] 5.2 User performs the single Speakers re-run covering base + rescue; "Oh, man" renders under Cynthia; the "Yeah" region stays as-is (known miss, follow-up change)

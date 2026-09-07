@@ -200,6 +200,13 @@ fn ear_truth_fixture_lint() {
             !record.user_confirmed.is_empty() && !record.reason.is_empty(),
             "amendment record for {id} is incomplete (needs user_confirmed + reason)"
         );
+        assert!(
+            record.user_confirmed.len() == 10
+                && record.user_confirmed.as_bytes()[4] == b'-'
+                && record.user_confirmed.as_bytes()[7] == b'-',
+            "amendment record for {id}: user_confirmed must be a YYYY-MM-DD date, got {:?}",
+            record.user_confirmed
+        );
     }
     for id in fixture.amendments.keys() {
         assert!(
@@ -601,7 +608,7 @@ async fn ear_truth_gate_cde5c264() {
                     .map(|exp| labels.iter().all(|l| *l == exp.as_str()))
                     .unwrap_or(false);
             eprintln!(
-                "RENDER-TEXT span [15.64,16.12] -> {} fragment(s), labels {labels:?}, expected {expected:?}: {}",
+                "RENDER-TEXT span {rescue_span:?} -> {} fragment(s), labels {labels:?}, expected {expected:?}: {}",
                 covering.len(),
                 if ok { "OK" } else { "MISMATCH" }
             );
