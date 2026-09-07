@@ -30,7 +30,6 @@ const BORROW_CAP_MS: i64 = 3_000;
 /// by the rescue margin).
 const MIN_SUB_WINDOW_SECS: f64 = 0.12;
 const ONSET_THRESHOLD_DB: f32 = 10.0;
-const MIN_VOICED_RUN_FRAMES: usize = 3;
 const MERGE_GAP_FRAMES: usize = 4;
 const SEG_HOP: usize = SAMPLE_RATE as usize / 50; // 20ms
 
@@ -354,6 +353,7 @@ pub fn derive_turns_from_masses(
             BORROW_CAP_MS,
         );
         let rescue_debug = std::env::var_os("MEETIFY_ENGINE_DEBUG").is_some();
+        let piece_ins_pre = rescue_debug.then(|| piece_ins.clone());
         for cand in &candidates {
             let at = piece_ins
                 .iter()
@@ -381,23 +381,30 @@ pub fn derive_turns_from_masses(
             turns = resolve_turns(&piece_ins);
         }
         if rescue_debug {
-            for (i, pi) in piece_ins.iter().enumerate() {
-                let (span_start, span_end) = match kept.get(i) {
-                    Some(p) => (p.start_secs, p.end_secs),
-                    None => (pi.start_secs, pi.start_secs + pi.dur_secs),
-                };
-                eprintln!(
-                    "PIECE {:9.2}-{:.2} dur={:5.2} {}",
-                    span_start,
-                    span_end,
-                    pi.dur_secs,
-                    match (pi.cluster, pi.margin) {
-                        (Some(c), Some(m)) if pi.promoted_subfloor => {
-                            format!("PROMOTED sp{c} margin={m:.3}")
+            if let Some(pre) = &piece_ins_pre {
+                for (p, pi) in kept.iter().zip(pre.iter()) {
+                    eprintln!(
+                        "PIECE {:9.2}-{:.2} dur={:5.2} {}",
+                        p.start_secs,
+                        p.end_secs,
+                        pi.dur_secs,
+                        match (pi.cluster, pi.margin) {
+                            (Some(c), Some(m)) if pi.promoted_subfloor => {
+                                format!("PROMOTED sp{c} margin={m:.3}")
+                            }
+                            (Some(c), Some(m)) => format!("labeled sp{c} margin={m:.3}"),
+                            _ => "attached/sub-floor".to_string(),
                         }
-                        (Some(c), Some(m)) => format!("labeled sp{c} margin={m:.3}"),
-                        _ => "attached/sub-floor".to_string(),
-                    }
+                    );
+                }
+            }
+            for pi in piece_ins.iter().skip(kept.len()) {
+                eprintln!(
+                    "PIECE {:9.2}-{:.2} dur={:5.2} RESCUED sp{}",
+                    pi.start_secs,
+                    pi.start_secs + pi.dur_secs,
+                    pi.dur_secs,
+                    pi.cluster.map(|c| c.to_string()).unwrap_or_default()
                 );
             }
         }
@@ -450,8 +457,8 @@ fn union_span_in(spans: &[(f64, f64)], a: f64, b: f64) -> Option<(f64, f64)> {
 
 /// Energy segmentation of [a, b) into voiced sub-windows: 20ms frames, RMS
 /// dBFS, baseline = p25 of the span's frames (non-voiced level estimate),
-/// threshold baseline + ONSET_THRESHOLD_DB, runs shorter than
-/// MIN_VOICED_RUN_FRAMES dropped, gaps shorter than MERGE_GAP_FRAMES merged,
+/// threshold baseline + ONSET_THRESHOLD_DB, gaps shorter than
+/// MERGE_GAP_FRAMES merged,
 /// sub-windows below MIN_SUB_WINDOW_SECS dropped. Deterministic.
 fn segment_voiced_sub_windows(samples: &[f32], a: f64, b: f64) -> Vec<(f64, f64)> {
     let i0 = (a * SAMPLE_RATE as f64) as usize;
@@ -468,7 +475,7 @@ fn segment_voiced_sub_windows(samples: &[f32], a: f64, b: f64) -> Vec<(f64, f64)
         return Vec::new();
     }
     let mut sorted = dbs.clone();
-    sorted.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    sorted.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
     let baseline = sorted[sorted.len() / 4];
     let thr = baseline + ONSET_THRESHOLD_DB;
     let mut runs: Vec<(usize, usize)> = Vec::new();
@@ -611,6 +618,16 @@ mod tests {
         assert_eq!(union_span_in(&spans, 33.0, 39.0), None);
         // hull semantics (spec: bounding span of intersecting rows, clipped)
         assert_eq!(union_span_in(&spans, 31.0, 41.0), Some((31.0, 41.0)));
+    }
+
+    #[test]
+    fn borrow_cap_stays_in_sync_with_the_render_borrow() {
+        // the rescue's modeled winner must track the render's borrow cap or
+        // the contradiction gate silently diverges from assign_engine_gap_fragments
+        assert_eq!(
+            BORROW_CAP_MS,
+            crate::audio::speaker::commands::GAP_BORROW_MAX_MS
+        );
     }
 
     #[test]
