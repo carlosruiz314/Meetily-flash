@@ -1,7 +1,7 @@
 ## 0. Land the base first (ONE commit, re-pins included)
 
-- [ ] 0.1 Apply the user-confirmed 2026-09-07 re-pins to the fixture: S1 → `[9.38, 11.8]` single_voice; S2 → `change_at 12.0±0.75`, span `[11.8, 13.5]` (expected-fail: engine boundary 13.42 is 1.42 off — missed "Yeah" change, separate follow-up class); S2b → `change_at 15.8±0.75`, span `[15.0, 16.8]` (passes TODAY on the current engine; note records the rescue's win is text attribution); notes carry the clip_C/D/E basis
-- [ ] 0.2 Add S2 (not S2b) to `known_limitations` (inline reason: sub-run change miss at ≈12.0, user-ear-confirmed via clip_D 2026-09-07, fix owned by a follow-up change), re-run the ear gate to green (S2 KNOWN-LIMITATION; S2b PASSING), then commit the whole change-set as ONE commit — a two-commit split has no green intermediate (S14's pin moves 162.78 → 161.36, |Δ| = 1.42 > ±1.0). Record the hash here. Nothing is pushed without explicit user sign-off
+- [x] 0.1 Apply the user-confirmed 2026-09-07 re-pins to the fixture: S1 → `[9.38, 11.8]` single_voice; S2 → `change_at 12.0±0.75`, span `[11.8, 13.5]` (expected-fail: engine boundary 13.42 is 1.42 off — missed "Yeah" change, separate follow-up class); S2b → `change_at 15.8±0.75`, span `[15.0, 16.8]` (passes TODAY on the current engine; note records the rescue's win is text attribution); notes carry the clip_C/D/E basis
+- [x] 0.2 Add S2 (not S2b) to `known_limitations` (inline reason: sub-run change miss at ≈12.0, user-ear-confirmed via clip_D 2026-09-07, fix owned by a follow-up change), re-run the ear gate to green (S2 KNOWN-LIMITATION; S2b PASSING), then commit the whole change-set as ONE commit — a two-commit split has no green intermediate (S14's pin moves 162.78 → 161.36, |Δ| = 1.42 > ±1.0). Base hash: `e237eea64ab9de442964b4fe4baad6fec9e6433a` (2026-09-07). Nothing is pushed without explicit user sign-off
 
 ## 1. De-risk probe (GO/NO-GO before engine code)
 
