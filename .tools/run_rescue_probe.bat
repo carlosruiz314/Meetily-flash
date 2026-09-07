@@ -7,5 +7,5 @@ set CMAKE_GENERATOR=Ninja
 set CL=/FS
 set CARGO_TARGET_DIR=C:/mf
 set MEETIFY_LIVE_DIAG=1
-cargo test --release --features vulkan --test gap_rescue_probe -- --ignored --nocapture
+cargo test --release --features vulkan --test gap_rescue_v3_probe -- --ignored --nocapture
 endlocal
