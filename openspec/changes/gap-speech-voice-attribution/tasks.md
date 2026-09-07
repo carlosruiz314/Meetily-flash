@@ -17,21 +17,21 @@
 
 ## 2. Pure candidate selection (`run_assembly`)
 
-- [ ] 2.1 RED→GREEN: `rescue_candidates` selects a distinct-turn text-bearing gap with a decided, borrow-winner-contradicting identity and a detected onset (synthetic arrays; asserts span = [onset, gap end], ordered inputs, no hash maps in the decision path)
-- [ ] 2.2 RED→GREEN abstain/no-op branches: no embedding, sub-floor intersection (< 0.8s raw), margin below gate, interior gap, best == modeled borrow winner, single-cluster meeting, meeting-edge gap, NO CONFIDENT ONSET → abstain (untrimmed row-start splice forbidden); and the splice sides: both flanks beyond borrow cap → splice when decided, far-flank match splices
-- [ ] 2.3 RED→GREEN: multi-row gap yields ONE candidate (union span); borrow-winner rule (midpoint reference, containment 0, i64 ms, tie → earlier turn); determinism (same inputs twice → identical candidates)
+- [x] 2.1 RED→GREEN: `rescue_candidates` selects a distinct-turn text-bearing gap with a decided, borrow-winner-contradicting identity and a detected onset (synthetic arrays; asserts span = [onset, gap end], ordered inputs, no hash maps in the decision path)
+- [x] 2.2 RED→GREEN abstain/no-op branches: no embedding, sub-floor intersection (< 0.8s raw), margin below gate, interior gap, best == modeled borrow winner, single-cluster meeting, meeting-edge gap, NO CONFIDENT ONSET → abstain (untrimmed row-start splice forbidden); and the splice sides: both flanks beyond borrow cap → splice when decided, far-flank match splices
+- [x] 2.3 RED→GREEN: multi-row gap yields ONE candidate (union span); borrow-winner rule (midpoint reference, containment 0, i64 ms, tie → earlier turn); determinism (same inputs twice → identical candidates)
 
 ## 3. Engine wiring (`run_engine`)
 
-- [ ] 3.1 RED→GREEN (or gate-verified): `derive_turns_from_masses` runs resolve_turns once (pre-rescue turns), derives silence gaps + union spans, detects voiced onsets (signal-level energy relative to the gap's own level), embeds after centroid finalization (reusing the `embed_slice` convention), splices selected candidates at their onsets in one time-ordered pass, and runs resolve_turns again; debug `PIECE` zip fixed for synthetic pieces
-- [ ] 3.2 Zero-cost guard: gaps with no overlapping text span never touch the extractor (embeddings bounded by the text-bearing distinct-turn gap count, one per gap)
-- [ ] 3.3 `cargo test --lib` green including new units
+- [x] 3.1 RED→GREEN (or gate-verified): `derive_turns_from_masses` runs resolve_turns once (pre-rescue turns), derives silence gaps + union spans, detects voiced onsets (signal-level energy relative to the gap's own level), embeds after centroid finalization (reusing the `embed_slice` convention), splices selected candidates at their onsets in one time-ordered pass, and runs resolve_turns again; debug `PIECE` zip fixed for synthetic pieces
+- [x] 3.2 Zero-cost guard: gaps with no overlapping text span never touch the extractor (embeddings bounded by the text-bearing distinct-turn gap count, one per gap)
+- [x] 3.3 `cargo test --lib` green including new units
 
 ## 4. Fixture + gate
 
-- [ ] 4.1 Fixture amendment schema: `amendments: BTreeMap<String, Amendment { user_confirmed, reason }>` (serde default) on `Fixture`; waiver rule = id ∈ `known_limitations` AND complete amendments record → gate prints `AMENDED(<date>, <reason>)` and counts it limited; non-live fixture-lint unit test fails any `known_limitations` id without a complete record and rejects orphan amendment records; 0.2's inline reason migrates into the schema
+- [x] 4.1 Fixture amendment schema: `amendments: BTreeMap<String, Amendment { user_confirmed, reason }>` (serde default) on `Fixture`; waiver rule = id ∈ `known_limitations` AND complete amendments record → gate prints `AMENDED(<date>, <reason>)` and counts it limited; non-live fixture-lint unit test fails any `known_limitations` id without a complete record and rejects orphan amendment records; 0.2's inline reason migrates into the schema
 - [ ] 4.2 Full chain green via `.bat` runners: lib, synthetic 3/3, ear gate zero FAIL (S2 the sole KNOWN-LIMITATION; S2b PASSING before and after) with render gate clean; evidence logged to `openspec/exploration/`; RENDER line diffed against the recorded baseline (`trustzone-gate-20260906-round2-15of15-render.log`: 237 → 531 → 422) with any fragment-count jump beyond the rescued spans' own rows investigated
-- [ ] 4.3 Render-text acceptance: the persisted fragment containing "Oh, man" carries Cynthia's label (the rescue's user-visible win), not just the engine-side turn set
+- [x] 4.3 Render-text acceptance: the persisted fragment containing "Oh, man" carries Cynthia's label (the rescue's user-visible win), not just the engine-side turn set
 
 ## 5. Verification
 

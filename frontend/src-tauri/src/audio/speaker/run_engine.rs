@@ -10,14 +10,29 @@ use crate::audio::speaker::pyannote_segmentation::{
 };
 use crate::audio::speaker::run_assembly::{
     cluster_pieces, derive_pieces, drop_textless, embed_slice, margin_to_centroids, merge_to_cap,
-    overlap_fraction, refine_loop, resolve_turns, speech_runs, cosine, PieceIn, PieceSpan,
-    AMBIGUITY_MARGIN, EMBED_FLOOR_SECS, MODE_FILTER_RADIUS_FRAMES, PIECE_CAP,
-    PROMOTION_FLOOR_SECS, SPEECH_GATE, TEXT_SKEW_TOLERANCE_SECS,
+    overlap_fraction, refine_loop, resolve_turns, rescue_candidates, speech_runs, cosine, PieceIn,
+    PieceSpan, RescueGap, RescueSubWindow, AMBIGUITY_MARGIN, EMBED_FLOOR_SECS,
+    MODE_FILTER_RADIUS_FRAMES, PIECE_CAP, PROMOTION_FLOOR_SECS, SPEECH_GATE,
+    TEXT_SKEW_TOLERANCE_SECS,
 };
 use anyhow::Result;
 use std::collections::HashMap;
 
 pub const SAMPLE_RATE: u32 = 16_000;
+
+// Gap-rescue constants (change `gap-speech-voice-attribution`; calibrated on
+// cde5c264 under the fixture-gate rule, 2026-09-07 — see the change's design).
+/// Mirrors `commands::GAP_BORROW_MAX_MS` (kept local: commands depends on this
+/// module, not vice versa).
+const BORROW_CAP_MS: i64 = 3_000;
+/// Minimum voiced sub-window offered for identity (0.12s — tuned so the S2b
+/// "Oh, man" onset [15.64,15.82] qualifies; identity on such slices is gated
+/// by the rescue margin).
+const MIN_SUB_WINDOW_SECS: f64 = 0.12;
+const ONSET_THRESHOLD_DB: f32 = 10.0;
+const MIN_VOICED_RUN_FRAMES: usize = 3;
+const MERGE_GAP_FRAMES: usize = 4;
+const SEG_HOP: usize = SAMPLE_RATE as usize / 50; // 20ms
 
 /// One derived turn — the persisted unit on the success path.
 #[derive(Clone, Debug)]
@@ -320,13 +335,61 @@ pub fn derive_turns_from_masses(
             }
         }
 
-        let turns = resolve_turns(&piece_ins);
-        if std::env::var_os("MEETIFY_ENGINE_DEBUG").is_some() {
-            for (p, pi) in kept.iter().zip(piece_ins.iter()) {
+        let turns_pre = resolve_turns(&piece_ins);
+        // Gap rescue (v3, change `gap-speech-voice-attribution`): text-bearing
+        // pyannote-silence gaps attributed by voice. Candidates are evaluated
+        // against the PRE-rescue turn set (snapshot semantics) and spliced in
+        // one time-ordered pass; the second resolve produces the final turns.
+        let pre_turn_tuples: Vec<(f64, f64, u32)> = turns_pre
+            .iter()
+            .map(|t| (t.start_secs, t.end_secs, t.cluster as u32))
+            .collect();
+        let rescue_gaps =
+            build_rescue_gaps(samples, &runs, text_spans, &pre_turn_tuples, &used, extractor);
+        let candidates = rescue_candidates(
+            &pre_turn_tuples,
+            &rescue_gaps,
+            PROMOTION_FLOOR_SECS,
+            AMBIGUITY_MARGIN,
+            BORROW_CAP_MS,
+        );
+        let rescue_debug = std::env::var_os("MEETIFY_ENGINE_DEBUG").is_some();
+        for cand in &candidates {
+            let at = piece_ins
+                .iter()
+                .position(|p| p.start_secs >= cand.start_secs)
+                .unwrap_or(piece_ins.len());
+            piece_ins.insert(
+                at,
+                PieceIn {
+                    start_secs: cand.start_secs,
+                    dur_secs: cand.end_secs - cand.start_secs,
+                    cluster: Some(cand.cluster),
+                    margin: Some(cand.margin),
+                    promoted_subfloor: true,
+                },
+            );
+            if rescue_debug {
+                eprintln!(
+                    "RESCUE sp{} [{:.2},{:.2}] margin={:.3}",
+                    cand.cluster, cand.start_secs, cand.end_secs, cand.margin
+                );
+            }
+        }
+        let mut turns = turns_pre;
+        if !candidates.is_empty() {
+            turns = resolve_turns(&piece_ins);
+        }
+        if rescue_debug {
+            for (i, pi) in piece_ins.iter().enumerate() {
+                let (span_start, span_end) = match kept.get(i) {
+                    Some(p) => (p.start_secs, p.end_secs),
+                    None => (pi.start_secs, pi.start_secs + pi.dur_secs),
+                };
                 eprintln!(
                     "PIECE {:9.2}-{:.2} dur={:5.2} {}",
-                    p.start_secs,
-                    p.end_secs,
+                    span_start,
+                    span_end,
                     pi.dur_secs,
                     match (pi.cluster, pi.margin) {
                         (Some(c), Some(m)) if pi.promoted_subfloor => {
@@ -362,4 +425,218 @@ pub fn derive_turns_from_masses(
         turns: engine_turns,
         centroids: centroid_map,
     })
+}
+
+/// Union of all transcript-row spans clipped to [a, b) (None = no overlap).
+fn union_span_in(spans: &[(f64, f64)], a: f64, b: f64) -> Option<(f64, f64)> {
+    let mut lo = f64::MAX;
+    let mut hi = f64::MIN;
+    let mut any = false;
+    for (s, e) in spans {
+        let lo_s = (*s).max(a);
+        let hi_s = (*e).min(b);
+        if hi_s > lo_s {
+            any = true;
+            lo = lo.min(lo_s);
+            hi = hi.max(hi_s);
+        }
+    }
+    if any {
+        Some((lo, hi))
+    } else {
+        None
+    }
+}
+
+/// Energy segmentation of [a, b) into voiced sub-windows: 20ms frames, RMS
+/// dBFS, baseline = p25 of the span's frames (non-voiced level estimate),
+/// threshold baseline + ONSET_THRESHOLD_DB, runs shorter than
+/// MIN_VOICED_RUN_FRAMES dropped, gaps shorter than MERGE_GAP_FRAMES merged,
+/// sub-windows below MIN_SUB_WINDOW_SECS dropped. Deterministic.
+fn segment_voiced_sub_windows(samples: &[f32], a: f64, b: f64) -> Vec<(f64, f64)> {
+    let i0 = (a * SAMPLE_RATE as f64) as usize;
+    let i1 = ((b * SAMPLE_RATE as f64) as usize).min(samples.len());
+    let mut dbs: Vec<f32> = Vec::new();
+    let mut j = i0;
+    while j + SEG_HOP <= i1 {
+        let rms = (samples[j..j + SEG_HOP].iter().map(|v| v * v).sum::<f32>() / SEG_HOP as f32)
+            .sqrt();
+        dbs.push(20.0 * rms.max(1e-10).log10());
+        j += SEG_HOP;
+    }
+    if dbs.is_empty() {
+        return Vec::new();
+    }
+    let mut sorted = dbs.clone();
+    sorted.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    let baseline = sorted[sorted.len() / 4];
+    let thr = baseline + ONSET_THRESHOLD_DB;
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut k = 0usize;
+    while k < dbs.len() {
+        if dbs[k] >= thr {
+            let start = k;
+            while k < dbs.len() && dbs[k] >= thr {
+                k += 1;
+            }
+            runs.push((start, k));
+        } else {
+            k += 1;
+        }
+    }
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for r in runs {
+        match merged.last_mut() {
+            Some(last) if r.0 - last.1 < MERGE_GAP_FRAMES => last.1 = r.1,
+            _ => merged.push(r),
+        }
+    }
+    merged
+        .iter()
+        .map(|(s, e)| {
+            (
+                a + (*s * SEG_HOP) as f64 / SAMPLE_RATE as f64,
+                a + (*e * SEG_HOP) as f64 / SAMPLE_RATE as f64,
+            )
+        })
+        .filter(|(s, e)| e - s >= MIN_SUB_WINDOW_SECS)
+        .collect()
+}
+
+/// Build the rescue inputs: text-bearing distinct-turn silence gaps with their
+/// voiced sub-window identity votes (this is the engine's model I/O — slicing
+/// and embedding; all gating lives in `rescue_candidates`).
+fn build_rescue_gaps(
+    samples: &[f32],
+    runs: &[crate::audio::speaker::run_assembly::SpeechRun],
+    text_spans: &[(f64, f64)],
+    turns: &[(f64, f64, u32)],
+    used: &[Vec<f32>],
+    extractor: &NemoEmbeddingExtractor,
+) -> Vec<RescueGap> {
+    let mut gaps = Vec::new();
+    let mut bounds: Vec<(f64, f64)> = Vec::new();
+    if let Some(first) = runs.first() {
+        bounds.push((0.0, first.start_frame as f64 * FRAME_SHIFT));
+    }
+    for w in runs.windows(2) {
+        bounds.push((
+            w[0].end_frame as f64 * FRAME_SHIFT,
+            w[1].start_frame as f64 * FRAME_SHIFT,
+        ));
+    }
+    if let Some(last) = runs.last() {
+        bounds.push((
+            last.end_frame as f64 * FRAME_SHIFT,
+            samples.len() as f64 / SAMPLE_RATE as f64,
+        ));
+    }
+    for (ga, gb) in bounds {
+        if gb <= ga {
+            continue;
+        }
+        // interior and meeting-edge gaps abstain before any model I/O
+        let Some(lc) = turns.iter().filter(|(_, e, _)| *e <= ga + 1e-9).last().map(|t| t.2)
+        else {
+            continue;
+        };
+        let Some(rc) = turns.iter().find(|(s, _, _)| *s >= gb - 1e-9).map(|t| t.2) else {
+            continue;
+        };
+        if lc == rc {
+            continue;
+        }
+        let Some((sa, sb)) = union_span_in(text_spans, ga, gb) else {
+            continue;
+        };
+        if sb - sa < PROMOTION_FLOOR_SECS {
+            continue;
+        }
+        let debug = std::env::var_os("MEETIFY_ENGINE_DEBUG").is_some();
+        if debug {
+            eprintln!(
+                "RESCUE-GAP [{ga:.2},{gb:.2}] sp{lc}->sp{rc} raw [{sa:.2},{sb:.2}] dur {:.2}",
+                sb - sa
+            );
+        }
+        let mut votes: Vec<RescueSubWindow> = Vec::new();
+        for (ssa, sse) in segment_voiced_sub_windows(samples, sa, sb) {
+            if debug {
+                eprintln!("RESCUE-SUB [{ssa:.2},{sse:.2}] dur {:.2}", sse - ssa);
+            }
+            if sse - ssa < MIN_SUB_WINDOW_SECS {
+                continue;
+            }
+            let i0 = (ssa * SAMPLE_RATE as f64) as usize;
+            let i1 = ((sse * SAMPLE_RATE as f64) as usize).min(samples.len());
+            if i1 <= i0 {
+                continue;
+            }
+            let Some(e) = extractor.extract_embedding(&samples[i0..i1], SAMPLE_RATE) else {
+                continue;
+            };
+            let mut sims: Vec<(usize, f32)> =
+                used.iter().enumerate().map(|(ci, c)| (ci, cosine(c, &e))).collect();
+            sims.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            if let (Some(f), Some(s)) = (sims.first(), sims.get(1)) {
+                if debug {
+                    eprintln!("RESCUE-VOTE [{ssa:.2},{sse:.2}] sp{} margin {:.3}", f.0, f.1 - s.1);
+                }
+                votes.push(RescueSubWindow {
+                    start_secs: ssa,
+                    end_secs: sse,
+                    cluster: f.0,
+                    margin: f.1 - s.1,
+                });
+            }
+        }
+        gaps.push(RescueGap {
+            gap_start_secs: ga,
+            gap_end_secs: gb,
+            raw_span: Some((sa, sb)),
+            sub_windows: votes,
+        });
+    }
+    gaps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn union_span_in_clips_rows_to_gap() {
+        let spans = vec![(5.0, 32.5), (40.0, 45.0)];
+        assert_eq!(union_span_in(&spans, 14.0, 16.0), Some((14.0, 16.0)));
+        assert_eq!(union_span_in(&spans, 33.0, 39.0), None);
+        // hull semantics (spec: bounding span of intersecting rows, clipped)
+        assert_eq!(union_span_in(&spans, 31.0, 41.0), Some((31.0, 41.0)));
+    }
+
+    #[test]
+    fn segment_voiced_sub_windows_finds_and_merges_bursts() {
+        let sr = SAMPLE_RATE as usize;
+        let mut s = vec![0.01f32; sr * 3]; // quiet room tone (-40 dBFS)
+        let burst = |buf: &mut Vec<f32>, at_s: f64, dur_s: f64, amp: f32| {
+            let i0 = (at_s * sr as f64) as usize;
+            let n = (dur_s * sr as f64) as usize;
+            for i in 0..n {
+                buf[i0 + i] = amp * ((i as f32) * 0.05).sin();
+            }
+        };
+        burst(&mut s, 1.00, 0.30, 0.30);
+        burst(&mut s, 1.45, 0.30, 0.30); // 150ms gap after the first: NOT merged
+        let subs = segment_voiced_sub_windows(&s, 0.0, 3.0);
+        assert_eq!(subs.len(), 2, "{subs:?}");
+        assert!((subs[0].0 - 1.0).abs() < 0.05, "{subs:?}");
+        // a 60ms dip inside one burst merges back into it (gap < MERGE_GAP_FRAMES)
+        let mut s2 = vec![0.01f32; sr * 3];
+        burst(&mut s2, 1.00, 0.20, 0.30);
+        burst(&mut s2, 1.26, 0.30, 0.30); // 60ms dip at 1.20-1.26
+        let subs2 = segment_voiced_sub_windows(&s2, 0.0, 3.0);
+        assert_eq!(subs2.len(), 1, "{subs2:?}");
+        // quiet-only audio yields nothing
+        let subs3 = segment_voiced_sub_windows(&s, 2.5, 3.0);
+        assert!(subs3.is_empty());
+    }
 }

@@ -39,6 +39,17 @@ struct Fixture {
     entries: Vec<Entry>,
     #[serde(default)]
     known_limitations: Vec<String>,
+    /// Auditable waiver records: every known_limitations id MUST carry a
+    /// complete record (user confirmation date + reason) — linted by
+    /// `ear_truth_fixture_lint` in plain `cargo test`.
+    #[serde(default)]
+    amendments: std::collections::BTreeMap<String, Amendment>,
+}
+
+#[derive(Deserialize)]
+struct Amendment {
+    user_confirmed: String,
+    reason: String,
 }
 
 #[derive(Deserialize)]
@@ -159,6 +170,42 @@ fn check_marker_false(turns: &[Turn], e: &Entry) -> Option<String> {
             t.text.chars().take(40).collect::<String>()
         )),
         _ => None,
+    }
+}
+
+/// Plain `cargo test` (no audio/models/env): every KNOWN-LIMITATION id must
+/// carry a complete, auditable amendment record, and every amendment record
+/// must belong to a listed or existing entry.
+#[test]
+fn ear_truth_fixture_lint() {
+    let fixture: Fixture = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/ear_truth_cde5c264.json"
+        ))
+        .expect("read fixture JSON"),
+    )
+    .expect("parse fixture JSON");
+    let ids: Vec<&String> = fixture.entries.iter().map(|e| &e.id).collect();
+    for id in &fixture.known_limitations {
+        assert!(
+            ids.contains(&id),
+            "known_limitations lists unknown entry {id}"
+        );
+        let record = fixture
+            .amendments
+            .get(id)
+            .unwrap_or_else(|| panic!("KNOWN-LIMITATION {id} has no amendments record"));
+        assert!(
+            !record.user_confirmed.is_empty() && !record.reason.is_empty(),
+            "amendment record for {id} is incomplete (needs user_confirmed + reason)"
+        );
+    }
+    for id in fixture.amendments.keys() {
+        assert!(
+            fixture.known_limitations.contains(id) || ids.contains(&id),
+            "amendments record for {id} references an unknown entry"
+        );
     }
 }
 
@@ -387,9 +434,25 @@ async fn ear_truth_gate_cde5c264() {
                 eprintln!("PASS{} {}", tag, e.id);
             }
             Verdict::Fail(reason) => {
-                if fixture.known_limitations.iter().any(|k| k == &e.id) {
+                let listed = fixture.known_limitations.iter().any(|k| k == &e.id);
+                let record = fixture.amendments.get(&e.id);
+                let waived = listed
+                    && record
+                        .map(|a| !a.user_confirmed.is_empty() && !a.reason.is_empty())
+                        .unwrap_or(false);
+                if waived {
                     limited += 1;
-                    eprintln!("KNOWN-LIMITATION{} {} — {}", tag, e.id, reason);
+                    let a = record.expect("checked");
+                    eprintln!(
+                        "AMENDED({}) {} — {} | {}",
+                        a.user_confirmed, e.id, a.reason, reason
+                    );
+                } else if listed {
+                    failed.push(e.id.clone());
+                    eprintln!(
+                        "FAIL{} {} — {} (in known_limitations but missing a complete amendments record)",
+                        tag, e.id, reason
+                    );
                 } else {
                     failed.push(e.id.clone());
                     eprintln!("FAIL{} {} — {}", tag, e.id, reason);
@@ -510,6 +573,43 @@ async fn ear_truth_gate_cde5c264() {
             render_failures.push(format!(
                 "{unknown_within_cap} Unknown Speaker fragments remain WITHIN the borrow cap of a turn"
             ));
+        }
+        // RENDER-TEXT acceptance (task 4.3): the rescue's user-visible win —
+        // the fragments covering the rescued span carry the rescuing turn's
+        // label (the "Oh, man" words land under Cynthia, not the borrowed
+        // Carlos badge).
+        {
+            // interior of the rescued span (ear: "Oh, man" ≈15.8) — avoids
+            // i64-truncation edges at the turn boundary itself
+            let rescue_span = (15_700i64, 16_000i64);
+            let expected = out
+                .turns
+                .iter()
+                .find(|t| {
+                    (t.start_seconds * 1000.0) as i64 <= rescue_span.0
+                        && (t.end_seconds * 1000.0) as i64 >= rescue_span.1
+                })
+                .map(|t| format!("Speaker {}", t.speaker_id));
+            let covering: Vec<&app_lib::audio::speaker::alignment::AlignedSegment> = merged
+                .iter()
+                .filter(|s| s.audio_start_ms < rescue_span.1 && s.audio_end_ms > rescue_span.0)
+                .collect();
+            let labels: Vec<&str> = covering.iter().map(|s| s.speaker.as_str()).collect();
+            let ok = !covering.is_empty()
+                && expected
+                    .as_ref()
+                    .map(|exp| labels.iter().all(|l| *l == exp.as_str()))
+                    .unwrap_or(false);
+            eprintln!(
+                "RENDER-TEXT span [15.64,16.12] -> {} fragment(s), labels {labels:?}, expected {expected:?}: {}",
+                covering.len(),
+                if ok { "OK" } else { "MISMATCH" }
+            );
+            if !ok {
+                render_failures.push(format!(
+                    "render-text acceptance failed: span [15.64,16.12] labels {labels:?}, expected {expected:?}"
+                ));
+            }
         }
         if zero_dur > 0 {
             render_failures.push(format!("{zero_dur} zero-duration rows"));

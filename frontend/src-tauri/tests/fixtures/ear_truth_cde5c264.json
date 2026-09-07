@@ -156,5 +156,11 @@
    "hold_out": true,
    "note": "Clip 03 0:09: Ricardo until 0:09, Cynthia afterwards. Corrects the old hypothesis (a ~2818 interjection) — Ricardo holds 2812–2821."
   }
- ]
+ ],
+ "amendments": {
+  "S2_user_to_cynthia_13s": {
+   "user_confirmed": "2026-09-07",
+   "reason": "sub-run change miss at ~12.0s (Cynthia->Carlos \"Yeah\"; user-ear clip_D 2026-09-07: \"definitely around 0.5s not 1.9s\"). The engine holds 9.38-13.03 as one sp1 turn (boundary 13.42, 1.42 off the pin). Fix owned by a separate follow-up change (sub-run change detection), not gap-rescue."
+  }
+ }
 }
