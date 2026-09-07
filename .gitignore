@@ -86,3 +86,8 @@ __pycache__/
 
 # User meeting audio — never enters git
 fixture_clips/
+
+# local build/probe artifacts
+/mf/
+frontend/src-tauri/mf/
+.tools/espnet/

@@ -270,8 +270,13 @@ async fn ear_truth_gate_cde5c264() {
     eprintln!("GATE: {} enrolled reference voice(s)", references.len());
 
     let t0 = std::time::Instant::now();
+    let prov = app_lib::audio::speaker::pyannote_segmentation::cache_provenance(
+        std::path::Path::new(&format!("{models_dir}/pyannote-segmentation.onnx")),
+    )
+    .expect("cache provenance (model file)");
     let fm = match app_lib::audio::speaker::pyannote_segmentation::FrameMassesOutput::load(
         &cache_path,
+        &prov,
     ) {
         Ok(fm) => {
             eprintln!("GATE: frame masses loaded from cache in {:.1}s", t0.elapsed().as_secs_f64());
@@ -284,7 +289,7 @@ async fn ear_truth_gate_cde5c264() {
                 t0.elapsed().as_secs_f64(),
                 cache_path.display()
             );
-            fm.save(&cache_path).expect("save frame cache");
+            fm.save(&cache_path, &prov).expect("save frame cache");
             fm
         }
     };
@@ -415,6 +420,112 @@ async fn ear_truth_gate_cde5c264() {
         turns.len()
     );
 
+    // RENDER-LAYER GATE: the fixture validates the engine's in-memory turns,
+    // but the user reads PERSISTED ROWS. Replay the production align →
+    // borrow → merge sequence over the real transcript rows and assert the
+    // row-level invariants the user demanded: no Unknown badges, no
+    // zero-duration slivers, no unmerged same-speaker chops.
+    let mut render_failures: Vec<String> = Vec::new();
+    {
+        use app_lib::audio::speaker::alignment::{
+            align_transcripts_with_diarization, DiarizationSegment, TranscriptInput,
+        };
+        let inputs: Vec<TranscriptInput> = rows
+            .iter()
+            .enumerate()
+            .filter_map(|(i, r)| {
+                Some(TranscriptInput {
+                    id: r
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| format!("row-{i}")),
+                    text: r.get("text")?.as_str()?.to_string(),
+                    audio_start_ms: (r.get("audio_start_time")?.as_f64()? * 1000.0) as i64,
+                    audio_end_ms: (r.get("audio_end_time")?.as_f64()? * 1000.0) as i64,
+                    token_words: None,
+                })
+            })
+            .collect();
+        let diarization_segs: Vec<DiarizationSegment> = out
+            .turns
+            .iter()
+            .map(|t| DiarizationSegment {
+                start_ms: (t.start_seconds * 1000.0) as i64,
+                end_ms: (t.end_seconds * 1000.0) as i64,
+                speaker_id: t.speaker_id,
+            })
+            .collect();
+        let mut aligned = align_transcripts_with_diarization(inputs, &diarization_segs);
+        let fragment_count = aligned.len();
+        let unknown_before = aligned
+            .iter()
+            .filter(|s| s.speaker == "Unknown Speaker")
+            .count();
+        let cap = app_lib::audio::speaker::commands::GAP_BORROW_MAX_MS;
+        app_lib::audio::speaker::commands::assign_engine_gap_fragments(
+            &mut aligned,
+            &out.turns,
+            cap,
+        );
+        let unknown_after = aligned
+            .iter()
+            .filter(|s| s.speaker == "Unknown Speaker")
+            .count();
+        // The design leaves far orphans (beyond the cap) Unknown by choice;
+        // an Unknown WITHIN the cap of a turn edge is a borrow failure.
+        let unknown_within_cap = aligned
+            .iter()
+            .filter(|s| s.speaker == "Unknown Speaker")
+            .filter(|s| {
+                let mid = (s.audio_start_ms + s.audio_end_ms) / 2;
+                app_lib::audio::speaker::commands::nearest_turn_span(&diarization_segs, mid)
+                    .map(|(d, _)| d <= cap)
+                    .unwrap_or(false)
+            })
+            .count();
+        let merged = app_lib::audio::speaker::commands::merge_same_label_fragments(aligned);
+        let zero_dur = merged
+            .iter()
+            .filter(|s| s.audio_end_ms <= s.audio_start_ms)
+            .count();
+        let unmerged = merged
+            .windows(2)
+            .filter(|w| {
+                w[0].original_id == w[1].original_id && w[0].speaker == w[1].speaker
+            })
+            .count();
+        eprintln!(
+            "RENDER: {} rows in → {} fragments aligned ({} Unknown → {} after borrow, {} within cap) → {} merged rows; zero-dur {}, unmerged same-label pairs {}",
+            rows.len(),
+            fragment_count,
+            unknown_before,
+            unknown_after,
+            unknown_within_cap,
+            merged.len(),
+            zero_dur,
+            unmerged,
+        );
+        if unknown_within_cap > 0 {
+            render_failures.push(format!(
+                "{unknown_within_cap} Unknown Speaker fragments remain WITHIN the borrow cap of a turn"
+            ));
+        }
+        if zero_dur > 0 {
+            render_failures.push(format!("{zero_dur} zero-duration rows"));
+        }
+        if unmerged > 0 {
+            render_failures.push(format!(
+                "{unmerged} consecutive same-label same-row fragment pairs survived the merge"
+            ));
+        }
+        if !render_failures.is_empty() {
+            for f in &render_failures {
+                eprintln!("RENDER FAILURE: {f}");
+            }
+        }
+    }
+
     eprintln!(
         "GATE SUMMARY: {} passed, {} known-limitation, {} FAILED of {} entries; failed: {:?}",
         passed,
@@ -424,7 +535,8 @@ async fn ear_truth_gate_cde5c264() {
         failed
     );
     assert!(
-        failed.is_empty() && violations == 0,
-        "ear-truth gate FAILED for entries {failed:?}, {violations} invariant violations — resolve by passing the engine or user-signed KNOWN-LIMITATION"
+        failed.is_empty() && violations == 0 && render_failures.is_empty(),
+        "ear-truth gate FAILED for entries {failed:?}, {violations} invariant violations, {} render failures — resolve by passing the engine or user-signed KNOWN-LIMITATION",
+        render_failures.len()
     );
 }
