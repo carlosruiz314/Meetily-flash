@@ -1,0 +1,149 @@
+'em' is not recognized as an internal or external command,
+operable program or batch file.
+'etlocal' is not recognized as an internal or external command,
+operable program or batch file.
+'all' is not recognized as an internal or external command,
+operable program or batch file.
+'d' is not recognized as an internal or external command,
+operable program or batch file.
+warning: patch for the non root package will be ignored, specify patch at the workspace root:
+package:   C:\Users\CarlosRuizMartínez\workspace\Meetily-flash\frontend\src-tauri\Cargo.toml
+workspace: C:\Users\CarlosRuizMartínez\workspace\Meetily-flash\Cargo.toml
+warning: profiles for the non root package will be ignored, specify profiles at the workspace root:
+package:   C:\Users\CarlosRuizMartínez\workspace\Meetily-flash\llama-helper\Cargo.toml
+workspace: C:\Users\CarlosRuizMartínez\workspace\Meetily-flash\Cargo.toml
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+   Compiling meetily-flash v0.3.0 (C:\Users\CarlosRuizMartínez\workspace\Meetily-flash\frontend\src-tauri)
+warning: meetily-flash@0.3.0: 🚀 Building Meetily for: windows
+warning: meetily-flash@0.3.0: ✅ Windows: Vulkan GPU acceleration ENABLED
+warning: meetily-flash@0.3.0: 🎬 Checking FFmpeg binary for target: x86_64-pc-windows-msvc
+warning: meetily-flash@0.3.0: 🔍 Found cached FFmpeg binary: ffmpeg-x86_64-pc-windows-msvc.exe
+warning: meetily-flash@0.3.0: ✅ FFmpeg verification passed: ffmpeg version 8.0.1-essentials_build-www.gyan.dev Copyright (c) 2000-2025 the FFmpeg developers
+warning: meetily-flash@0.3.0: ✅ FFmpeg binary already cached and verified: ffmpeg-x86_64-pc-windows-msvc.exe
+warning: unused import: `serde::Serialize`
+ --> frontend\src-tauri\src\lib.rs:1:5
+  |
+1 | use serde::Serialize;
+  |     ^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: type `PyannoteParams` is more private than the item `PyannoteSegmentation::with_params`
+   --> frontend\src-tauri\src\audio\speaker\pyannote_segmentation.rs:540:5
+    |
+540 |     pub fn with_params(model_path: &str, params: PyannoteParams) -> Result<Self> {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ associated function `PyannoteSegmentation::with_params` is reachable at visibility `pub`
+    |
+note: but type `PyannoteParams` is only usable at visibility `pub(crate)`
+   --> frontend\src-tauri\src\audio\speaker\pyannote_segmentation.rs:504:1
+    |
+504 | pub(crate) struct PyannoteParams {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(private_interfaces)]` on by default
+
+warning: type `ManualNamesPolicy` is more private than the item `run_diarization_for_meeting`
+   --> frontend\src-tauri\src\audio\speaker\commands.rs:439:1
+    |
+439 | / pub async fn run_diarization_for_meeting(
+440 | |     pool: &SqlitePool,
+441 | |     meeting_id: &str,
+442 | |     threshold_fp: u32,
+443 | |     registry: Arc<Mutex<Option<CosineRegistryAdapter>>>,
+444 | |     manual_policy: ManualNamesPolicy,
+445 | | ) -> Result<DiarizationResult, String> {
+    | |______________________________________^ function `run_diarization_for_meeting` is reachable at visibility `pub`
+    |
+note: but type `ManualNamesPolicy` is only usable at visibility `pub(crate)`
+   --> frontend\src-tauri\src\audio\speaker\commands.rs:433:1
+    |
+433 | pub(crate) enum ManualNamesPolicy {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: fields `frame_length_ms`, `frame_shift_ms`, and `use_power` are never read
+  --> frontend\src-tauri\src\audio\speaker\nemo_extractor.rs:60:5
+   |
+57 | pub(crate) struct NemoFbankParams {
+   |                   --------------- fields in this struct
+...
+60 |     frame_length_ms: f32,
+   |     ^^^^^^^^^^^^^^^
+61 |     frame_shift_ms: f32,
+   |     ^^^^^^^^^^^^^^
+...
+68 |     use_power: bool,
+   |     ^^^^^^^^^
+   |
+   = note: `NemoFbankParams` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `meetily-flash` (lib) generated 4 warnings (run `cargo fix --lib -p meetily-flash` to apply 1 suggestion)
+    Finished `release` profile [optimized] target(s) in 6m 55s
+     Running tests\gap_rescue_v3_probe.rs (C:/mf\release\deps\gap_rescue_v3_probe-9689d5cca906c08a.exe)
+
+running 1 test
+test gap_rescue_v3_scan has been running for over 60 seconds
+V3: pre-rescue 222 turns, 2 clusters, 0 refs
+v3 gap[14.78,16.12] sub[15.64,15.82] sp1 = right-flank continuation (no piece)
+v3 gap[39.93,41.98] sub[41.81,41.95] sp0 = right-flank continuation (no piece)
+v3 gap[73.22,74.28] sub[73.36,73.88] sp0 = left-flank continuation (no piece)
+v3 gap[180.41,182.00] sub[181.49,181.71] sp0 NO-OP: borrow winner already sp0
+v3 gap[185.73,187.50] sub[186.43,186.55] sp0 NO-OP: borrow winner already sp0
+v3 gap[405.00,406.37] sub[405.00,405.14] sp0 = left-flank continuation (no piece)
+v3 gap[459.14,460.23] span[459.14,460.13] ABSTAIN: no decided sub-window (1 voiced)
+v3 gap[865.00,866.35] sub[865.22,865.60] sp0 = left-flank continuation (no piece)
+v3 gap[1111.49,1112.74] sub[1112.23,1112.73] sp0 = right-flank continuation (no piece)
+v3 gap[1131.20,1132.04] sub[1131.50,1131.68] sp0 = right-flank continuation (no piece)
+v3-CANDIDATE gap[1400.95,1402.30] 1395.50:sp1 .. sp0:1402.30 sub[1400.95,1401.19] sp0 margin 0.151 winner Some("sp1@597") (2 voiced, 1 decided)
+v3 gap[2150.21,2153.12] span[2150.21,2153.12] ABSTAIN: no decided sub-window (0 voiced)
+v3 gap[2239.80,2241.00] span[2239.80,2241.00] ABSTAIN: no decided sub-window (0 voiced)
+v3 gap[2286.50,2287.44] span[2286.50,2287.44] ABSTAIN: no decided sub-window (1 voiced)
+v3 gap[2431.54,2433.24] span[2431.54,2433.24] ABSTAIN: no decided sub-window (0 voiced)
+v3 gap[2518.81,2519.99] span[2518.81,2519.82] ABSTAIN: no decided sub-window (1 voiced)
+v3-CANDIDATE gap[2524.21,2526.24] 2519.99:sp0 .. sp1:2526.24 sub[2524.21,2524.37] sp1 margin 0.064 winner Some("sp0@1012") (1 voiced, 1 decided)
+v3 gap[2547.15,2548.01] span[2547.15,2548.01] ABSTAIN: no decided sub-window (1 voiced)
+v3 gap[2639.74,2641.01] span[2639.74,2641.01] ABSTAIN: no decided sub-window (0 voiced)
+v3 gap[2749.11,2750.36] sub[2749.65,2749.95] sp0 = left-flank continuation (no piece)
+v3 gap[2775.41,2776.29] span[2775.41,2776.29] ABSTAIN: no decided sub-window (1 voiced)
+v3-CANDIDATE gap[2793.99,2795.38] 2792.95:sp0 .. sp1:2795.38 sub[2794.47,2794.75] sp1 margin 0.058 winner Some("sp0@692") (1 voiced, 1 decided)
+v3 gap[2801.00,2801.86] sub[2801.74,2801.86] sp0 = right-flank continuation (no piece)
+v3 gap[2820.13,2821.64] span[2820.13,2821.64] ABSTAIN: no decided sub-window (1 voiced)
+v3-CANDIDATE gap[2932.99,2938.90] 2919.17:sp0 .. sp1:2938.90 sub[2936.95,2937.63] sp1 margin 0.168 winner Some("sp0@2953") (5 voiced, 4 decided)
+v3 gap[2987.70,2988.90] span[2987.70,2988.90] ABSTAIN: no decided sub-window (2 voiced)
+v3 gap[3017.72,3018.75] span[3017.72,3018.75] ABSTAIN: no decided sub-window (0 voiced)
+v3 gap[3027.75,3029.75] span[3027.75,3029.75] ABSTAIN: no decided sub-window (1 voiced)
+v3 gap[3356.84,3359.68] sub[3356.84,3357.12] sp1 = left-flank continuation (no piece)
+v3 gap[3394.22,3395.39] sub[3395.12,3395.30] sp0 NO-OP: borrow winner already sp0
+v3 gap[3619.32,3623.01] sub[3622.56,3622.92] sp1 = right-flank continuation (no piece)
+v3 gap[3876.07,3879.68] span[3876.07,3879.68] ABSTAIN: no decided sub-window (1 voiced)
+v3-CANDIDATE gap[3881.28,3882.80] 3879.68:sp1 .. sp0:3882.80 sub[3882.30,3882.68] sp1 margin 0.079 winner Some("sp0@759") (2 voiced, 2 decided)
+v3 gap[4003.34,4004.88] sub[4004.18,4004.44] sp0 = right-flank continuation (no piece)
+v3 gap[4147.88,4148.75] sub[4147.88,4148.14] sp0 = left-flank continuation (no piece)
+v3 gap[4429.74,4432.62] sub[4432.32,4432.62] sp1 = right-flank continuation (no piece)
+v3-CANDIDATE gap[4681.01,4682.00] 4615.38:sp1 .. sp0:4682.00 sub[4681.01,4681.21] sp0 margin 0.158 winner Some("sp1@482") (1 voiced, 1 decided)
+v3 gap[4702.52,4703.64] span[4702.52,4703.64] ABSTAIN: no decided sub-window (0 voiced)
+V3: whole-meeting candidates = 6
+
+=== analytic rehearsal over all fixture entries (post-v3 turn set) ===
+REHEARSE S14_banter_anchor_161 [155..170] PASS — changes [161.35875000000001] vs 161.36±1
+REHEARSE S1_five_years_sentence [9.38..11.8] PASS — labels [1]
+REHEARSE S2_user_to_cynthia_13s [11.8..13.5] FAIL — changes [13.415625] vs 12±0.75
+REHEARSE S2b_oh_man_cynthia [15..16.8] PASS — changes [16.115625] vs 15.8±0.75
+REHEARSE S3_updates_run [15.5..20.83] PASS — labels [1]
+REHEARSE S4_cynthia_banter [24.5..29.5] PASS — labels [1]
+REHEARSE S5_cynthia_to_user_yeah_sure [28.5..31] PASS — changes [29.919375000000002] vs 30±0.5
+REHEARSE S6_user_to_cynthia_yeah [30.5..33.04] PASS — changes [32.653125] vs 32.65±0.75
+REHEARSE S7_where_is_ricardo_head [33.8..36.8] PASS — changes [36.07875]
+REHEARSE S7b_carlos_resumption_36 [33.8..37.5] PASS — changes [36.07875] vs 36.08±0.75
+REHEARSE S8_okay_interjection_start [37.5..39.2] PASS — changes [38.998125] vs 39.13±1
+REHEARSE S9_okay_interjection_end [39.3..43] PASS — changes [41.985] vs 41.98±1
+REHEARSE S10_can_you_come_again_trade [2772..2777.54] PASS — changes [2773.963125, 2776.2918750000003]
+REHEARSE S11_ricardo_stretch [2803..2820] PASS — labels [0]
+REHEARSE S12_cynthia_to_ricardo [2801.5..2804.5] PASS — changes [2801.8575] vs 2802.08±0.5
+REHEARSE S13_ricardo_to_cynthia [2812..2826.04] PASS — changes [2821.635] vs 2821±0.75
+V3: done
+test gap_rescue_v3_scan ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 105.58s
+
