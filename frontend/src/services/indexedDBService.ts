@@ -190,6 +190,17 @@ class IndexedDBService {
     });
   }
 
+  /** Remove a meeting's queue-job row (idempotent). Used when the meeting is deleted. */
+  async removeQueueJob(meetingId: string): Promise<void> {
+    if (!this.db) await this.init();
+    const tx = this.db!.transaction(['transcription_queue'], 'readwrite');
+    return new Promise((resolve, reject) => {
+      const req = tx.objectStore('transcription_queue').delete(meetingId);
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
+    });
+  }
+
   async getQueueJob(meetingId: string): Promise<TranscriptionQueueJob | null> {
     if (!this.db) await this.init();
     const tx = this.db!.transaction(['transcription_queue'], 'readonly');

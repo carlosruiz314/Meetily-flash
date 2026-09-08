@@ -124,6 +124,28 @@ describe('indexeddb_queue_schema_v2_supports_status_transitions', () => {
     expect(ids).not.toContain('q-failed');
   });
 
+  // ── Delete ──────────────────────────────────────────────────────────────────
+
+  it('removeQueueJob deletes the row; unknown meetingId resolves silently', async () => {
+    const now = Date.now();
+    await indexedDBService.enqueueJob({ meetingId: 'del-1', status: 'pending', queuePosition: 1, enqueuedAt: now, audioPath: '/recordings/del-1/audio.mp4' });
+    await indexedDBService.enqueueJob({ meetingId: 'del-2', status: 'pending', queuePosition: 2, enqueuedAt: now, audioPath: '/recordings/del-2/audio.mp4' });
+
+    await indexedDBService.removeQueueJob('del-1');
+    await expect(indexedDBService.getQueueJob('del-1')).resolves.toBeNull();
+
+    // Sibling rows untouched.
+    await expect(indexedDBService.getQueueJob('del-2')).resolves.not.toBeNull();
+
+    // Deleting an absent job must not throw (delete is idempotent).
+    await expect(indexedDBService.removeQueueJob('del-1')).resolves.toBeUndefined();
+    await expect(indexedDBService.removeQueueJob('never-existed')).resolves.toBeUndefined();
+
+    // Removed rows vanish from recovery scans.
+    const pending = await indexedDBService.getPendingQueueJobs();
+    expect(pending.map(j => j.meetingId)).not.toContain('del-1');
+  });
+
   // ── Valid status set ─────────────────────────────────────────────────────────
 
   it('VALID_QUEUE_STATUSES contains exactly the five known statuses', () => {
