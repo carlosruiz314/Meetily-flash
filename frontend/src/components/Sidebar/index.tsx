@@ -10,6 +10,7 @@ import { ModelConfig } from '@/components/ModelSettingsModal';
 import { TranscriptModelProps } from '@/components/TranscriptSettings';
 import { DEFAULT_WHISPER_MODEL } from '@/constants/modelDefaults';
 import Analytics from '@/lib/analytics';
+import { indexedDBService } from '@/services/indexedDBService';
 import { invoke } from '@tauri-apps/api/core';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
@@ -338,6 +339,12 @@ const Sidebar: React.FC = () => {
       console.log('Meeting deleted successfully');
       const updatedMeetings = meetings.filter((m: CurrentMeeting) => m.id !== itemId);
       setMeetings(updatedMeetings);
+
+      // Drop the IndexedDB queue mirror too — a lingering pending row would
+      // resurface the deleted meeting in the recovery modal on next launch.
+      await indexedDBService.removeQueueJob(itemId).catch((err) => {
+        console.warn('Failed to clean queue mirror for deleted meeting:', itemId, err);
+      });
 
       // Track meeting deletion
       Analytics.trackMeetingDeleted(itemId);

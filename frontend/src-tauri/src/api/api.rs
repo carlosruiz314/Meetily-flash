@@ -1,7 +1,7 @@
 use log::{debug as log_debug, error as log_error, info as log_info, warn as log_warn};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 
 use crate::{
@@ -749,7 +749,7 @@ pub async fn api_delete_api_key<R: Runtime>(
 
 #[tauri::command]
 pub async fn api_delete_meeting<R: Runtime>(
-    _app: AppHandle<R>,
+    app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
     meeting_id: String,
     auth_token: Option<String>,
@@ -762,7 +762,22 @@ pub async fn api_delete_meeting<R: Runtime>(
 
     let pool = state.db_manager.pool();
 
-    match MeetingsRepository::delete_meeting(pool, &meeting_id).await {
+    // Cancel on both Ok arms: a successful delete obviously loses its job,
+    // and the not-found arm may be healing a stale job left behind by a
+    // partial delete (row gone, job still queued). The Err arm must NOT
+    // cancel — a transient DB failure leaves the meeting alive, and its
+    // queued job is still valid.
+    let result = MeetingsRepository::delete_meeting(pool, &meeting_id).await;
+    if !matches!(result, Err(_)) {
+        if let Some(queue) = app.try_state::<crate::TranscriptionQueueState>() {
+            queue.cancel(&meeting_id).await;
+            let snapshot = queue.get_state().await;
+            use tauri::Emitter;
+            let _ = app.emit("transcription-queue-changed", &snapshot);
+        }
+    }
+
+    match result {
         Ok(true) => {
             log_info!("Successfully deleted meeting {}", meeting_id);
             Ok(serde_json::json!({
