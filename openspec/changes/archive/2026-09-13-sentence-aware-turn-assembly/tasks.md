@@ -13,4 +13,4 @@
 
 - [x] 3.1 Backup live DB, run consolidation on cde5c264, verify: fragment ratio (<10% rows not ending in sentence punctuation), no punct-only rows, spacing fixed, speakers/counts sane
 - [x] 3.2 `cargo test --lib` green
-- [ ] 3.3 OpenSpec archive
+- [x] 3.3 OpenSpec archive — DONE 2026-09-13 (delta synced to `openspec/specs/speaker-diarization/spec.md`; folder moved to `archive/2026-09-13-sentence-aware-turn-assembly`)
