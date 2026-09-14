@@ -168,3 +168,25 @@ into the change docs:
   (nothing sets one); `LANGUAGE_PREFERENCE` reader list corrected (also
   `whisper_transcribe_audio`); decommission change given a validating delta, plain
   deletion phrasing, repo-relative paths, and a stale-doc task (`CLEANUP_PLAN.md`).
+
+## Post-implementation findings (2026-09-14, cde5c264 heal)
+
+- **Batch decode cost is backend-dominated.** Per 25 s segment, production decode on this machine
+  (Core Ultra 7 155H, 8 whisper threads): CPU beam+`auto-translate` 701 s, CPU beam+pinned-`en`
+  286 s, CPU strict greedy 302 s; with the `vulkan` build feature (Intel Arc iGPU, SDK 1.4.350
+  already installed): 54.6 s / 16.5 s / 15.6 s. Two consequences:
+  - `auto-translate` on already-English audio costs **2.4×** for zero benefit. D1 maps the default
+    preference (`auto`/`auto-translate`/None) to `auto-translate` — for an 83-minute English
+    meeting that turned a ~1 h job into ~47 h, which is what forced the first full-run attempt to
+    be abandoned. Worth a follow-up: translate only when the UI preference is explicitly
+    "Translate to English"; `auto` should decode original-language with the language pinned per
+    segment (pinning also fixes the CJK-misdetect root cause without translation).
+  - The `vulkan` feature (17–19× here) is the real lever for whole-meeting batch jobs; the CPU
+    floor (~12× realtime) is the hardware, not the search strategy (beam ≈ greedy in timing).
+- **Heal method**: the principal chose whole-meeting re-transcription over the 12-window patch —
+  the patch only fixes detector-caught garbage, while the redo also refreshes the 170 legacy rows
+  produced by the broken pre-fix path. Both paths are available: the patch harness
+  (`hallucination_repair_run.rs`, report saved) and the full harness (`full_retranscribe_run.rs`).
+- **Era pins**: fixture re-pin after the heal dropped the intermediate `af1e2465` expectation —
+  its rows were no longer reconstructible from the post-heal DB backup (source had drifted between
+  the 09-13 pin and the backup); the pre-live pin (`ad1ebbb7`, own file) is retained.

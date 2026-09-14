@@ -11,7 +11,109 @@ use reqwest::Client;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use crate::config::WHISPER_MODEL_CATALOG;
-use crate::audio::speaker::token_timestamps::extract_token_timestamps;
+use crate::audio::speaker::alignment::TokenWord;
+use crate::audio::speaker::token_timestamps::{extract_token_timestamps, is_eot_marker};
+
+/// The strict decode's language pin (whisper-hallucination-cleanup D3):
+/// `auto` / `auto-translate` / None pin `en`; an explicit code pins that
+/// code. Mirrors how the batch lane resolves the preference.
+fn strict_language_pin(language: Option<&str>) -> String {
+    match language {
+        Some("auto") | Some("auto-translate") | None => "en".to_string(),
+        Some(code) => code.to_string(),
+    }
+}
+
+/// The parameter set shared by every strict (hallucination-quarantine)
+/// decode: greedy search at temperature 0 (a beam-search retry is
+/// deterministic and would reproduce flagged text verbatim) with the
+/// language pinned to a concrete code, never auto-detect. Callers still set
+/// `audio_ctx` from their own audio length.
+fn apply_strict_params<'a>(params: &mut FullParams<'a, 'a>, pinned: &'a str) {
+    params.set_language(Some(pinned));
+    params.set_translate(false);
+
+    params.set_no_timestamps(true);     // Same chunking posture as the batch decode
+    params.set_token_timestamps(true);
+
+    params.set_print_special(false);
+    params.set_print_progress(false);
+    params.set_print_realtime(false);
+    params.set_print_timestamps(false);
+
+    params.set_suppress_blank(true);
+    params.set_suppress_nst(true);
+    // temperature 0 + default temperature_inc (0.2) = the fallback ladder
+    // [0.0, 0.2, ..., <1.0], now under greedy search.
+    params.set_temperature(0.0);
+    params.set_max_initial_ts(1.0);
+    params.set_entropy_thold(2.4);
+    params.set_logprob_thold(-1.0);
+    params.set_no_speech_thold(0.55);
+    params.set_max_len(200);
+    params.set_single_segment(false);
+
+    let hardware_profile = crate::audio::HardwareProfile::detect();
+    let adaptive_config = hardware_profile.get_whisper_config();
+    if let Some(max_threads) = adaptive_config.max_threads {
+        params.set_n_threads(max_threads as i32);
+    }
+}
+
+/// One whisper segment's tokens as meeting-absolute `TokenWord`s: the
+/// centisecond t0/t1 scaling, empty/EOT/sentinel filtering, and offset
+/// application match `extract_token_timestamps`, but scoped to a single
+/// segment so the repair harness can write one row per re-decoded segment.
+fn segment_token_words(
+    state: &whisper_rs::WhisperState,
+    seg_idx: i32,
+    offset_ms: i64,
+) -> Vec<TokenWord> {
+    let mut words = Vec::new();
+    let Some(segment) = state.get_segment(seg_idx) else {
+        return words;
+    };
+    for tok_idx in 0..segment.n_tokens() {
+        let Some(token) = segment.get_token(tok_idx) else {
+            continue;
+        };
+        let Ok(text) = token.to_str_lossy() else {
+            continue;
+        };
+        let text = text.trim();
+        if text.is_empty() || is_eot_marker(text) {
+            continue;
+        }
+        // Special/sentinel tokens (whisper-rs assigns them negative token_ids)
+        if token.token_id() < 0 {
+            continue;
+        }
+        // t0 and t1 are in centiseconds (10 ms units)
+        let data = token.token_data();
+        let start_ms = data.t0 as i64 * 10 + offset_ms;
+        let end_ms = data.t1 as i64 * 10 + offset_ms;
+        if start_ms < 0 || end_ms < 0 || end_ms < start_ms {
+            continue;
+        }
+        words.push(TokenWord {
+            word: text.to_string(),
+            start_ms,
+            end_ms,
+        });
+    }
+    words
+}
+
+/// One whisper segment from the strict re-decode, with meeting-absolute
+/// span and its own offset token-timestamp JSON.
+#[derive(Debug, Clone)]
+pub struct StrictSegment {
+    pub text: String,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub confidence: f32,
+    pub token_timestamps: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModelStatus {
@@ -621,43 +723,110 @@ impl WhisperEngine {
         language: Option<String>,
         segment_offset_ms: i64,
     ) -> Result<(String, f32, Option<String>)> {
-        let pinned: String = match language.as_deref() {
-            Some("auto") | Some("auto-translate") | None => "en".to_string(),
-            Some(code) => code.to_string(),
-        };
+        let pinned = strict_language_pin(language.as_deref());
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 5 });
-        params.set_language(Some(pinned.as_str()));
-        params.set_translate(false);
-
-        params.set_no_timestamps(true);     // Same chunking posture as the batch decode
-        params.set_token_timestamps(true);
-
-        params.set_print_special(false);
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
-
-        params.set_suppress_blank(true);
-        params.set_suppress_nst(true);
-        // temperature 0 + default temperature_inc (0.2) = the fallback ladder
-        // [0.0, 0.2, ..., <1.0], now under greedy search.
-        params.set_temperature(0.0);
-        params.set_max_initial_ts(1.0);
-        params.set_entropy_thold(2.4);
-        params.set_logprob_thold(-1.0);
-        params.set_no_speech_thold(0.55);
-        params.set_max_len(200);
-        params.set_single_segment(false);
-
-        let hardware_profile = crate::audio::HardwareProfile::detect();
-        let adaptive_config = hardware_profile.get_whisper_config();
-        if let Some(max_threads) = adaptive_config.max_threads {
-            params.set_n_threads(max_threads as i32);
-        }
+        apply_strict_params(&mut params, &pinned);
         let audio_ctx = ((audio_data.len() / 320) + 32).min(1500) as i32;
         params.set_audio_ctx(audio_ctx);
 
         self.decode_with_params(params, audio_data, segment_offset_ms).await
+    }
+
+    /// Strict re-decode that keeps whisper's per-segment structure instead of
+    /// the joined text — the offline repair harness writes one row per
+    /// re-decoded segment (whisper-hallucination-cleanup task 4.2).
+    ///
+    /// Span rule: a single usable segment inherits the replaced row's window
+    /// verbatim; several usable segments take their token-derived spans (the
+    /// DTW timestamps `token_timestamps(true)` produces), clamped into the
+    /// window, with the window itself as the fallback for a segment without
+    /// usable tokens. Unlike the joined strict decode this entry point keeps
+    /// timestamp tokens ENABLED (`no_timestamps(false)`): without them every
+    /// token carries degenerate t0/t1 = 0 and all segments collapse onto the
+    /// window span — which would scramble row order at write time. Empty
+    /// output means the re-decode found no speech — the caller drops the
+    /// flagged row.
+    pub async fn transcribe_audio_strict_segments(
+        &self,
+        audio_data: Vec<f32>,
+        language: Option<String>,
+        window_start_ms: i64,
+        window_end_ms: i64,
+    ) -> Result<Vec<StrictSegment>> {
+        let pinned = strict_language_pin(language.as_deref());
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 5 });
+        apply_strict_params(&mut params, &pinned);
+        params.set_no_timestamps(false); // real segment/token boundaries (see doc)
+        let audio_ctx = ((audio_data.len() / 320) + 32).min(1500) as i32;
+        params.set_audio_ctx(audio_ctx);
+
+        let ctx_lock = self.current_context.read().await;
+        let ctx = ctx_lock.as_ref()
+            .ok_or_else(|| anyhow!("No model loaded. Please load a model first."))?;
+
+        let mut state = ctx.create_state()?;
+        state.full(params, &audio_data)?;
+        let num_segments = state.full_n_segments();
+
+        // Pass 1 — usable segments with their window-relative token spans.
+        struct Usable {
+            text: String,
+            confidence: f32,
+            words: Vec<TokenWord>,
+        }
+        let mut usable = Vec::new();
+        for i in 0..num_segments {
+            let segment = match state.get_segment(i) {
+                Some(s) => s,
+                None => continue,
+            };
+            let raw = match segment.to_str_lossy() {
+                Ok(text) => text,
+                Err(_) => continue,
+            };
+            let text = crate::audio::speaker::token_timestamps::strip_eot_markers(&raw);
+            if text.is_empty() {
+                continue;
+            }
+            // Same length-based confidence proxy as the joined decode.
+            let confidence = (text.len() as f32 / 100.0).min(0.9) + 0.1;
+            let words = segment_token_words(&state, i, window_start_ms);
+            usable.push(Usable { text, confidence, words });
+        }
+
+        // Pass 2 — spans: the 1-segment case keeps the window verbatim; the
+        // N-segment case derives each span from the segment's own tokens.
+        let single = usable.len() == 1;
+        Ok(usable
+            .into_iter()
+            .map(|u| {
+                let token_timestamps = if u.words.is_empty() {
+                    None
+                } else {
+                    serde_json::to_string(&u.words).ok()
+                };
+                let (start_ms, end_ms) = if single {
+                    (window_start_ms, window_end_ms)
+                } else if let (Some(first), Some(last)) = (u.words.first(), u.words.last()) {
+                    let s = first.start_ms.max(window_start_ms);
+                    let e = last.end_ms.min(window_end_ms);
+                    if s < e {
+                        (s, e)
+                    } else {
+                        (window_start_ms, window_end_ms)
+                    }
+                } else {
+                    (window_start_ms, window_end_ms)
+                };
+                StrictSegment {
+                    text: u.text,
+                    start_ms,
+                    end_ms,
+                    confidence: u.confidence,
+                    token_timestamps,
+                }
+            })
+            .collect())
     }
 
     /// Shared decode path: acquire the loaded context, run whisper, join
