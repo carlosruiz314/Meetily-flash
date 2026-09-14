@@ -173,6 +173,148 @@ fn check_marker_false(turns: &[Turn], e: &Entry) -> Option<String> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Render-fixture snapshot (change `no-split-sentences`, tasks 1.1–1.4): the
+// live DB mutates under every Speakers/Enhance run, so the render replay is
+// pinned to a snapshot of the input rows and the live DB is only cross-checked.
+// ---------------------------------------------------------------------------
+
+/// One snapshotted transcript row (production `transcripts` columns).
+#[derive(Deserialize)]
+struct RenderRow {
+    id: String,
+    text: String,
+    start_ms: i64,
+    end_ms: i64,
+    /// Raw token-timestamps JSON as stored, or None when NULL.
+    #[serde(default)]
+    token_timestamps: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RenderFixture {
+    /// FULL meeting id (exact-equality lookup; never a LIKE fragment).
+    meeting: String,
+    #[serde(default)]
+    captured: String,
+    row_sha256: String,
+    rows: Vec<RenderRow>,
+    /// Ear-entry ids this snapshot is allowed to report as known limitations
+    /// (each must carry a complete amendments record).
+    #[serde(default)]
+    known_limitations: Vec<String>,
+    /// Auditable waiver records — mirrors the ear-entry amendment mechanism.
+    #[serde(default)]
+    amendments: std::collections::BTreeMap<String, Amendment>,
+}
+
+/// Canonical SHA-256 over the ordered rows — MUST stay in sync with
+/// `openspec/changes/no-split-sentences/tools/snapshot_fixture.py` (rows
+/// ordered by (start_ms, end_ms, id); per row `id \x1f text \x1f start_ms
+/// \x1f end_ms \x1f token_json_or_empty`, rows joined by \x1e).
+fn rows_sha256(rows: &[RenderRow]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut sorted: Vec<&RenderRow> = rows.iter().collect();
+    sorted.sort_by(|a, b| {
+        (a.start_ms, a.end_ms, a.id.as_str()).cmp(&(b.start_ms, b.end_ms, b.id.as_str()))
+    });
+    let canon: Vec<String> = sorted
+        .iter()
+        .map(|r| {
+            format!(
+                "{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
+                r.id,
+                r.text,
+                r.start_ms,
+                r.end_ms,
+                r.token_timestamps.as_deref().unwrap_or("")
+            )
+        })
+        .collect();
+    let mut h = Sha256::new();
+    h.update(canon.join("\u{1e}").as_bytes());
+    format!("{:x}", h.finalize())
+}
+
+/// Sentence-terminal test for the fracture predicate (task 1.3): closing
+/// quotes/brackets trimmed, then a `.?!` / full-width `。？！` / ellipsis.
+fn ends_with_sentence_terminal(text: &str) -> bool {
+    text.trim_end()
+        .trim_end_matches(|c| {
+            matches!(c, '"' | '\'' | ')' | ']' | '}' | '”' | '’' | '»' | '」' | '』')
+        })
+        .chars()
+        .last()
+        .map_or(false, |c| {
+            matches!(c, '.' | '?' | '!' | '。' | '？' | '！' | '…')
+        })
+}
+
+/// Normalized token list for the duplicate predicate (task 1.4):
+/// detokenize → lowercase → non-alphanumeric → space → collapse whitespace.
+fn norm_tokens(text: &str) -> Vec<String> {
+    app_lib::audio::speaker::turns::detokenize(text)
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
+/// Longest common CONTIGUOUS token subsequence length (a shared chunk, not a
+/// scattered LCS — the motivating cluster shares one re-decoded stretch).
+fn longest_shared_chunk(a: &[String], b: &[String]) -> usize {
+    let mut best = 0usize;
+    let mut dp = vec![0usize; b.len() + 1];
+    for wa in a {
+        let mut prev_diag = 0usize;
+        for (j, wb) in b.iter().enumerate() {
+            let tmp = dp[j + 1];
+            if wa == wb {
+                dp[j + 1] = prev_diag + 1;
+                best = best.max(dp[j + 1]);
+            } else {
+                dp[j + 1] = 0; // contiguity: reset, never carry a scattered best
+            }
+            prev_diag = tmp;
+        }
+    }
+    best
+}
+
+/// Record a render-level failure under the amendment waiver path: a kind
+/// listed in `known_limitations` WITH a complete amendment record is
+/// printed AMENDED(<date>, <reason>) and does not fail the gate; listed
+/// without a record fails loudly; unlisted fails plainly. (The fracture scan
+/// no longer routes through here — since the 2026-09-09 ear decree every
+/// cross-badge fracture fails hard, with no waiver kind.)
+fn record_render_failure(
+    render_failures: &mut Vec<String>,
+    fx: &RenderFixture,
+    kind: &str,
+    msg: String,
+) {
+    let listed = fx.known_limitations.iter().any(|k| k == kind);
+    let record = fx.amendments.get(kind);
+    let complete = record
+        .map(|a| !a.user_confirmed.is_empty() && !a.reason.is_empty())
+        .unwrap_or(false);
+    if listed && complete {
+        let a = record.expect("checked");
+        eprintln!("AMENDED({}) {kind} — {} | {msg}", a.user_confirmed, a.reason);
+        return;
+    }
+    if listed {
+        render_failures.push(format!(
+            "{kind}: {msg} (in known_limitations but missing a complete amendments record)"
+        ));
+    } else {
+        render_failures.push(format!("{kind}: {msg}"));
+    }
+}
+
 /// Plain `cargo test` (no audio/models/env): every KNOWN-LIMITATION id must
 /// carry a complete, auditable amendment record, and every amendment record
 /// must belong to a listed or existing entry.
@@ -233,10 +375,38 @@ async fn ear_truth_gate_cde5c264() {
     .expect("parse fixture JSON");
 
     let audio_path = format!("{home}/{AUDIO}");
-    let decoded = app_lib::audio::decoder::decode_audio_file(std::path::Path::new(&audio_path))
-        .expect("decode audio");
-    let samples = decoded.to_whisper_format();
-    eprintln!("GATE: decoded {:.1}s", decoded.duration_seconds);
+    // Samples cache (both-bars iteration, 2026-09-09): the decode costs
+    // ~6.5 min per gate run; the raw f32 dump beside the audio is the exact
+    // `decode_audio_file().to_whisper_format()` result, so loading it is
+    // equivalent (meta file pins the sample count).
+    let samples = {
+        let dir = std::path::Path::new(&audio_path).parent().unwrap().to_path_buf();
+        let cache = dir.join("samples_16k.f32");
+        let meta = dir.join("samples_16k.meta.json");
+        if cache.exists() && meta.exists() {
+            let bytes = std::fs::read(&cache).expect("read samples cache");
+            let n: usize =
+                serde_json::from_str(&std::fs::read_to_string(&meta).expect("samples meta"))
+                    .expect("parse samples meta");
+            let s: Vec<f32> = bytes
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+            assert_eq!(s.len(), n, "samples cache/meta mismatch");
+            eprintln!("GATE: samples loaded from cache ({n} = {:.1}s)", n as f64 / 16_000.0);
+            s
+        } else {
+            let decoded =
+                app_lib::audio::decoder::decode_audio_file(std::path::Path::new(&audio_path))
+                    .expect("decode audio");
+            let s = decoded.to_whisper_format();
+            let bytes: Vec<u8> = s.iter().flat_map(|v| v.to_le_bytes()).collect();
+            std::fs::write(&cache, &bytes).expect("write samples cache");
+            std::fs::write(&meta, s.len().to_string()).expect("write samples meta");
+            eprintln!("GATE: decoded {:.1}s — samples cached to {}", decoded.duration_seconds, cache.display());
+            s
+        }
+    };
 
     // Transcript rows: text spans (textless-run detection) + text (invariant
     // scan). Token-less → proportional alignment (this meeting predates
@@ -470,10 +640,14 @@ async fn ear_truth_gate_cde5c264() {
 
     // HARD INVARIANT over the ENTIRE meeting output: every turn whose text
     // begins mid-sentence (lowercase-initial after punct strip) must carry
-    // the continuation fact. Production stamps
-    // `effective_continuation(engine_flag, first_text)`; the gate recomputes
-    // the same rule and fails on any turn presented as a fresh start while
-    // beginning mid-sentence.
+    // the continuation fact.
+    //
+    // KNOWN TAUTOLOGY (annotated per no-split-sentences task 1.4): production
+    // stamps `effective_continuation(engine_flag, first_text)`, which is
+    // `engine_flag || is_mid_sentence_start(first_text)` — TRUE whenever this
+    // scan's own antecedent holds. The "0 violations" below is therefore
+    // vacuous and MUST NOT be cited as evidence of sentence health; the
+    // cross-badge fracture scan in the render block is the substantive check.
     let mut violations = 0usize;
     for (i, t) in turns.iter().enumerate() {
         let stamped = run_engine::effective_continuation(t.continues_previous, &t.text);
@@ -486,7 +660,7 @@ async fn ear_truth_gate_cde5c264() {
         }
     }
     eprintln!(
-        "GATE: invariant scan: {violations} violation(s) over {} turns",
+        "GATE: invariant scan (TAUTOLOGICAL — not evidence): {violations} violation(s) over {} turns",
         turns.len()
     );
 
@@ -500,23 +674,120 @@ async fn ear_truth_gate_cde5c264() {
         use app_lib::audio::speaker::alignment::{
             align_transcripts_with_diarization, DiarizationSegment, TranscriptInput,
         };
-        let inputs: Vec<TranscriptInput> = rows
+        // no-split-sentences task 1.2: the replay input is the SNAPSHOT
+        // fixture (`cde5c264_transcripts.json`) — the live DB mutates under
+        // every Speakers/Enhance run, so RED/GREEN must be pinned to bytes.
+        // The live DB is still cross-checked: exact-equality meeting lookup
+        // (exactly one match), row count, canonical hash. Any mismatch is a
+        // loud "fixture drifted — re-pin"; 0 rows can never pass vacuously.
+        let render_fixture: RenderFixture = serde_json::from_str(
+            &std::fs::read_to_string(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/cde5c264_transcripts.json"
+            ))
+            .expect("read cde5c264_transcripts.json"),
+        )
+        .expect("parse cde5c264_transcripts.json");
+        assert_eq!(
+            rows_sha256(&render_fixture.rows),
+            render_fixture.row_sha256,
+            "render fixture self-check failed: hash over its own rows != row_sha256"
+        );
+        assert!(
+            !render_fixture.rows.is_empty(),
+            "render fixture has 0 rows — never a vacuous green"
+        );
+        let render_pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                sqlx::sqlite::SqliteConnectOptions::new()
+                    .read_only(true)
+                    .filename(&db_path),
+            )
+            .await
+            .expect("render replay: open prod DB read-only");
+        use sqlx::Row;
+        let meeting_hits: Vec<String> = sqlx::query("SELECT id FROM meetings WHERE id = ?1")
+            .bind(&render_fixture.meeting)
+            .fetch_all(&render_pool)
+            .await
+            .expect("render replay: exact meeting lookup")
             .iter()
-            .enumerate()
-            .filter_map(|(i, r)| {
-                Some(TranscriptInput {
-                    id: r
-                        .get("id")
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string)
-                        .unwrap_or_else(|| format!("row-{i}")),
-                    text: r.get("text")?.as_str()?.to_string(),
-                    audio_start_ms: (r.get("audio_start_time")?.as_f64()? * 1000.0) as i64,
-                    audio_end_ms: (r.get("audio_end_time")?.as_f64()? * 1000.0) as i64,
-                    token_words: None,
-                })
+            .map(|r| r.get::<String, _>("id"))
+            .collect();
+        assert_eq!(
+            meeting_hits.len(),
+            1,
+            "render replay: expected exactly one meeting with id {:?}, found {}",
+            render_fixture.meeting,
+            meeting_hits.len()
+        );
+        // align-from-immutable-source task 3.2: the cross-check target is the
+        // pipeline's ACTUAL INPUT — the immutable `transcript_sources` table —
+        // since the replay input becomes the pipeline's input post-split. The
+        // rendering rows (`transcripts`) are engine OUTPUT and no longer pin
+        // the replay.
+        let (has_sources,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'transcript_sources'",
+        )
+        .fetch_one(&render_pool)
+        .await
+        .expect("render replay: table lookup");
+        assert!(
+            has_sources > 0,
+            "transcript_sources missing — run the app once so the \
+             align-from-immutable-source migration applies, then re-pin"
+        );
+        let live_rows: Vec<RenderRow> = sqlx::query(
+            "SELECT id, transcript, audio_start_time, audio_end_time, token_timestamps \
+             FROM transcript_sources WHERE meeting_id = ?1",
+        )
+        .bind(&render_fixture.meeting)
+        .fetch_all(&render_pool)
+        .await
+        .expect("render replay: read transcript rows")
+        .iter()
+        .map(|r| RenderRow {
+            id: r.get::<String, _>("id"),
+            text: r.get::<String, _>("transcript"),
+            start_ms: (r.get::<f64, _>("audio_start_time") * 1000.0) as i64,
+            end_ms: (r.get::<f64, _>("audio_end_time") * 1000.0) as i64,
+            token_timestamps: r.get::<Option<String>, _>("token_timestamps"),
+        })
+        .collect();
+        let live_hash = rows_sha256(&live_rows);
+        assert!(
+            live_rows.len() == render_fixture.rows.len()
+                && live_hash == render_fixture.row_sha256,
+            "fixture drifted — re-pin: live DB differs from snapshot \
+             cde5c264_transcripts.json (snapshot: {} rows / sha {}, live: {} rows / \
+             sha {}). Understand the mutation, then re-run \
+             openspec/changes/no-split-sentences/tools/snapshot_fixture.py.",
+            render_fixture.rows.len(),
+            render_fixture.row_sha256,
+            live_rows.len(),
+            live_hash
+        );
+        eprintln!(
+            "GATE: render replay pinned to snapshot: {} rows, live DB cross-check matches ({})",
+            render_fixture.rows.len(),
+            live_hash
+        );
+        let inputs: Vec<TranscriptInput> = render_fixture
+            .rows
+            .iter()
+            .map(|r| TranscriptInput {
+                id: r.id.clone(),
+                text: r.text.clone(),
+                audio_start_ms: r.start_ms,
+                audio_end_ms: r.end_ms,
+                token_words: r
+                    .token_timestamps
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str(json).ok()),
             })
             .collect();
+        let input_count = inputs.len();
         let diarization_segs: Vec<DiarizationSegment> = out
             .turns
             .iter()
@@ -555,19 +826,105 @@ async fn ear_truth_gate_cde5c264() {
             })
             .count();
         let merged = app_lib::audio::speaker::commands::merge_same_label_fragments(aligned);
-        let zero_dur = merged
-            .iter()
-            .filter(|s| s.audio_end_ms <= s.audio_start_ms)
-            .count();
+        // The no-chop invariant is the merge's OWN guarantee (production runs
+        // it right here): after this point resolve_duplicate_clusters absorbs
+        // whole rows, which can make surviving fragments of one source row
+        // adjacent again — a benign shape the render consolidation (and the
+        // persisted DB row) presents as ONE row. Count BEFORE the dupe pass.
         let unmerged = merged
             .windows(2)
             .filter(|w| {
                 w[0].original_id == w[1].original_id && w[0].speaker == w[1].speaker
             })
             .count();
+        let mut unmerged_pairs: Vec<(i64, i64, i64, i64, String)> = Vec::new();
+        for w in merged.windows(2) {
+            if w[0].original_id == w[1].original_id && w[0].speaker == w[1].speaker {
+                unmerged_pairs.push((
+                    w[0].audio_start_ms,
+                    w[0].audio_end_ms,
+                    w[1].audio_start_ms,
+                    w[1].audio_end_ms,
+                    format!("{} / {}", w[0].text, w[1].text),
+                ));
+            }
+        }
+        // Production resolves duplicate re-transcription clusters between the
+        // merge and the persist step (no-split-sentences D4); replay it so the
+        // assertions and dump judge the shape persist would actually write.
+        let merged = app_lib::audio::speaker::alignment::resolve_duplicate_clusters(merged);
+        // Production Step 8 tail: same-speaker consolidation (sentence-aware
+        // turn assembly, gap ≤3s) produces the PERSISTED row shape the UI
+        // serves. Replay it so the assertions and dump judge what the user
+        // actually reads, not the intermediate fragment stage.
+        let refs: Vec<app_lib::audio::speaker::turns::RowRef<'_>> = merged
+            .iter()
+            .map(|r| app_lib::audio::speaker::turns::RowRef {
+                speaker: &r.speaker,
+                start_ms: r.audio_start_ms,
+                end_ms: r.audio_end_ms,
+                text: &r.text,
+            })
+            .collect();
+        let groups = app_lib::audio::speaker::turns::assemble_groups(&refs);
+        let cons_zero_dur = groups
+            .iter()
+            .filter(|g| g.turn.end_ms <= g.turn.start_ms)
+            .count();
+        if cons_zero_dur > 0 {
+            record_render_failure(
+                &mut render_failures,
+                &render_fixture,
+                "zero_duration_rows",
+                format!("{cons_zero_dur} zero-duration persisted rows"),
+            );
+        }
+        // MEETIFY_RENDER_PRINT=1: dump the persisted rows the UI will show
+        // after the Speakers run, plus the user's suspect rule (any segment
+        // starting mid-sentence / lowercase) over ALL of them.
+        if std::env::var_os("MEETIFY_RENDER_PRINT").is_some() {
+            eprintln!("=== PERSISTED ROWS [0s,60s] (align → borrow → merge → consolidate) ===");
+            for g in groups.iter().filter(|g| g.turn.start_ms < 60_000) {
+                eprintln!(
+                    "PERSISTED-ROW [{:>7.2}–{:7.2}] {}: {}",
+                    g.turn.start_ms as f64 / 1000.0,
+                    g.turn.end_ms as f64 / 1000.0,
+                    g.turn.speaker,
+                    g.turn.text
+                );
+            }
+            let frag_suspects = merged
+                .iter()
+                .filter(|r| app_lib::audio::speaker::run_assembly::is_mid_sentence_start(&r.text))
+                .count();
+            let suspects: Vec<_> = groups
+                .iter()
+                .filter(|g| {
+                    app_lib::audio::speaker::run_assembly::is_mid_sentence_start(&g.turn.text)
+                })
+                .collect();
+            eprintln!(
+                "=== SUSPECT SCAN: persisted {} lowercase/mid-sentence-initial row(s) of {} (fragment stage: {frag_suspects} of {}) ===",
+                suspects.len(),
+                groups.len(),
+                merged.len()
+            );
+            for g in suspects.iter().take(30) {
+                eprintln!(
+                    "SUSPECT [{:.2}] {}: {}",
+                    g.turn.start_ms as f64 / 1000.0,
+                    g.turn.speaker,
+                    g.turn.text.chars().take(80).collect::<String>()
+                );
+            }
+        }
+        let zero_dur = merged
+            .iter()
+            .filter(|s| s.audio_end_ms <= s.audio_start_ms)
+            .count();
         eprintln!(
-            "RENDER: {} rows in → {} fragments aligned ({} Unknown → {} after borrow, {} within cap) → {} merged rows; zero-dur {}, unmerged same-label pairs {}",
-            rows.len(),
+            "RENDER: {} DB rows in → {} fragments aligned ({} Unknown → {} after borrow, {} within cap) → {} merged rows; zero-dur {}, unmerged same-label pairs {} (pre-dupe)",
+            input_count,
             fragment_count,
             unknown_before,
             unknown_after,
@@ -577,9 +934,14 @@ async fn ear_truth_gate_cde5c264() {
             unmerged,
         );
         if unknown_within_cap > 0 {
-            render_failures.push(format!(
-                "{unknown_within_cap} Unknown Speaker fragments remain WITHIN the borrow cap of a turn"
-            ));
+            record_render_failure(
+                &mut render_failures,
+                &render_fixture,
+                "unknown_within_cap",
+                format!(
+                    "{unknown_within_cap} Unknown Speaker fragments remain WITHIN the borrow cap of a turn"
+                ),
+            );
         }
         // RENDER-TEXT acceptance (task 4.3): the rescue's user-visible win —
         // the fragments covering the rescued span carry the rescuing turn's
@@ -619,13 +981,214 @@ async fn ear_truth_gate_cde5c264() {
             }
         }
         if zero_dur > 0 {
-            render_failures.push(format!("{zero_dur} zero-duration rows"));
+            record_render_failure(
+                &mut render_failures,
+                &render_fixture,
+                "zero_duration_rows",
+                format!("{zero_dur} zero-duration rows"),
+            );
         }
         if unmerged > 0 {
+            for (a0, b0, a1, b1, text) in &unmerged_pairs {
+                eprintln!(
+                    "UNMERGED PAIR [{a0}-{b0}] | [{a1}-{b1}]: {text}"
+                );
+            }
+            record_render_failure(
+                &mut render_failures,
+                &render_fixture,
+                "unmerged_fragments",
+                format!(
+                    "{unmerged} consecutive same-label same-row fragment pairs survived the merge"
+                ),
+            );
+        }
+
+        // no-split-sentences task 1.3 — cross-badge FRACTURE scan over the
+        // persisted shape. Row i>0 fractures iff it begins mid-sentence, its
+        // badge differs from the previous persisted row, and that row does
+        // not end in sentence-terminal punctuation (closing quotes/brackets
+        // trimmed). Row 0 is exempt; a same-badge lowercase onset is ASR
+        // style, not a fracture (consolidation already merged same-badge
+        // ≤3s neighbours, so a surviving same-badge adjacency is a >3s
+        // resume). User ear decree (2026-09-09): a voice does NOT change
+        // mid-sentence — the bounded-run tail waiver class is RETIRED, so
+        // EVERY fracture is a defect and fails hard.
+        let mut fractures: Vec<String> = Vec::new();
+        for (i, g) in groups.iter().enumerate() {
+            if i == 0 {
+                continue;
+            }
+            let prev = &groups[i - 1];
+            if g.turn.speaker != prev.turn.speaker
+                && is_mid_sentence_start(&g.turn.text)
+                && !ends_with_sentence_terminal(&prev.turn.text)
+            {
+                fractures.push(format!(
+                    "[{:>7.2}] {} {:?} continues [{:>7.2}] {} {:?}",
+                    g.turn.start_ms as f64 / 1000.0,
+                    g.turn.speaker,
+                    g.turn.text.chars().take(60).collect::<String>(),
+                    prev.turn.start_ms as f64 / 1000.0,
+                    prev.turn.speaker,
+                    prev.turn.text.chars().take(60).collect::<String>(),
+                ));
+            }
+        }
+        for f in &fractures {
+            eprintln!("FRACTURE: {f}");
+        }
+        eprintln!(
+            "GATE: fracture scan: {} cross-badge fracture(s) of {} persisted rows (all are defects — no waiver class)",
+            fractures.len(),
+            groups.len()
+        );
+        for f in &fractures {
+            render_failures.push(format!("unexpected cross-badge fracture: {f}"));
+        }
+
+        // no-split-sentences task 1.4 — DUPLICATE-CLUSTER scan over a ±10 s
+        // window (the motivating cluster is not adjacent in the persisted
+        // sequence). Pair predicate: normalized token sequences share a
+        // contiguous ≥3-token chunk covering ≥80% of the shorter row, spans
+        // disjoint, gap ≤2 s, different badges (or one side Unknown).
+        // Matching pairs are union-found into clusters for reporting.
+        let unknown_badge = "Unknown Speaker";
+        let n = groups.len();
+        fn uf_find(parent: &mut Vec<usize>, x: usize) -> usize {
+            if parent[x] != x {
+                let root = uf_find(parent, parent[x]);
+                parent[x] = root;
+                root
+            } else {
+                x
+            }
+        }
+        let mut parent: Vec<usize> = (0..n).collect();
+        let mut pair_hits: Vec<String> = Vec::new();
+        let mut overlap_pairs: Vec<String> = Vec::new();
+        for i in 0..n {
+            for j in i + 1..n {
+                let a = &groups[i].turn;
+                let b = &groups[j].turn;
+                if b.start_ms - a.start_ms > 10_000 {
+                    break; // groups are time-ordered; nothing further in window
+                }
+                // overlapping spans = same-audio double-decode suspect:
+                // reported and failed, NEVER dropped silently here
+                if a.start_ms < b.end_ms && b.start_ms < a.end_ms {
+                    overlap_pairs.push(format!(
+                        "[{:>7.2}-{:.2}] {} <-> [{:>7.2}-{:.2}] {}",
+                        a.start_ms as f64 / 1000.0,
+                        a.end_ms as f64 / 1000.0,
+                        a.speaker,
+                        b.start_ms as f64 / 1000.0,
+                        b.end_ms as f64 / 1000.0,
+                        b.speaker,
+                    ));
+                    continue;
+                }
+                let (first, second) = if a.end_ms <= b.start_ms {
+                    (a, b)
+                } else {
+                    (b, a)
+                };
+                if second.start_ms - first.end_ms > 2_000 {
+                    continue;
+                }
+                if a.speaker != b.speaker
+                    && (a.speaker != unknown_badge || b.speaker != unknown_badge)
+                {
+                    let ta = norm_tokens(&a.text);
+                    let tb = norm_tokens(&b.text);
+                    let shared = longest_shared_chunk(&ta, &tb);
+                    let shorter = ta.len().min(tb.len());
+                    if shared >= 3 && shorter > 0 && shared >= (0.8 * shorter as f64) as usize {
+                        let ri = uf_find(&mut parent, i);
+                        let rj = uf_find(&mut parent, j);
+                        if ri != rj {
+                            parent[ri] = rj;
+                        }
+                        pair_hits.push(format!(
+                            "[{:>7.2}] {} {:?} <-> [{:>7.2}] {} {:?} (shared {shared}/{shorter} tokens)",
+                            a.start_ms as f64 / 1000.0,
+                            a.speaker,
+                            a.text.chars().take(60).collect::<String>(),
+                            b.start_ms as f64 / 1000.0,
+                            b.speaker,
+                            b.text.chars().take(60).collect::<String>(),
+                        ));
+                    }
+                }
+            }
+        }
+        let mut cluster_map: std::collections::BTreeMap<usize, Vec<usize>> = Default::default();
+        for i in 0..n {
+            cluster_map.entry(uf_find(&mut parent, i)).or_default().push(i);
+        }
+        let clusters: Vec<Vec<usize>> = cluster_map
+            .into_values()
+            .filter(|v| v.len() > 1)
+            .collect();
+        for (ci, c) in clusters.iter().enumerate() {
+            eprintln!("DUPLICATE CLUSTER {} ({} rows):", ci + 1, c.len());
+            for i in c {
+                eprintln!(
+                    "  [{:>7.2}] {}: {}",
+                    groups[*i].turn.start_ms as f64 / 1000.0,
+                    groups[*i].turn.speaker,
+                    groups[*i].turn.text
+                );
+            }
+        }
+        for p in &pair_hits {
+            eprintln!("DUPLICATE PAIR: {p}");
+        }
+        eprintln!(
+            "GATE: duplicate scan: {} cluster(s) / {} matching pair(s); overlapping-span rows: {} pair(s) (never dropped)",
+            clusters.len(),
+            pair_hits.len(),
+            overlap_pairs.len()
+        );
+        if !clusters.is_empty() {
+            record_render_failure(
+                &mut render_failures,
+                &render_fixture,
+                "duplicate_cluster",
+                format!(
+                    "{} duplicate re-transcription cluster(s): {:?}",
+                    clusters.len(),
+                    clusters
+                        .iter()
+                        .map(|c| {
+                            c.iter()
+                                .map(|i| format!("[{:.2}]", groups[*i].turn.start_ms as f64 / 1000.0))
+                                .collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>()
+                ),
+            );
+        }
+        if !overlap_pairs.is_empty() {
             render_failures.push(format!(
-                "{unmerged} consecutive same-label same-row fragment pairs survived the merge"
+                "{} overlapping-span row pair(s) — same-audio double-decode suspects (never dropped)",
+                overlap_pairs.len()
             ));
         }
+
+        // Churn counters (task 3.1 reports them; threshold decisions deferred).
+        {
+            let meeting_secs = samples.len() as f64 / 16_000.0;
+            let rows_per_min = groups.len() as f64 / (meeting_secs / 60.0);
+            let short_rows = groups
+                .iter()
+                .filter(|g| g.turn.text.split_whitespace().count() <= 2)
+                .count();
+            eprintln!(
+                "GATE: churn: {rows_per_min:.1} persisted rows/minute over {meeting_secs:.0}s; {short_rows} row(s) of <=2 words"
+            );
+        }
+
         if !render_failures.is_empty() {
             for f in &render_failures {
                 eprintln!("RENDER FAILURE: {f}");
