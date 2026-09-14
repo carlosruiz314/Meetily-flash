@@ -3,7 +3,7 @@
 ## Purpose
 TBD - created by archiving change speaker-diarization. Update Purpose after archive.
 ## Requirements
-### Requirement: Transcript-timestamp-driven speaker diarization runs as a post-processing queue phase
+### Requirement: Transcript-timestamp-driven speaker diarization runs as a direct post-transcription step
 
 **Amendment (sequenced after `decommission-queue-diarization-phase`):** diarization is not a transcription-queue phase; it runs as a direct post-transcription step invoked via `run_diarization_for_meeting` (import, re-transcription, and explicit Speakers re-run call sites). After the transcription (and, where configured, summarisation) steps complete for a meeting, the system SHALL run offline speaker diarization on the meeting's `audio.mp4`:
 
@@ -71,7 +71,7 @@ Diarization SHALL be skipped if no `audio.mp4` exists (e.g., `auto_save = false`
 - "Long meeting cap is enforced by pyannote-boundary shedding": superseded on the success path by the piece shed-to-cap (2000). **Migration**: `MAX_DIARIZATION_CHUNKS`/`shed_boundaries_to_cap` continue to govern the fallback path.
 - "Merge short-duration speakers into their cosine-nearest larger cluster" (queue-phase item 6): superseded on the success path by the attachment rules. **Migration**: retained verbatim on the fallback path.
 - `phase = "diarizing"` queue assertions: superseded by `decommission-queue-diarization-phase` transport. **Migration**: progress observable through `run_diarization_for_meeting` reporting. Two clauses of decommission's end state are carried forward unchanged by this delta's re-write and shall not be lost at archive: stale auto speaker labels/embeddings are cleared before new labels are written, and skipped runs leave existing labels untouched (except where the re-diarization requirement above explicitly changes manual-row handling on the explicit re-run path).
-- **Amendments to untouched requirements (success-path scope)**: "Temporal-coherence smoothing prevents clustering contamination and per-chunk flicker" (canonical ~line 690), "Diarization segment granularity resolves speaker turns within Whisper segments" (~line 784), "Short chunks are not attributed to temporally-absent speakers" (~line 867), and "Short-duration noise speakers are merged into nearest cluster" (~line 93, whose `MIN_CLUSTER_FRAC` merge is superseded by the attachment rules) henceforth govern ONLY the fallback path; "Centroid embeddings are stored per speaker per meeting" (~line 250) is amended so that on the success path stored centroids derive from run/piece embeddings and contain no smoothing-refinement clause; "Token-level timestamps align transcript text with diarization speaker boundaries" (~line 108) governs token-timestamped rows and is amended so that token-less rows split proportionally at turn boundaries and the manual-row guard is scoped per the re-diarization requirement above; "Re-transcription clears and re-enqueues diarization" (~line 491) is re-pointed to the `run_diarization_for_meeting` transport. At archive these requirement blocks are updated with this scoping, and the headline requirement is RENAMED to drop the stale "queue phase" phrasing.
+- **Amendments to untouched requirements (success-path scope)**: "Temporal-coherence smoothing prevents clustering contamination and per-chunk flicker" (canonical ~line 690), "Diarization segment granularity resolves speaker turns within Whisper segments" (~line 784), "Short chunks are not attributed to temporally-absent speakers" (~line 867), and "Short-duration noise speakers are merged into nearest cluster" (~line 93, whose `MIN_CLUSTER_FRAC` merge is superseded by the attachment rules) henceforth govern ONLY the fallback path; "Centroid embeddings are stored per speaker per meeting" (~line 250) is amended so that on the success path stored centroids derive from run/piece embeddings and contain no smoothing-refinement clause; "Token-level timestamps align transcript text with diarization speaker boundaries" (~line 108) governs token-timestamped rows and is amended so that token-less rows split proportionally at turn boundaries and the manual-row guard is scoped per the re-diarization requirement above (SUPERSEDED 2026-09-13 by no-split-sentences: token-less rows split proportionally at SENTENCE granularity, each sentence assigned whole — see "Sentences are not split across speaker badges"); "Re-transcription clears and re-enqueues diarization" (~line 491) is re-pointed to the `run_diarization_for_meeting` transport. At archive these requirement blocks are updated with this scoping, and the headline requirement is RENAMED to drop the stale "queue phase" phrasing.
 
 ### Requirement: Short-duration noise speakers are merged into nearest cluster
 
@@ -90,11 +90,11 @@ After merging, adjacent segments with the same speaker SHALL be coalesced, and s
 
 ### Requirement: Token-level timestamps align transcript text with diarization speaker boundaries
 
-The diarization processor SHALL read token timestamps from the `transcripts` table (stored by the Whisper provider) and align each word with the diarization speaker segment whose time range contains the word's timestamp. When a Whisper segment spans multiple speakers, the text SHALL be split at the speaker change boundary, producing separate transcript rows per speaker.
+The diarization processor SHALL read token timestamps from the `transcripts` table (stored by the Whisper provider) and align each word with the diarization speaker segment whose time range contains the word's timestamp. When a Whisper segment spans multiple speakers, the text SHALL be divided at the speaker change boundaries at SENTENCE granularity: the segment's text is segmented into sentences (each carrying a time span — from valid token timestamps when available, proportional shares of the row span otherwise), each sentence SHALL be assigned WHOLE to the speaker turn owning the majority of the sentence's span, and rows SHALL be emitted per contiguous run of same-speaker sentences. A sentence SHALL NOT be divided across two speaker rows; when a sentence's span straddles a turn boundary, the sentence moves whole to the majority badge — a reattribution, not a merge of two speakers' rows — and the engine's turn boundaries are unchanged. Sentence atoms are never divided at a badge boundary: an engine boundary inside a sentence is absorbed by whole-atom majority assignment (the 2026-09-09 ear decree), never split into a flagged continuation tail.
 
-When token timestamps are unavailable (e.g., a transcript row produced before the token-timestamps feature, or a re-diarization split row), the processor SHALL fall back to segment-level timestamps with proportional text-split as a degraded alignment mode.
+When token timestamps are unavailable (e.g., a transcript row produced before the token-timestamps feature, or a re-diarization split row), or when the stored token JSON fails a sanity clamp (a tokens-per-second ceiling that rejects hallucinated oversized token blobs), the processor SHALL fall back to segment-level timestamps with proportional per-sentence spans as a degraded alignment mode (each sentence receives a proportional share of the row's span; assignment remains whole-sentence).
 
-The split SHALL be **persisted**, conforming to the existing "the original transcript row is replaced by two rows" mandate. When alignment of a source transcript row yields N `AlignedSegment`s with distinct speakers, the system SHALL replace that source row with N transcript rows — one per aligned segment. Each split row SHALL carry: a **fresh** UUID `id`; that segment's split text; clamped `audio_start_time`/`audio_end_time`; the resolved `speaker_label`; `speaker_source = 'auto'`; and the source row's `meeting_id`/`timestamp`. Each split row's `duration` SHALL be **recomputed** from its own clamped timing (not copied from the source). Each split row's `token_timestamps` SHALL be set to **NULL** (see the re-diarization clause below). **Every other source column SHALL be copied through verbatim.** The delete-source + insert-N operation SHALL execute within a single transaction. A scheme that writes the N splits by repeatedly `UPDATE`-ing the source row by id (last-writer-wins, discarding the split text) SHALL be considered NON-CONFORMANT.
+The split SHALL be **persisted**, conforming to the existing "the original transcript row is replaced by N rows" mandate. When alignment of a source transcript row yields N `AlignedSegment`s with distinct speakers, the system SHALL replace that source row with N transcript rows — one per aligned segment. Each split row SHALL carry: a **fresh** UUID `id`; that segment's split text; clamped `audio_start_time`/`audio_end_time`; the resolved `speaker_label`; `speaker_source = 'auto'`; and the source row's `meeting_id`/`timestamp`. Each split row's `duration` SHALL be **recomputed** from its own clamped timing (not copied from the source). Each split row's `token_timestamps` SHALL be set to **NULL** (see the re-diarization clause below). **Every other source column SHALL be copied through verbatim.** The delete-source + insert-N operation SHALL execute within a single transaction. A scheme that writes the N splits by repeatedly `UPDATE`-ing the source row by id (last-writer-wins, discarding the split text) SHALL be considered NON-CONFORMANT.
 
 When alignment yields exactly one `AlignedSegment` for a source row (N = 1), the system SHALL update that row's `speaker_label` **and** `speaker_source = 'auto'` in place, preserving the row's id and all other columns; no row is created or deleted. Setting `speaker_source = 'auto'` (not just `speaker_label`) is required so the row remains visible to the auto-label-clear step that precedes a subsequent re-diarization.
 
@@ -120,30 +120,31 @@ Diarization for a given `meeting_id` SHALL be mutually exclusive across all writ
 - **AND** the row's id is unchanged (N = 1 in-place update)
 - **AND** `speaker_source` is set to `'auto'`
 
-#### Scenario: Multi-speaker Whisper segment split at boundary
+#### Scenario: Multi-speaker Whisper segment divides at sentence granularity
 
-- **GIVEN** a Whisper segment with `audio_start_time = 5.0`, `audio_end_time = 9.0`, and token timestamps show words at [5.0, 5.2, 5.4, 7.3, 7.5, 7.7]
+- **GIVEN** a Whisper segment with `audio_start_time = 5.0`, `audio_end_time = 9.0`, token timestamps for the sentences "How are you." (words at 5.0–5.4) and "What's the plan?" (words at 7.3–7.7)
 - **AND** diarization shows "Speaker 0" at 5.0–7.1 and "Speaker 1" at 7.2–9.0
 - **WHEN** the diarization processor aligns the segment
-- **THEN** the original transcript row is replaced by two rows:
-  - Row 1: fresh id, text from tokens 5.0–5.4, `speaker_label = "Speaker 0"`, `speaker_source = 'auto'`, `audio_start_time = 5.0`, `audio_end_time = 7.1`, `duration` recomputed from [5.0, 7.1], `token_timestamps` = NULL
-  - Row 2: fresh id, text from tokens 7.3–7.7, `speaker_label = "Speaker 1"`, `speaker_source = 'auto'`, `audio_start_time = 7.2`, `audio_end_time = 9.0`, `duration` recomputed from [7.2, 9.0], `token_timestamps` = NULL
+- **THEN** the original transcript row is replaced by two rows, one per sentence:
+  - Row 1: fresh id, text "How are you.", `speaker_label = "Speaker 0"`, `speaker_source = 'auto'`, clamped span, `duration` recomputed, `token_timestamps` = NULL
+  - Row 2: fresh id, text "What's the plan?", `speaker_label = "Speaker 1"`, `speaker_source = 'auto'`, clamped span, `duration` recomputed, `token_timestamps` = NULL
+- **AND** no row contains a fragment of the other badge's sentence
 - **AND** every other source column is copied through to both rows verbatim
-- **AND** both rows are persisted in a single transaction (a subsequent read of the meeting's transcripts returns both rows with the split text and distinct labels)
+- **AND** both rows are persisted in a single transaction
 
-#### Scenario: Missing-token-timestamp fallback with proportional split
+#### Scenario: Missing-token-timestamp fallback with proportional sentence spans
 
-- **GIVEN** a Whisper segment with no token timestamps, `audio_start_time = 5.0`, `audio_end_time = 9.0`
+- **GIVEN** a Whisper segment with no token timestamps, `audio_start_time = 5.0`, `audio_end_time = 9.0`, containing two sentences
 - **AND** diarization shows "Speaker 0" at 5.0–7.2 and "Speaker 1" at 7.2–9.0
-- **WHEN** the diarization processor aligns the segment
-- **THEN** the text is split proportionally (2.2s / 4.0s = 55% of words to Speaker 0)
-- **AND** the source row is replaced by two persisted rows (delete-source + insert-N in one transaction)
+- **WHEN** the alignment runs
+- **THEN** each sentence receives a proportional span share and is assigned whole to the badge owning the majority of that share
+- **AND** the source row is replaced by one persisted row per speaker (delete-source + insert-N in one transaction), with no cross-badge sentence fragment
 
 #### Scenario: Multi-speaker split is persisted, not collapsed (non-regression)
 
 - **GIVEN** a Whisper transcript row spanning 26.8 s whose time range overlaps diarization segments for two distinct speakers
 - **WHEN** diarization alignment runs and the result is persisted
-- **THEN** re-reading the meeting's `transcripts` returns two rows with disjoint text and the two distinct `speaker_label` values
+- **THEN** re-reading the meeting's `transcripts` returns rows whose texts are partitioned at sentence granularity with the distinct `speaker_label` values
 - **AND** the implementation does NOT persist via repeated `UPDATE transcripts SET speaker_label=? WHERE id=?` on the shared source id (which would last-writer-wins to one label and discard the split text)
 
 #### Scenario: All source columns are copied through except the overrides
@@ -160,11 +161,12 @@ Diarization for a given `meeting_id` SHALL be mutually exclusive across all writ
 - **THEN** the whitespace-joined concatenation of the persisted split rows' text equals the source row's original text
 - **AND** this holds for both the token-level path and the proportional fallback path
 
-#### Scenario: CJK / no-whitespace text is handled, not dumped to one speaker
+#### Scenario: CJK / no-whitespace text follows sentence granularity
 
-- **GIVEN** a source transcript row with no internal whitespace (e.g. CJK text without spaces) whose span overlaps two diarization speakers
-- **WHEN** the proportional-path alignment runs
-- **THEN** the text is divided across the two speakers (e.g. by character ratio proportional to time), not assigned 100% to one speaker because `words.len() == 1`
+- **GIVEN** a source transcript row with no internal whitespace (e.g. CJK text) whose span overlaps two diarization speakers
+- **WHEN** the alignment runs
+- **THEN** the text is segmented at sentence-final punctuation (ASCII and full-width 。？！ included); each sentence atom is assigned whole to its majority badge
+- **AND** a single-sentence no-whitespace row persists as ONE row under one badge — intentional, because dividing it across badges is the cross-badge fracture this requirement forbids (the canonical one-badge-dumping guard is superseded for the single-sentence case by the fracture doctrine)
 
 #### Scenario: SQL meta-characters in transcript text survive the split as data
 
@@ -194,11 +196,11 @@ Diarization for a given `meeting_id` SHALL be mutually exclusive across all writ
 - **THEN** the row's words are labeled "Unknown Speaker" (not a diarization speaker from a non-overlapping segment)
 - **AND** the row's `audio_start_time` is less than or equal to its `audio_end_time` (no inverted-range row is emitted)
 
-#### Scenario: Malformed token_timestamps JSON does not crash the split
+#### Scenario: Malformed or hallucinated token_timestamps JSON does not crash the split
 
-- **GIVEN** a source transcript row whose `token_timestamps` column contains malformed JSON (e.g. mid-write corruption)
+- **GIVEN** a source transcript row whose `token_timestamps` column contains malformed JSON (e.g. mid-write corruption) or a hallucinated oversized token blob failing the tokens-per-second clamp
 - **WHEN** the alignment and split-and-persist operation runs
-- **THEN** the operation does not panic; the row is handled as if token timestamps were unavailable (proportional fallback) or skipped, and no partial write is left in the database
+- **THEN** the operation does not panic; the row is handled as if token timestamps were unavailable (proportional sentence-span fallback), and no partial write is left in the database
 
 #### Scenario: Transaction atomicity — a failure mid-write leaves no partial split
 
@@ -227,9 +229,6 @@ Diarization for a given `meeting_id` SHALL be mutually exclusive across all writ
 - **GIVEN** a source transcript row whose text is ~500 kB, or a source whose alignment yields N splits such that N × columns approaches the SQLite host-parameter ceiling
 - **WHEN** the split-and-persist operation runs
 - **THEN** the operation completes without OOM or a "too many SQL variables" error (inserts are chunked if the host-param ceiling would be exceeded), and all words are preserved
-
----
-
 ### Requirement: Centroid embeddings are stored per speaker per meeting for cross-meeting matching
 
 The diarization processor SHALL return centroid embeddings. Centroids are duration-weighted averages of per-chunk embeddings, computed during agglomerative clustering **and refined by the temporal-coherence smoothing pass before storage** (see the temporal-coherence requirement below). The stored centroids SHALL be the post-smoothing recomputed values, not the pre-smoothing clustering centroids, so that cross-meeting matching operates on de-contaminated voice profiles. They SHALL be stored in the `speaker_embeddings` table as BLOBs with the cluster label and source meeting ID.
@@ -927,18 +926,18 @@ On the success path (pyannote segmentation model present), the system SHALL deri
 3. **Labeling**: each piece of duration ≥1.5s (the `MIN_SPEECH_SECS` floor; the model's minimum embedding input) SHALL be embedded — pieces longer than 12s embed their middle 12s, matching the validated measurement — and clustered by threshold clustering at the configured merge threshold with deterministic tie-breaking. Cluster count SHALL be capped by the meeting's max_speakers cap using the production most-isolated-cluster merge policy (`enforce_max_speakers_cap` semantics), and a nearest-centroid refinement pass SHALL reassign every labeled piece to its final centroids. Every persisted centroid SHALL correspond to at least one persisted labeled piece (no phantom speakers).
 4. **Attachment**: a piece below the 1.5s floor MAY be embedded solely for attachment and SHALL attach to the temporally PREVIOUS labeled piece's turn (the following turn only when no previous exists); a piece whose final-centroid similarity margin between best and second-best is below a positive ambiguity margin (default 0.05, computed after the refinement pass) SHALL attach backward the same way. Attachment SHALL never create a new label, and contiguous backward-attached material exceeding 5s within one turn SHALL instead form its own turn flagged low-confidence in the data. Sub-floor arbitration is fixture-calibrated (design D3 amendment): a sub-floor piece at/above a promotion floor (0.8s; shorter slices win on noise) with a decided best cluster (margin ≥ the ambiguity margin) forms its own low-confidence turn; a sub-floor piece whose neighbors AGREE on one cluster joins them (burst fragmentation of one speaker's speech); a sub-floor piece sandwiched between two DIFFERENT clusters keeps the boundary as its own low-confidence turn with a best-effort label — a real interjection the 1.5s floor must not silently absorb.
 5. **Textless runs**: runs with no transcript-text overlap (breaths, laughs, untranscribed voiced noise; detected with a whisper-timestamp skew tolerance) SHALL be dropped BEFORE same-cluster coalescing, so a textless run can never split one speaker's stretch into fragments.
-6. **Coalescing and text alignment**: same-cluster neighbors separated only by dropped runs or absorbed silence SHALL coalesce, and the engine's turns ARE the persisted turn units on the success path — post-persistence turn merging layers (legacy consolidation, persist-path assembly) SHALL NOT re-run over engine output; where such a merge ever applies, `continues_previous` is re-derived from the merged members (first member's flag). Every transcript text row SHALL land in exactly one turn. Rows with token timestamps SHALL split at turn boundaries (token-level alignment); rows without token timestamps (legacy consolidated rows) SHALL split proportionally at any turn boundary falling inside them; a row with zero time overlap with every turn (possible only in a shed span) SHALL attach to the nearest-in-time turn. This content-preservation invariant SHALL be asserted end-to-end (every input row's alphanumeric content appears in the persisted output).
+6. **Coalescing and text alignment**: same-cluster neighbors separated only by dropped runs or absorbed silence SHALL coalesce, and the engine's turns ARE the persisted turn units on the success path — post-persistence turn merging layers (legacy consolidation, persist-path assembly) SHALL NOT re-run over engine output; where such a merge ever applies, `continues_previous` is re-derived from the merged members (first member's flag). Every transcript text row SHALL land in exactly one turn. Transcript text SHALL be divided at turn boundaries only at SENTENCE granularity (per "Token-level timestamps align transcript text with diarization speaker boundaries", as amended): each sentence is assigned whole to the turn owning the majority of the sentence's span — a reattribution of minority-span words to the sentence's badge; the engine's turn boundaries themselves are unchanged, and a turn whose span holds no sentence assigned to it emits no row. A row with zero time overlap with every turn (possible only in a shed span) SHALL attach to the nearest-in-time turn within the borrow cap; beyond the cap it stays "Unknown Speaker" (honest badge over confident misattribution). This content-preservation invariant SHALL be asserted end-to-end (each sentence's alphanumeric content appears in exactly one output turn).
 7. **Overlap flags**: a turn's crosstalk flag SHALL be the fraction of its FINAL merged span whose per-frame overlap-pair probability mass (sum of powerset classes 4–6) exceeds 0.25, recomputed after all merging; fragment-maximum aggregation is forbidden. Overlap flags are persisted but not rendered by this change.
 8. **Determinism**: all label decisions SHALL be computed from time-ordered or index-ordered sequences (ordered containers; no HashMap-iteration-order effect on labels, boundaries, or flags), so identical audio, models, and settings on the same binary produce identical turns. The clustering step itself SHALL be covered by a CI-runnable determinism unit test on synthetic embeddings.
 
 Where this requirement and the chunk-grid labeling requirements conflict on the success path, this requirement governs; the pyannote-model-missing fallback path is unchanged. The number of embedded pieces per meeting SHALL be bounded by a shed-to-cap applied to runs before embedding (cap 2000, shed by position, merging sub-floor survivors within same-label spans of their speech region — never across a corroborated voice change), so clustering cost is bounded regardless of meeting length. Shedding is permanent on this path (no pass-2 re-labeling exists); spans lost to the cap lose attribution. If the embedding model fails to load, the run SHALL fail with the error surfaced (no partial labels); if pyannote inference fails mid-pass, the run SHALL fail without persisting partial labels. The label-track mode filter SHALL use radius 3 frames (≈50ms), calibratable only under the fixture-gate rule.
 
-#### Scenario: One voice across a mid-sentence pause stays one turn
+#### Scenario: Cynthia's attested sentence stays one voice until the attested 12.0 s change
 
-- **GIVEN** the cde5c264 fixture entry that 9.38–13.03s is one voice
+- **GIVEN** the cde5c264 fixture entries that 9.38–11.8s is one voice (Cynthia's sentence, re-pinned 2026-09-07 via clip_D) and that the voice change to the user's "Yeah" sits at ≈12.0s (±0.75s)
 - **WHEN** the engine derives turns
-- **THEN** no turn boundary exists between 9.38s and 13.03s (in particular not at the whisper-row edge 12.07s)
-- **AND** the turn covering the span carries the same label as the speaker's other clean runs
+- **THEN** no turn boundary exists between 9.38s and 11.8s
+- **AND** the turn change lands within the pinned tolerance of 12.0s — recovered by the embedding voice-flip check at the decode's confusion valley (change `engine-boundary-and-identity-accuracy`), asserted as a fully asserted gate entry with no waiver
 
 #### Scenario: Voice change inside a run splits at the verified change point
 
@@ -961,18 +960,18 @@ Where this requirement and the chunk-grid labeling requirements conflict on the 
 - **THEN** the textless runs are dropped before coalescing
 - **AND** the surrounding same-speaker text renders as ONE turn (the "Where | is Ricardo" regression)
 
-#### Scenario: Every transcript row survives into the output
+#### Scenario: Every transcript row survives into the output at sentence granularity
 
 - **GIVEN** any diarization run on a meeting with transcript rows
 - **WHEN** turns are assembled and persisted
-- **THEN** every input row's alphanumeric content appears in exactly one output turn
-- **AND** a token-timestamped row straddling a turn boundary splits at that boundary; a token-less row splits proportionally; a zero-overlap row attaches to the nearest-in-time turn
+- **THEN** each sentence's alphanumeric content appears in exactly one output turn
+- **AND** a row straddling a turn boundary divides at sentence granularity — whole sentences to their majority-badge turn; no output row presents a fragment of another badge's sentence; a zero-overlap row attaches to the nearest-in-time turn within the borrow cap, else stays "Unknown Speaker"
 
 #### Scenario: Corroborated text tail lands on the earlier turn
 
 - **GIVEN** the 02:12–02:50 fixture entry, where the "And I was like, oh, when you put a that one" tail shares a whisper row with later-speaker text
 - **WHEN** the rows are aligned to the derived turns
-- **THEN** the row splits at the ≈161s boundary and the tail text is attributed to the earlier turn (whole-row assignment would make this entry structurally unpassable)
+- **THEN** the row divides at sentence granularity at the ≈161s boundary and the tail sentence is assigned to the earlier turn (whole-row or word-split assignment would make this entry structurally unpassable)
 
 #### Scenario: Overlap flag is span-truthful
 
@@ -992,7 +991,6 @@ Where this requirement and the chunk-grid labeling requirements conflict on the 
 - **WHEN** the clustering and assembly functions run twice on identical inputs
 - **THEN** labels, boundaries, and flags are identical (CI-runnable unit test on synthetic data)
 - **AND** all tie-breaks resolve by index/time order, never by hash-map iteration order
-
 ### Requirement: Ear-truth fixture gate validates attribution
 
 The repository SHALL contain a pinned ear-truth fixture (`frontend/src-tauri/tests/fixtures/ear_truth_cde5c264.json`) holding attribution facts as data, each entry `{id, start_s, end_s, kind, params}` with kinds: `single_voice` (all turns overlapping the span carry one label — silence-delimited same-speaker boundaries inside the span are not violations, since the ear attests voices, not turn units), `voice_change_at` (exactly one label change inside the span, one within the pinned tolerance; the pinned text tail belongs to the earlier turn), `multi_voice` (at least one label change inside the span — for attested trading with an unattested count), `distinct_speaker` (the span's turn label differs from the surrounding turns'). The 13 recorded entries (user-ear answers of 2026-09-04, verbatim in this change's `fixture-answers.md`, resolved to absolute times via recovered clip offsets): single-voice spans ≈5.9–12.8 (user's sentence), 15.5–20.8, 24.5–29.5 (Cynthia), 32.0–38.0, 2803–2820 (Ricardo); voice changes at ≈13.0 (user→Cynthia), ≈29.5 (Cynthia→user), ≈31.5 (user→Cynthia "Yeah"), ≈38.0/≈39.0 ("okay" interjection), ≈2776.4 (two voices trading), ≈2803.0 (Cynthia→Ricardo), ≈2821.0 (Ricardo→Cynthia), and the 02:12–02:50s anchor `voice_change_at` ≈161s ±0.75 with the "And I was like, oh, when you put a that one" tail on the earlier side. Entries change only with explicit user confirmation, and two entries (`S3_updates_run`, `S13_ricardo_to_cynthia`) SHALL be designated hold-out (not used for any calibration decision).
@@ -1056,3 +1054,93 @@ When the user explicitly re-runs diarization on a meeting that contains manually
 - **AND** the rows whose voice matches the stamped "Cynthia" embedding are labeled "Cynthia"
 - **AND** any user name that could not be re-matched is reported in the run result
 
+### Requirement: Persisted speaker turns are sentence-readable
+
+The diarization persist path SHALL write speaker turns, not raw aligned fragments: adjacent rows of the SAME speaker with a time gap of at most 3 seconds SHALL merge into one turn (text joined in time order); rows that carry no alphanumeric content SHALL be dropped; word-joined text SHALL be detokenized (no space before sentence punctuation, contractions reattached). Rows of DIFFERENT speakers SHALL never merge, even across a mid-sentence interjection.
+
+#### Scenario: Same-speaker fragments merge into a readable turn
+
+- **WHEN** alignment produces "Speaker 0: `. Okay . I have some updates . Cool . On the`" followed 0.4 s later by "Speaker 0: `to , let 's , wait`"
+- **THEN** one persisted row for Speaker 0 reads "Okay. I have some updates. Cool. On the to, let's, wait" spanning both time ranges
+- **AND** the original fragments no longer exist as separate rows
+
+#### Scenario: Backchannel fragment merges; junk rows disappear
+
+- **WHEN** a 0.5 s row reading "Yeah ," sits between two Speaker 1 rows, and a row reading "," sits anywhere
+- **THEN** the "Yeah ," row merges into its neighboring same-speaker turn
+- **AND** the punctuation-only row is dropped entirely
+
+#### Scenario: Speaker flip never merges, mid-sentence
+
+- **WHEN** Speaker 0's fragment "On the" is followed by Speaker 1's "roadmap , hopefully"
+- **THEN** both persist as separate rows (the interjection is real)
+- **AND** Speaker 0's text is detokenized ("On the", no trailing-space artifacts)
+
+#### Scenario: Silence longer than 3 seconds starts a new turn
+
+- **WHEN** two same-speaker rows are separated by more than 3 seconds of gap
+- **THEN** they persist as separate turns
+
+### Requirement: Consolidation of already-persisted meetings is transactional and idempotent
+
+A consolidation pass SHALL apply the same assembly to a meeting's persisted rows within a single transaction (insert merged turns, delete absorbed rows). Running it twice SHALL produce the same final rows. Consolidation SHALL NOT require audio or re-diarization.
+
+#### Scenario: Consolidating an already-consolidated meeting is a no-op
+
+- **WHEN** consolidation runs on a meeting whose rows are already assembled turns
+- **THEN** row texts, counts, speakers, and ids are unchanged
+
+#### Scenario: Consolidation failure leaves the meeting untouched
+
+- **WHEN** the transaction fails mid-pass
+- **THEN** the meeting's rows are exactly as before the attempt
+
+### Requirement: Sentences are not split across speaker badges
+
+The diarization assembly SHALL treat the transcript sentence as the atom of speaker assignment. Persisted fragment rows that are adjacent in the persisted sequence and whose predecessor lacks sentence-terminal punctuation SHALL first be REJOINED into one logical text unit (a text-level repair spanning badges and row gaps — not a badge merge; rejoined text preserves word order and content). Each sentence (segmented from the logical units, with a time span from valid token timestamps or a proportional share of the unit's span) SHALL then be assigned WHOLE to one speaker badge: the engine turn owning the majority of the sentence's span. A sentence SHALL NOT be divided across two speaker rows. The engine's turn boundaries themselves are unchanged, and this SHALL NOT be implemented as a merge of two speakers' rows — minority-span words move with their sentence (reattribution), and a turn whose span holds no assigned sentence emits no row.
+
+**No bounded-run guard (user ear decree, 2026-09-09 — supersedes the original 8 s cut design)**: the voice does NOT change mid-sentence in the user's meetings. Every engine boundary inside a sentence is an engine error, absorbed by whole-atom majority assignment; sentence atoms are never cut and never flagged as continuation tails. The bounded-run cut, its `cross_badge_tail` flag, and the fracture waiver class are RETIRED. The fix for a wrong badge is engine boundary accuracy (change `engine-boundary-and-identity-accuracy`), never cutting the sentence.
+
+The render gate SHALL count cross-badge fractures with the predicate "row begins mid-sentence AND the previous persisted row has a different badge AND that previous row does not end with terminal punctuation" and SHALL fail on any fracture with NO waiver path — there is no amendment-record waiver for fractures. Lowercase sentence onsets that are the ASR text itself (no cross-badge fracture) are NOT violations. The ear gate SHALL additionally count duplicate clusters and overlapping-span rows (same-audio double-decode suspects), and report churn counters (persisted rows per minute; rows of ≤2 words).
+
+Adjacent persisted rows whose normalized token sequences share a contiguous subsequence of at least 3 tokens covering at least 80% of the shorter row — with disjoint time spans, an inter-row gap of at most 2 seconds, and different badges (or one side "Unknown Speaker") — form a duplicate cluster (a chunk-overlap re-transcription). Assembly SHALL resolve a duplicate cluster by keeping ONE copy — survivor badge: labeled over "Unknown Speaker"; among multiple labeled rows, the badge owning the majority of the cluster's union span; final tiebreak earliest start — writing its text ONCE, extending the survivor's span to the union of the cluster's spans, and deleting the absorbed row shells inside the persist transaction; no source row may survive the transaction as an unlabeled orphan. The survivor's time coverage SHALL never shrink (audio-time evidence is preserved).
+
+#### Scenario: Turn flip inside a sentence keeps the sentence whole
+
+- **WHEN** the sentence "Where is Ricardo?" spans a speaker flip between Speaker 1's turn and Speaker 0's turn
+- **THEN** the full sentence persists under exactly one badge (the majority-span badge)
+- **AND** no row under the other badge contains any part of that sentence
+- **AND** the engine's turn set still contains the flip (engine boundaries are not edited)
+
+#### Scenario: Mid-sentence tail under a different badge is repaired by rejoin
+
+- **GIVEN** persisted fragment rows "I" (Speaker 1, 39.27–39.93) followed by "don't know. Let me ping in..." (Speaker 0), where "I" lacks sentence-terminal punctuation
+- **WHEN** assembly rejoins the adjacent fragments into one logical unit, segments it into sentences, and assigns each sentence to its majority-span badge
+- **THEN** "I don't know." persists whole under Speaker 0 (the majority badge), not split as "I" under Speaker 1 with the tail under Speaker 0
+- **AND** any residual fracture that cannot be repaired trips the gate with the offending rows
+
+#### Scenario: ASR-lowercase onset without fracture is not a violation
+
+- **GIVEN** a row that begins with a lowercase word because the ASR text itself is unpunctuated lowercase (e.g. "yeah i think it's two sprints..."), whose previous row ends with terminal punctuation or carries the same badge
+- **WHEN** the render gate's fracture predicate evaluates it
+- **THEN** the row is not counted as a violation
+
+#### Scenario: Short interjection does not slice the host sentence
+
+- **WHEN** a short interjection sentence ("Yeah,") from Speaker 0 lands between two sentences of Speaker 1
+- **THEN** the interjection persists as its own row under Speaker 0
+- **AND** both surrounding Speaker 1 sentences persist whole under Speaker 1
+
+#### Scenario: Duplicate re-transcription cluster is merged, not double-persisted
+
+- **GIVEN** two rows 1.1 s apart with disjoint spans, different badges, whose texts share the contiguous 6-token sequence "motors we're doing the feature flag update" covering ≥80% of the shorter row
+- **WHEN** assembly resolves the duplicate cluster
+- **THEN** one row survives carrying the shared text once, with its span extended to the union of the cluster's spans
+- **AND** the absorbed row's shell is deleted in the same transaction and no unlabeled source row remains
+- **AND** a genuine short repeat ("I can't. I can't." inside one row, or a full-sentence interjection) is not a duplicate cluster (its atoms are not a ≥3-token contiguous cross-badge match with disjoint spans)
+
+#### Scenario: Render-level residuals other than fractures are waivable only by amendment record
+
+- **WHEN** a render-level gate assertion (duplicate, unknown-within-cap, zero-duration, unmerged) has an irreducible residual on the pinned fixture
+- **THEN** the gate fails unless the fixture carries a user-signed amendment record for that offender (date + reason), the same mechanism as fixture-entry amendments
+- **AND** a cross-badge fracture has no such path — since the 2026-09-09 ear decree every fracture fails hard
