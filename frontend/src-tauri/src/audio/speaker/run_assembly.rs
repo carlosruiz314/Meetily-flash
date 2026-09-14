@@ -368,8 +368,110 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 // Clustering (task 3.2) — deterministic; Vec order is the only order.
 // ---------------------------------------------------------------------------
 
+/// Average-linkage agglomerative clustering (both-bars accuracy fix,
+/// 2026-09-09): the greedy online pass seeded centroids from processing
+/// order and drifted — measured on cde5c264 it produced TWO centroids
+/// (Cynthia 0.72, Ricardo 0.71 to their anchors) while CARLOS — the most
+/// prolific voice — matched neither (0.12–0.32), so his pieces flipped
+/// between the two by thin margins and Ricardo's real speech shared his
+/// badge. AHC measures the embedding matrix directly: a cluster forms from
+/// its members' mutual similarity, independent of processing order, and the
+/// threshold keeps the same meaning (merge while the closest pair's average
+/// linkage ≥ `threshold`). Ties → smallest index pair. Deterministic;
+/// returns (assignment, per-cluster mean centroids).
+pub fn cluster_pieces_ahc(embeddings: &[Vec<f32>], threshold: f32) -> (Vec<usize>, Vec<Vec<f32>>) {
+    let n = embeddings.len();
+    if n == 0 {
+        return (Vec::new(), Vec::new());
+    }
+    // Pairwise cosine matrix (n² — bounded by PIECE_CAP).
+    let mut sim = vec![0.0f32; n * n];
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let s = cosine(&embeddings[i], &embeddings[j]);
+            sim[i * n + j] = s;
+            sim[j * n + i] = s;
+        }
+    }
+    // Active clusters: member lists; linkage sums[i][j] = Σ pairwise
+    // cosines between members of cluster i and j; average = sums / (ni*nj).
+    let mut members: Vec<Vec<usize>> = (0..n).map(|i| vec![i]).collect();
+    let mut sums = sim.clone();
+    let mut alive: Vec<usize> = (0..n).collect();
+    while alive.len() > 1 {
+        // Closest active pair by average linkage; ties → smallest (i, j).
+        let mut best: Option<(usize, usize, f32)> = None;
+        for a in 0..alive.len() {
+            for b in (a + 1)..alive.len() {
+                let (i, j) = (alive[a], alive[b]);
+                let avg = sums[i * n + j]
+                    / (members[i].len() * members[j].len()) as f32;
+                let take = match best {
+                    None => true,
+                    Some((_, _, bs)) => avg > bs,
+                };
+                if take {
+                    best = Some((i, j, avg));
+                }
+            }
+        }
+        let Some((i, j, avg)) = best else { break };
+        if avg < threshold {
+            break;
+        }
+        // Merge j into i (i < j by construction of the scan? No — i, j are
+        // values in `alive`, so enforce min/max for determinism).
+        let (i, j) = if i < j { (i, j) } else { (j, i) };
+        let moved: Vec<usize> = members[j].clone();
+        for k in moved {
+            members[i].push(k);
+        }
+        for k in 0..n {
+            if k != i && k != j {
+                sums[i * n + k] += sums[j * n + k];
+                sums[k * n + i] = sums[i * n + k];
+            }
+        }
+        members[j].clear();
+        alive.retain(|&x| x != j);
+    }
+    // Dense relabel by first appearance in time order (deterministic ids).
+    let mut remap: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+    let mut assign = vec![0usize; n];
+    for (k, m) in members.iter().enumerate() {
+        if m.is_empty() {
+            continue;
+        }
+        let next = remap.len();
+        remap.entry(k).or_insert(next);
+        for &item in m {
+            assign[item] = remap[&k];
+        }
+    }
+    let dim = embeddings[0].len();
+    let mut centroids = vec![vec![0.0f32; dim]; remap.len()];
+    let mut counts = vec![0usize; remap.len()];
+    for (k, e) in assign.iter().zip(embeddings) {
+        counts[*k] += 1;
+        for (d, v) in e.iter().enumerate() {
+            centroids[*k][d] += v;
+        }
+    }
+    for (c, &cnt) in centroids.iter_mut().zip(&counts) {
+        for v in c.iter_mut() {
+            *v /= cnt as f32;
+        }
+    }
+    (assign, centroids)
+}
+
 /// Greedy threshold clustering: join the nearest centroid with cosine ≥
 /// `threshold`, else open a new cluster. Returns (assignment, centroids).
+///
+/// SUPERSEDED for the engine path by [`cluster_pieces_ahc`] (order-dependent
+/// seed drift, measured 2026-09-09); retained for its tests and any caller
+/// that needs streaming semantics.
+#[allow(dead_code)]
 pub fn cluster_pieces(embeddings: &[Vec<f32>], threshold: f32) -> (Vec<usize>, Vec<Vec<f32>>) {
     let mut assign: Vec<usize> = Vec::with_capacity(embeddings.len());
     let mut centroids: Vec<Vec<f32>> = Vec::new();
@@ -976,6 +1078,51 @@ pub fn is_mid_sentence_start(text: &str) -> bool {
         .skip_while(|c| !c.is_alphanumeric())
         .next()
         .map_or(false, |c| c.is_alphabetic() && c.is_lowercase())
+}
+
+// ---------------------------------------------------------------------------
+// Sub-run voice-flip scan (both-bars follow-up, 2026-09-09)
+// ---------------------------------------------------------------------------
+
+/// Sub-run voice-flip scan: pyannote's decode collapses to uncertainty where
+/// a short other-voice back-channel enters mid-run — it does NOT flip the
+/// argmax. Measured at the S2 pin (Cynthia's "Yeah" at 12.0s inside the held
+/// sp0 run [9.38,13.03]): sp1 mass runs 0.94–1.00 up to 11.95, then the
+/// window decodes to mush (sp1 0.45→0.26, sp2 0.24–0.33, silence up to 0.48)
+/// with sp1 still argmax — no slot change, so no split candidate ever exists
+/// and no smoothing knob can recover the boundary. A run frame is CONTESTED
+/// when the argmax speaker mass drops below [`FLIP_VALLEY_ARGMAX_MAX`] while
+/// a second speaker's mass reaches [`FLIP_VALLEY_SECOND_MIN`] — exactly the
+/// measured signature. The engine runs an embedding voice check at these
+/// valleys (`run_engine`); this module supplies the pure candidate detector.
+pub const FLIP_VALLEY_ARGMAX_MAX: f32 = 0.7;
+pub const FLIP_VALLEY_SECOND_MIN: f32 = 0.15;
+/// Contested frames separated by fewer than this many frames merge into one
+/// valley (one voice check per valley, not per frame).
+pub const FLIP_VALLEY_MERGE_FRAMES: usize = 10;
+
+/// Contested confusion-valley spans (frame indices, half-open) inside one
+/// speech run — where pyannote lost label confidence and an embedding
+/// voice-flip check is worth its cost. Deterministic; index/time order only.
+pub fn confusion_valleys(frames: &[FrameMasses], run: &SpeechRun) -> Vec<(usize, usize)> {
+    let end = run.end_frame.min(frames.len());
+    if run.start_frame >= end {
+        return Vec::new();
+    }
+    let mut spans: Vec<(usize, usize)> = Vec::new();
+    for f in run.start_frame..end {
+        let mut s = frames[f].speaker;
+        s.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
+        let contested = s[0] < FLIP_VALLEY_ARGMAX_MAX && s[1] >= FLIP_VALLEY_SECOND_MIN;
+        if !contested {
+            continue;
+        }
+        match spans.last_mut() {
+            Some(last) if f - last.1 < FLIP_VALLEY_MERGE_FRAMES => last.1 = f + 1,
+            _ => spans.push((f, f + 1)),
+        }
+    }
+    spans
 }
 
 // ---------------------------------------------------------------------------
@@ -1594,6 +1741,198 @@ mod tests {
         let turns = resolve_turns(&dropped);
         assert_eq!(turns.len(), 1, "surrounding same-speaker text is ONE turn");
         assert!(!turns[0].continues_previous);
+    }
+
+    // ---- sub-run voice-flip valleys ----
+
+    #[test]
+    fn confusion_valleys_find_the_pin_b_signature() {
+        // The measured S2 shape: ~1s of clean sp1 (mass ≈ 1.0), then the
+        // contested mush (sp1 0.45 → 0.26 with sp2 0.24–0.33), then clean
+        // sp1 again. One valley exactly over the mush.
+        let shift = 0.1; // frame math only — the fn is shift-agnostic
+        let mut frames = Vec::new();
+        for _ in 0..10 {
+            frames.push(spk(1, 0.98));
+        }
+        for i in 0..10 {
+            let mut f = FrameMasses::default();
+            f.speaker[1] = 0.45 - i as f32 * 0.02;
+            f.speaker[2] = 0.30;
+            f.silence = 1.0 - f.speaker[1] - f.speaker[2];
+            frames.push(f);
+        }
+        for _ in 0..10 {
+            frames.push(spk(1, 0.98));
+        }
+        let run = SpeechRun { start_frame: 0, end_frame: frames.len() };
+        let valleys = confusion_valleys(&frames, &run);
+        assert_eq!(valleys, vec![(10, 20)], "one valley over the contested span");
+        let _ = shift;
+    }
+
+    #[test]
+    fn confusion_valleys_ignores_clean_and_solo_quiet_frames() {
+        // Clean single-voice run: no valleys. A dip that silences WITHOUT a
+        // second voice (argmax 0.4, rest silence) is not contested — that is
+        // a pause signature, not a back-channel.
+        let mut frames = Vec::new();
+        for _ in 0..20 {
+            frames.push(spk(0, 0.98));
+        }
+        let mut quiet = FrameMasses::default();
+        quiet.speaker[0] = 0.4;
+        quiet.silence = 0.6;
+        for _ in 0..5 {
+            frames.push(quiet);
+        }
+        for _ in 0..20 {
+            frames.push(spk(0, 0.98));
+        }
+        let run = SpeechRun { start_frame: 0, end_frame: frames.len() };
+        assert!(confusion_valleys(&frames, &run).is_empty());
+    }
+
+    #[test]
+    fn confusion_valleys_merge_nearby_contested_frames() {
+        // Two contested bursts 5 frames apart (< FLIP_VALLEY_MERGE_FRAMES)
+        // are one valley; 15 frames apart they stay two.
+        let mut frames = vec![spk(0, 0.98); 40];
+        for f in 10..15 {
+            let mut m = FrameMasses::default();
+            m.speaker[0] = 0.5;
+            m.speaker[1] = 0.3;
+            m.silence = 0.2;
+            frames[f] = m;
+        }
+        for f in 20..25 {
+            let mut m = FrameMasses::default();
+            m.speaker[0] = 0.5;
+            m.speaker[1] = 0.3;
+            m.silence = 0.2;
+            frames[f] = m;
+        }
+        let run = SpeechRun { start_frame: 0, end_frame: frames.len() };
+        assert_eq!(confusion_valleys(&frames, &run), vec![(10, 25)]);
+    }
+
+    #[test]
+    fn confusion_valleys_never_escape_the_run() {
+        // Contested frames outside the run's half-open span are invisible.
+        let mut contested = spk(0, 0.3);
+        contested.speaker[1] = 0.5;
+        let mut frames = vec![spk(0, 0.98); 30];
+        frames[0] = contested;
+        frames[29] = contested;
+        let run = SpeechRun { start_frame: 5, end_frame: 25 };
+        assert!(confusion_valleys(&frames, &run).is_empty());
+    }
+
+    // ---- average-linkage AHC clustering ----
+
+    #[test]
+    fn ahc_finds_two_voices_independent_of_order() {
+        // The greedy failure mode: order-dependent seeding absorbed a voice.
+        // AHC must separate two tight pairs regardless of interleave order.
+        let embs = vec![e(1.0), e(-1.0), e(0.99), e(-0.99), e(1.0), e(-1.0)];
+        let (assign, cents) = cluster_pieces_ahc(&embs, 0.5);
+        assert_eq!(cents.len(), 2, "{assign:?}");
+        assert_eq!(assign[0], assign[2], "positive pair together");
+        assert_eq!(assign[0], assign[4]);
+        assert_eq!(assign[1], assign[3]);
+        assert_ne!(assign[0], assign[1]);
+    }
+
+    #[test]
+    fn ahc_stops_when_no_pair_reaches_threshold() {
+        // Chain a—b 0.9, a—c 0.5, b—c 0.7: a+b merge (0.9), then average
+        // linkage (ab)—c = (0.5+0.7)/2 = 0.6 < 0.65 → stop at 2 clusters.
+        // e(d) puts the first `dir` of `dim` entries: reuse the helper with
+        // 4-dim vectors to get controlled cosines.
+        let dim4 = |vals: [f32; 4]| vals.to_vec();
+        let a = dim4([1.0, 0.0, 0.0, 0.0]);
+        let b = dim4([0.9, 0.43589, 0.0, 0.0]); // cos(a,b)=0.9
+        // c: cos(a,c)=0.5, cos(b,c)=0.75 — b is close enough to merge with a
+        // (0.9), and c with the pair averages (0.5+0.75)/2=0.625 < 0.65, so
+        // AVERAGE linkage (not single-link max) must stop the merge.
+        let c = dim4([0.5, 0.6883, 0.5256, 0.0]);
+        let norm = |mut v: Vec<f32>| {
+            let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+            for x in v.iter_mut() {
+                *x /= n;
+            }
+            v
+        };
+        let (a, b, c) = (norm(a), norm(b), norm(c));
+        let cos_ab = cosine(&a, &b);
+        let cos_ac = cosine(&a, &c);
+        let cos_bc = cosine(&b, &c);
+        assert!((cos_ab - 0.9).abs() < 0.01, "{cos_ab}");
+        assert!((cos_ac - 0.5).abs() < 0.01, "{cos_ac}");
+        assert!((cos_bc - 0.75).abs() < 0.01, "{cos_bc}");
+        let (assign, cents) = cluster_pieces_ahc(&[a, b, c], 0.65);
+        assert_eq!(cents.len(), 2, "{assign:?}");
+        assert_eq!(assign[0], assign[1]);
+        assert_ne!(assign[0], assign[2]);
+    }
+
+    #[test]
+    fn ahc_three_well_separated_voices_form_three_clusters() {
+        // The cde5c264 shape: three voices, each tight, mutually far —
+        // exactly what the greedy pass collapsed to two. Voice 1 ~ [10,1…],
+        // voice 2 antipodal, voice 3 near-orthogonal alternating sign
+        // (cos(v1,v3) ≈ 0.10, scaling must NOT matter — a parallel vector is
+        // the SAME voice, which is why the first draft of this test failed).
+        let voice = |sign: f32| -> Vec<Vec<f32>> {
+            (0..3)
+                .map(|i| {
+                    let mut v = vec![sign; 8];
+                    v[0] = sign * 10.0;
+                    v[1] += i as f32 * 0.01; // tiny spread within a voice
+                    v
+                })
+                .collect()
+        };
+        let mut embs = voice(1.0);
+        embs.extend(voice(-1.0));
+        embs.extend((0..3).map(|i| {
+            let mut v = vec![0.0f32; 8];
+            for (k, x) in v.iter_mut().enumerate() {
+                *x = if k % 2 == 0 { 1.0 } else { -1.0 };
+            }
+            v[0] += i as f32 * 0.01; // near-identical members, distinct direction
+            v
+        }));
+        let (assign, cents) = cluster_pieces_ahc(&embs, 0.5);
+        assert_eq!(cents.len(), 3, "{assign:?}");
+        for b in 0..3 {
+            assert_eq!(assign[b * 3], assign[b * 3 + 1]);
+            assert_eq!(assign[b * 3 + 1], assign[b * 3 + 2]);
+        }
+        assert_ne!(assign[0], assign[3]);
+        assert_ne!(assign[3], assign[6]);
+        assert_ne!(assign[0], assign[6]);
+    }
+
+    #[test]
+    fn ahc_is_deterministic() {
+        let embs: Vec<Vec<f32>> = (0..12)
+            .map(|i| e(if i % 3 == 0 { 1.0 } else if i % 3 == 1 { 0.6 } else { -1.0 }))
+            .collect();
+        let (a1, c1) = cluster_pieces_ahc(&embs, 0.3);
+        let (a2, c2) = cluster_pieces_ahc(&embs, 0.3);
+        assert_eq!(a1, a2);
+        assert_eq!(c1, c2);
+    }
+
+    #[test]
+    fn ahc_handles_single_and_empty() {
+        let (a, c) = cluster_pieces_ahc(&[e(1.0)], 0.5);
+        assert_eq!(a, vec![0]);
+        assert_eq!(c.len(), 1);
+        let (a, c) = cluster_pieces_ahc(&[], 0.5);
+        assert!(a.is_empty());
+        assert!(c.is_empty());
     }
 
     // ---- text alignment (3.6) ----

@@ -213,7 +213,7 @@ async fn enhance_then_speakers_cde5c264_live() {
     // --- Speakers (stage-95 handoff): the real diarization command ---
     let registry = std::sync::Arc::new(std::sync::Mutex::new(None));
     let threshold_fp = (threshold * 65536.0) as u32;
-    let d = app_lib::audio::speaker::commands::run_diarization_for_meeting(
+    let d = app_lib::audio::speaker::commands::run_diarization_for_meeting_auto(
         &pool,
         MEETING_ID,
         threshold_fp,

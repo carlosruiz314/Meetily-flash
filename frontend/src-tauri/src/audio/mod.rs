@@ -50,6 +50,9 @@ pub mod constants;
 // Retranscription module (re-process stored audio with different settings)
 pub mod retranscription;
 
+// Text-level hallucination audit for transcript rows (no audio)
+pub mod hallucination;
+
 // Import module (import external audio files as new meetings)
 pub mod import;
 

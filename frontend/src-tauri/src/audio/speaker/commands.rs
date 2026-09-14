@@ -303,6 +303,33 @@ pub async fn rediarize_meeting<R: tauri::Runtime>(
     }
 }
 
+/// UI-free full reset + diarization for one meeting — the exact
+/// `reset_speaker_labels` semantics (enumerate manual labels, clear ALL,
+/// PreCleared re-run) without the Tauri handle. Exists so agent-driven runs
+/// and integration tests exercise the same production pipeline the button
+/// triggers, instead of a hand-rebuilt variant.
+pub async fn run_speakers_reset_standalone(
+    pool: &SqlitePool,
+    meeting_id: &str,
+    threshold_fp: u32,
+    registry: Arc<Mutex<Option<CosineRegistryAdapter>>>,
+) -> Result<DiarizationResult, String> {
+    let pre_run_manual_labels = SpeakerRepository::list_manual_speaker_labels(pool, meeting_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    SpeakerRepository::clear_all_speaker_labels(pool, meeting_id)
+        .await
+        .map_err(|e| e.to_string())?;
+    run_diarization_for_meeting(
+        pool,
+        meeting_id,
+        threshold_fp,
+        registry,
+        ManualNamesPolicy::PreCleared(pre_run_manual_labels),
+    )
+    .await
+}
+
 #[tauri::command]
 pub async fn reset_speaker_labels<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
@@ -434,6 +461,25 @@ pub(crate) enum ManualNamesPolicy {
     None,
     Enumerate,
     PreCleared(Vec<String>),
+}
+
+/// Public pass-through for external test harnesses (ignored live tests):
+/// `ManualNamesPolicy` is `pub(crate)`, so out-of-crate callers use this
+/// automatic write-path wrapper.
+pub async fn run_diarization_for_meeting_auto(
+    pool: &SqlitePool,
+    meeting_id: &str,
+    threshold_fp: u32,
+    registry: Arc<Mutex<Option<CosineRegistryAdapter>>>,
+) -> Result<DiarizationResult, String> {
+    run_diarization_for_meeting(
+        pool,
+        meeting_id,
+        threshold_fp,
+        registry,
+        ManualNamesPolicy::None,
+    )
+    .await
 }
 
 pub async fn run_diarization_for_meeting(
@@ -824,10 +870,18 @@ pub async fn run_diarization_for_meeting(
     // (measured live: "…you've | aged like | five years." across three rows,
     // 128 Unknown slivers meeting-wide, overlapping fragment spans).
     let aligned = merge_same_label_fragments(aligned);
-    let segments_labeled = SpeakerRepository::persist_aligned_groups(pool, aligned, manual_rederive)
-        .await
-        .map_err(|e| e.to_string())?
-        as u64;
+    // no-split-sentences D4: chunk-overlap re-transcription clusters resolve
+    // to ONE row before persist (text written once, span extended to the
+    // union); the absorbed members emit nothing. Under regeneration persist
+    // there is no absorbed-row sweep to invoke: every non-manual rendering
+    // row is deleted and rebuilt from source in one transaction, so an
+    // absorbed member's stale row simply ceases to exist.
+    let aligned = crate::audio::speaker::alignment::resolve_duplicate_clusters(aligned);
+    let segments_labeled =
+        SpeakerRepository::persist_regenerated_rendering(pool, meeting_id, aligned, manual_rederive)
+            .await
+            .map_err(|e| e.to_string())?
+            as u64;
 
     if engine_turns.is_some() {
         // D9 (amended 2026-09-06): the engine's turn boundaries are final and
@@ -1000,12 +1054,14 @@ fn is_cjk(c: char) -> bool {
 
 /// Store the engine's continuation fact on each turn's FIRST persisted row
 /// (spec: the UI resolves a turn's flag from its first row; legacy rows keep
-/// NULL → text-heuristic fallback). Rows are matched to turns by
-/// `audio_start_time`; the earliest row inside the turn span is the first.
-/// The persisted value is `effective_continuation`: the engine's derivation
-/// fact OR the row text beginning mid-sentence (the hard invariant — the
-/// machine marks lowercase-initial turns, never presents them as fresh
-/// starts).
+/// NULL → text-heuristic fallback). Rows are matched to turns by OVERLAP —
+/// the first row (in start order) whose span intersects the turn's span is
+/// the first (no-split-sentences 2.6: majority-assigned sentence atoms may
+/// START before the turn's own start, so a start-time-only match would miss
+/// them). The persisted value is `effective_continuation`: the engine's
+/// derivation fact OR the row text beginning mid-sentence (the hard
+/// invariant — the machine marks lowercase-initial turns, never presents them
+/// as fresh starts).
 async fn stamp_continuation_facts(
     pool: &SqlitePool,
     meeting_id: &str,
@@ -1014,11 +1070,13 @@ async fn stamp_continuation_facts(
     let mut stamped = 0usize;
     for t in turns {
         let row: Option<(String, String)> = sqlx::query_as(
-            "SELECT id, transcript FROM transcripts WHERE meeting_id = ? AND audio_start_time >= ? AND audio_start_time < ? ORDER BY audio_start_time ASC LIMIT 1",
+            "SELECT id, transcript FROM transcripts WHERE meeting_id = ? \
+             AND audio_start_time < ? AND audio_end_time > ? \
+             ORDER BY audio_start_time ASC LIMIT 1",
         )
         .bind(meeting_id)
-        .bind(t.start_seconds)
         .bind(t.end_seconds)
+        .bind(t.start_seconds)
         .fetch_optional(pool)
         .await
         .map_err(|e| e.to_string())?;
@@ -1066,8 +1124,10 @@ async fn fetch_transcript_timestamps(
         audio_end_time: Option<f64>,
     }
 
+    // Engine priors read the IMMUTABLE source (design D5): run-2 priors must
+    // not be run-1's output spans.
     let rows = sqlx::query_as::<_, Row>(
-        "SELECT audio_start_time, audio_end_time FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time ASC",
+        "SELECT audio_start_time, audio_end_time FROM transcript_sources WHERE meeting_id = ? ORDER BY audio_start_time ASC",
     )
     .bind(meeting_id)
     .fetch_all(pool)
@@ -1275,13 +1335,18 @@ async fn fetch_transcripts_for_alignment(
         token_timestamps: Option<String>,
     }
 
+    // Alignment input reads the IMMUTABLE source (design D1) — never the
+    // rendering rows this pipeline wrote on a previous run. Unconditional:
+    // there is no `transcripts` fallback branch anywhere.
     let rows = sqlx::query_as::<_, Row>(
-        "SELECT id, transcript as text, audio_start_time as start_time, audio_end_time as end_time, token_timestamps FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time ASC",
+        "SELECT id, transcript as text, audio_start_time as start_time, audio_end_time as end_time, token_timestamps FROM transcript_sources WHERE meeting_id = ? ORDER BY audio_start_time ASC",
     )
     .bind(meeting_id)
     .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())?;
+
+    detect_source_rendering_drift(pool, meeting_id, rows.len()).await;
 
     Ok(rows
         .into_iter()
@@ -1298,6 +1363,39 @@ async fn fetch_transcripts_for_alignment(
             }
         })
         .collect())
+}
+
+/// D8 (change `align-from-immutable-source`): dual-write drift is observable,
+/// not silent. An empty source fetch on a meeting whose rendering rows exist
+/// means a transcription writer bypassed the shared dual-write helper (or the
+/// rows predate the source table, e.g. a downgrade). The alignment input is
+/// empty either way — the run no-ops after the label pre-clear — but the
+/// divergence must be loud. Returns whether drift was detected (test hook).
+async fn detect_source_rendering_drift(
+    pool: &SqlitePool,
+    meeting_id: &str,
+    source_rows: usize,
+) -> bool {
+    if source_rows > 0 {
+        return false;
+    }
+    let rendering_count: (i64,) =
+        sqlx::query_as("SELECT COUNT(*) FROM transcripts WHERE meeting_id = ?")
+            .bind(meeting_id)
+            .fetch_one(pool)
+            .await
+            .unwrap_or((0,));
+    if rendering_count.0 > 0 {
+        log::warn!(
+            "align-from-immutable-source drift: meeting {} holds {} rendering row(s) but an \
+             EMPTY transcript_sources — a writer bypassed the dual-write helper or the rows \
+             predate the source table; the alignment input is empty and the run will no-op",
+            meeting_id,
+            rendering_count.0
+        );
+        return true;
+    }
+    false
 }
 
 fn resolve_label(speaker: &str, label_map: &std::collections::HashMap<u32, String>) -> String {
@@ -1505,6 +1603,144 @@ mod tests {
         let merged = merge_same_label_fragments(aligned);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].text, "地块规划");
+    }
+
+    // ── align-from-immutable-source: source-table reads + D8 drift (task 2.1) ──
+
+    async fn sources_test_pool() -> SqlitePool {
+        let pool = SqlitePool::connect(":memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE transcripts (
+                id TEXT PRIMARY KEY,
+                meeting_id TEXT NOT NULL,
+                transcript TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                audio_start_time REAL, audio_end_time REAL, duration REAL,
+                token_timestamps TEXT,
+                speaker_label TEXT, speaker_source TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE transcript_sources (
+                id TEXT PRIMARY KEY,
+                meeting_id TEXT NOT NULL,
+                transcript TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                audio_start_time REAL, audio_end_time REAL, duration REAL,
+                token_timestamps TEXT,
+                source_origin TEXT NOT NULL DEFAULT 'stt'
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    /// Task 2.1 (D5): engine priors (`fetch_transcript_timestamps`) read the
+    /// SOURCE table — when rendering spans differ from source spans, the
+    /// priors must be the source's.
+    #[tokio::test]
+    async fn engine_priors_come_from_the_source_table() {
+        let pool = sources_test_pool().await;
+        for table in ["transcripts", "transcript_sources"] {
+            sqlx::query(&format!(
+                "INSERT INTO {table} (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration) \
+                 VALUES ('row-1', 'm1', 'text', 't', 1.0, 2.0, 1.0)"
+            ))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        // Drift the rendering row away from the source row.
+        sqlx::query("UPDATE transcripts SET audio_start_time = 5.0, audio_end_time = 6.0 WHERE id = 'row-1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let priors = fetch_transcript_timestamps(&pool, "m1", 100.0).await.unwrap();
+        assert_eq!(priors, vec![(1.0, 2.0)], "priors are the SOURCE spans, not the rendering's");
+    }
+
+    /// Task 2.1: alignment input comes from the source table, and the D8
+    /// drift warning fires (rendering non-empty ∧ source empty) with the run
+    /// no-opping on the empty input.
+    #[tokio::test]
+    async fn alignment_input_comes_from_source_and_drift_warns() {
+        let pool = sources_test_pool().await;
+        for table in ["transcripts", "transcript_sources"] {
+            sqlx::query(&format!(
+                "INSERT INTO {table} (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration) \
+                 VALUES ('src-1', 'm1', 'source text', 't', 1.0, 2.0, 1.0)"
+            ))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+        // A previous run's rendering output: different id and text.
+        sqlx::query(
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker_label, speaker_source) \
+             VALUES ('stale-9', 'm1', 'stale rendering', 't', 1.0, 2.0, 1.0, 'Speaker 0', 'auto')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let inputs = fetch_transcripts_for_alignment(&pool, "m1").await.unwrap();
+        assert_eq!(inputs.len(), 1, "only the source row is alignment input");
+        assert_eq!(inputs[0].id, "src-1");
+        assert_eq!(inputs[0].text, "source text");
+        assert!(!detect_source_rendering_drift(&pool, "m1", inputs.len()).await);
+
+        // Drift: rendering non-empty, source empty → empty input (the run
+        // no-ops) and the warning fires.
+        let pool2 = sources_test_pool().await;
+        sqlx::query(
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration) \
+             VALUES ('stale-1', 'm2', 'orphan rendering', 't', 0.0, 1.0, 1.0)",
+        )
+        .execute(&pool2)
+        .await
+        .unwrap();
+        let inputs2 = fetch_transcripts_for_alignment(&pool2, "m2").await.unwrap();
+        assert!(
+            inputs2.is_empty(),
+            "no input invented from rendering rows — the run no-ops"
+        );
+        assert!(
+            detect_source_rendering_drift(&pool2, "m2", inputs2.len()).await,
+            "drift warning fires for rendering-non-empty / source-empty"
+        );
+        assert!(
+            !detect_source_rendering_drift(&pool2, "m-none", 0).await,
+            "both empty is not drift"
+        );
+    }
+
+    // ── align-from-immutable-source task 2.6: merge keeps terminators ──
+
+    #[test]
+    fn merge_same_label_fragments_preserves_sentence_terminators() {
+        let aligned = vec![
+            frag("r1", "Where is Ricardo?", 32510, 35000, "Speaker 0"),
+            frag("r1", "I don't know.", 35000, 37000, "Speaker 0"),
+            frag("r1", "Let me ping in.", 37000, 39000, "Speaker 1"),
+        ];
+        let merged = merge_same_label_fragments(aligned);
+        let joined = merged
+            .iter()
+            .map(|s| s.text.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        for t in ['?', '.', '.'] {
+            assert!(
+                joined.contains(t),
+                "fragment merge must keep each sentence terminator ('{t}')"
+            );
+        }
     }
 
     #[test]

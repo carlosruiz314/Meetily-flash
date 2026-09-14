@@ -480,6 +480,26 @@ pub fn get_language_preference_internal() -> Option<String> {
     LANGUAGE_PREFERENCE.lock().ok().map(|lang| lang.clone())
 }
 
+/// Resolve the BATCH transcription language from the user's preference
+/// (whisper-hallucination-cleanup D1). The queue used to pass `None`, which
+/// the engine maps to per-segment auto-detection WITHOUT translation —
+/// dropping both the UI's translate-to-English contract and any explicit pin.
+///
+/// - `None` / `"auto"` / `"auto-translate"` → `"auto-translate"`: passed
+///   through to the engine unchanged (per-window detect + translate to
+///   English; near-identity for English meetings, English minutes for
+///   non-English ones — exactly what the picker promises). Mapping both
+///   automatic states identically also makes the startup-sync race
+///   immaterial: pre-mount the static holds the Rust default
+///   `auto-translate`, post-mount the UI-synced `auto`.
+/// - any other code → that code, pinned for the whole run.
+pub fn resolve_batch_language(pref: Option<&str>) -> Option<String> {
+    Some(match pref {
+        None | Some("auto") | Some("auto-translate") => "auto-translate".to_string(),
+        Some(code) => code.to_string(),
+    })
+}
+
 /// Read all transcript text from a `transcripts.json` file produced by `write_transcripts_json`.
 async fn read_transcript_text(path: &std::path::Path) -> anyhow::Result<String> {
     let content = tokio::fs::read_to_string(path).await?;
@@ -681,7 +701,9 @@ pub fn run() {
                                 None => return JobResult::Failed("invalid audio path".to_string()),
                             };
                             match audio::retranscription::start_retranscription(
-                                app.clone(), meeting_id, folder, None, None, None,
+                                app.clone(), meeting_id, folder,
+                                resolve_batch_language(get_language_preference_internal().as_deref()),
+                                None, None,
                             )
                             .await
                             {
@@ -1373,5 +1395,19 @@ mod tests {
              Handler block:\n{}",
             handler_block
         );
+    }
+
+    // whisper-hallucination-cleanup task 2.1: batch language resolution pins
+    // the UI's automatic states to auto-translate and passes codes through.
+    #[test]
+    fn resolve_batch_language_maps_preferences() {
+        assert_eq!(resolve_batch_language(None).as_deref(), Some("auto-translate"));
+        assert_eq!(resolve_batch_language(Some("auto")).as_deref(), Some("auto-translate"));
+        assert_eq!(
+            resolve_batch_language(Some("auto-translate")).as_deref(),
+            Some("auto-translate")
+        );
+        assert_eq!(resolve_batch_language(Some("en")).as_deref(), Some("en"));
+        assert_eq!(resolve_batch_language(Some("de")).as_deref(), Some("de"));
     }
 }

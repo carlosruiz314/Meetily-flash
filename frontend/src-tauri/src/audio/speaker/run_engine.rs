@@ -9,11 +9,11 @@ use crate::audio::speaker::pyannote_segmentation::{
     local_labels, FrameMassesOutput, PyannoteSegmentation, FRAME_SHIFT,
 };
 use crate::audio::speaker::run_assembly::{
-    cluster_pieces, derive_pieces, drop_textless, embed_slice, margin_to_centroids, merge_to_cap,
-    overlap_fraction, refine_loop, resolve_turns, rescue_candidates, speech_runs, cosine, PieceIn,
-    PieceSpan, RescueGap, RescueSubWindow, AMBIGUITY_MARGIN, EMBED_FLOOR_SECS,
-    MODE_FILTER_RADIUS_FRAMES, PIECE_CAP, PROMOTION_FLOOR_SECS, SPEECH_GATE,
-    TEXT_SKEW_TOLERANCE_SECS,
+    cluster_pieces_ahc, confusion_valleys, derive_pieces, drop_textless, embed_slice,
+    margin_to_centroids, merge_to_cap, overlap_fraction, refine_loop, resolve_turns,
+    rescue_candidates, speech_runs, cosine, PieceIn, PieceSpan, RescueGap, RescueSubWindow,
+    SpeechRun, AMBIGUITY_MARGIN, EMBED_FLOOR_SECS, MODE_FILTER_RADIUS_FRAMES, PIECE_CAP,
+    PROMOTION_FLOOR_SECS, SPEECH_GATE, TEXT_SKEW_TOLERANCE_SECS,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -32,6 +32,24 @@ const MIN_SUB_WINDOW_SECS: f64 = 0.12;
 const ONSET_THRESHOLD_DB: f32 = 10.0;
 const MERGE_GAP_FRAMES: usize = 4;
 const SEG_HOP: usize = SAMPLE_RATE as usize / 50; // 20ms
+
+// Sub-run voice-flip scan (both-bars, 2026-09-09; see `confusion_valleys` in
+// run_assembly for the candidate detector and its measured pin-B evidence).
+/// Voice-check window either side of a valley start: long enough for a
+/// usable TitaNet slice, short enough that one side stays inside a short
+/// back-channel's surroundings (the 12.0s "Yeah" check must fit the
+/// [10.8,12.0) / [12.0,13.2) windows inside the 3.65s piece).
+const FLIP_WINDOW_SECS: f64 = 1.2;
+/// Pieces shorter than this cannot host a promotable split: the check needs
+/// PROMOTION_FLOOR_SECS of material on both sides plus a full left window.
+const FLIP_SCAN_MIN_PIECE_SECS: f64 = 2.0;
+/// How far past the piece's end the right window may reach (it routinely
+/// covers the run's decay into silence — the measured 12.0s right window
+/// [12.0,13.2) spills 0.17s past the piece end at 13.03).
+const FLIP_RIGHT_SPILL_SECS: f64 = 0.5;
+/// Splice rounds: each round splits at most one accepted valley per piece;
+/// newly created pieces are re-scanned next round. Bounded, deterministic.
+const FLIP_MAX_ROUNDS: usize = 3;
 
 /// One derived turn — the persisted unit on the success path.
 #[derive(Clone, Debug)]
@@ -156,7 +174,14 @@ pub fn derive_turns_from_masses(
         let refs: Vec<&Vec<f32>> =
             references.iter().take(max_speakers.max(1) - 1).map(|(_, e)| e).collect();
         let piece_cap = (max_speakers - refs.len()).max(1);
-        let (mut assign, mut centroids) = cluster_pieces(&labeled_embs, merge_threshold);
+        // Average-linkage AHC (both-bars accuracy fix, 2026-09-09): the
+        // greedy pass seeded centroids in processing order and drifted — on
+        // cde5c264 it left CARLOS with no centroid (his anchors scored
+        // 0.12–0.32 against both surviving centroids) so his pieces flipped
+        // between the Cynthia and Ricardo clusters by thin margins and
+        // Ricardo's real speech shared his badge. AHC measures the embedding
+        // matrix directly; the threshold keeps its meaning.
+        let (mut assign, mut centroids) = cluster_pieces_ahc(&labeled_embs, merge_threshold);
         merge_to_cap(&mut assign, &mut centroids, &labeled_embs, piece_cap);
         for e in &refs {
             centroids.push((*e).clone());
@@ -331,6 +356,103 @@ pub fn derive_turns_from_masses(
                         promoted_subfloor: false,
                     });
                 }
+            }
+        }
+
+        // Sub-run voice-flip scan: pyannote holds the argmax through short
+        // other-voice back-channels (the 12.0s "Yeah" — decode turns to
+        // contested mush, never flips, so no split candidate ever exists).
+        // At each confusion valley inside a labeled piece, embed both sides
+        // of the valley start and split ONLY when both sides embed
+        // decisively (margin ≥ AMBIGUITY_MARGIN) to DIFFERENT final
+        // centroids — the same identity bar a labeled piece must clear, so
+        // an undecided or same-voice valley can never manufacture a split.
+        // Each round scans the CURRENT piece list and splits at most once
+        // per piece; already-split edges abstain naturally (the remaining
+        // half can no longer fit both windows).
+        let flip_debug = std::env::var_os("MEETIFY_ENGINE_DEBUG").is_some();
+        for _round in 0..FLIP_MAX_ROUNDS {
+            let mut flips: Vec<(usize, f64, usize, f32, usize, f32)> = Vec::new();
+            for (i, piece) in piece_ins.iter().enumerate() {
+                if piece.cluster.is_none() {
+                    continue;
+                }
+                if piece.dur_secs < FLIP_SCAN_MIN_PIECE_SECS {
+                    continue;
+                }
+                let p_end = piece.start_secs + piece.dur_secs;
+                let f_start = (piece.start_secs / FRAME_SHIFT).round() as usize;
+                let f_end = ((p_end / FRAME_SHIFT).round() as usize).min(fm.frames.len());
+                let piece_run = SpeechRun {
+                    start_frame: f_start,
+                    end_frame: f_end,
+                };
+                for (va, _vb) in confusion_valleys(&fm.frames, &piece_run) {
+                    let t = va as f64 * FRAME_SHIFT;
+                    if t - FLIP_WINDOW_SECS < piece.start_secs
+                        || t - piece.start_secs < PROMOTION_FLOOR_SECS
+                        || p_end - t < PROMOTION_FLOOR_SECS
+                        || t + FLIP_WINDOW_SECS > p_end + FLIP_RIGHT_SPILL_SECS
+                    {
+                        continue;
+                    }
+                    let i0 = (((t - FLIP_WINDOW_SECS) * sr) as usize).min(samples.len());
+                    let i1 = ((t * sr) as usize).min(samples.len());
+                    let j1 = (((t + FLIP_WINDOW_SECS) * sr) as usize).min(samples.len());
+                    if i1 <= i0 || j1 <= i1 {
+                        continue;
+                    }
+                    let (Some(emb_l), Some(emb_r)) = (
+                        extractor.extract_embedding(&samples[i0..i1], SAMPLE_RATE),
+                        extractor.extract_embedding(&samples[i1..j1], SAMPLE_RATE),
+                    ) else {
+                        continue;
+                    };
+                    let (lc, lm) = best_centroid(&emb_l).unwrap_or((0, f32::NEG_INFINITY));
+                    let (rc, rm) = best_centroid(&emb_r).unwrap_or((1, f32::NEG_INFINITY));
+                    if lm >= AMBIGUITY_MARGIN && rm >= AMBIGUITY_MARGIN && lc != rc {
+                        flips.push((i, t, lc, lm, rc, rm));
+                        if flip_debug {
+                            eprintln!(
+                                "FLIP-SPLIT piece[{:.2},{:.2}] at {:.2}: sp{} -> sp{} margins {:.3}/{:.3}",
+                                piece.start_secs, p_end, t, lc, rc, lm, rm
+                            );
+                        }
+                        break; // one split per piece per round; halves re-scanned next round
+                    }
+                    if flip_debug {
+                        eprintln!(
+                            "FLIP-ABSTAIN at {:.2}: margins {:.3}/{:.3} clusters {}/{}",
+                            t, lm, rm, lc, rc
+                        );
+                    }
+                }
+            }
+            if flips.is_empty() {
+                break;
+            }
+            // Splice: replace each flipped piece with its two halves.
+            // Descending index keeps earlier positions valid (each piece
+            // flips at most once per round).
+            flips.sort_by(|a, b| b.0.cmp(&a.0));
+            for (i, t, lc, lm, rc, rm) in flips {
+                let piece = piece_ins[i];
+                let left = PieceIn {
+                    start_secs: piece.start_secs,
+                    dur_secs: t - piece.start_secs,
+                    cluster: Some(lc),
+                    margin: Some(lm),
+                    promoted_subfloor: false,
+                };
+                let right = PieceIn {
+                    start_secs: t,
+                    dur_secs: piece.start_secs + piece.dur_secs - t,
+                    cluster: Some(rc),
+                    margin: Some(rm),
+                    promoted_subfloor: false,
+                };
+                piece_ins[i] = right;
+                piece_ins.insert(i, left);
             }
         }
 

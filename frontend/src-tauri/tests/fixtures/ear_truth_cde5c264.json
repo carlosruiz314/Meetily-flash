@@ -1,166 +1,159 @@
 {
- "meeting": "cde5c264",
- "recorded": "2026-09-04",
- "source_audio": "~/Music/meetily-recordings/Meeting 2026-06-22_16-04-01_2026-06-22_14-04/audio.mp4",
- "voices_note": "user = softer male; Cynthia = louder female; Ricardo = third voice. Times are meeting-absolute seconds (clip answers resolved via fixture_clips/offsets.json).",
- "single_voice_semantics": "All turns/segments overlapping the span by >0.25s must carry the SAME speaker label. Silence-delimited same-speaker boundaries inside the span are NOT violations (the ear attests voices, not turn units).",
- "known_limitations": [
-  "S2_user_to_cynthia_13s"
- ],
- "entries": [
-  {
-   "id": "S14_banter_anchor_161",
-   "kind": "voice_change_at",
-   "start_s": 155.0,
-   "end_s": 170.0,
-   "change_at_s": 161.36,
-   "tolerance_s": 1.0,
-   "hold_out": false,
-   "note": "The 02:12-02:50 anchor (clip 02, 155.0-170.0): user heard exactly ONE voice change ('at 0:06' = 161.0 coarse). Re-attested 2026-09-06 on a fresh 158.0-165.0 clip: change at ≈0:03 (≈161.0). Pin = the engine's boundary 161.36, 0.36s from the coarse answer; independently corroborated by pyannote slot flips at ≈161.4 (6 windows), the F0 female→male step 235→125 Hz, and the TitaNet anchor crossover. The old 162.78 pin was a merged-track crosstalk reading AFTER the real handoff. Structure (exactly one change, tail on the earlier speaker) is the user's attestation."
-  },
-  {
-   "id": "S1_five_years_sentence",
-   "kind": "single_voice",
-   "start_s": 9.38,
-   "end_s": 11.8,
-   "hold_out": false,
-   "note": "One continuous sentence across the 12.07 whisper-row edge (the legacy pipeline flipped label there). Narrowed to the attested sentence: the banter before it (7.29-8.57) is a genuine short other-voice exchange ('All good, all good. You?'). Identity adjudicated by the user 2026-09-07: this sentence is CYNTHIA's voice — matching the engine's cluster attribution and the acoustic probes (supersedes the earlier 'User voice' note, which was the session's unverified working assumption). Re-pinned 2026-09-07 via clip_D (11.5-14.5s): Cynthia's sentence ends and the user's \"Yeah\" begins around meeting ~12.0 (clip ~0.5s, \"definitely around 0.5s not 1.9s\") — end_s 12.8 -> 11.8 so the span ends before the attested change."
-  },
-  {
-   "id": "S2_user_to_cynthia_13s",
-   "kind": "voice_change_at",
-   "start_s": 11.8,
-   "end_s": 13.5,
-   "change_at_s": 12.0,
-   "tolerance_s": 0.75,
-   "hold_out": false,
-   "note": "RE-PINNED 2026-09-07 via clips C+D (user ear, supersedes the 2026-09-04 13.03 pin): Cynthia's \"...five years\" ends and the USER's \"Yeah\" begins at meeting ~12.0 (clip_D: change at ~0.5s, \"definitely around 0.5s not 1.9s\"); \"that's right\" (clip 02s) is the user mid-speech — no change at 13.0. KNOWN ENGINE MISS: the engine holds 9.38-13.03 as one sp1 turn (boundary at 13.42, 1.42 off the pin) and swallows the user's \"Yeah\" — a sub-run change miss inside decoded speech, NOT fixable by gap-rescue; fix owned by a separate follow-up change. Recorded as the gate's known-limitation with user sign-off."
-  },
-  {
-   "id": "S2b_oh_man_cynthia",
-   "kind": "voice_change_at",
-   "start_s": 15.0,
-   "end_s": 16.8,
-   "change_at_s": 15.8,
-   "tolerance_s": 0.75,
-   "hold_out": false,
-   "note": "RE-PINNED 2026-09-07 via clip_E (14.3-16.8s): Cynthia's \"Oh, man\" starts at clip ~1.5s = meeting ~15.8 (supersedes the 14.78 Whisper-row-start pin; the legacy row is ~1.0s early — skew attested). PASSES TODAY: the engine's existing 16.12 sp1 boundary is 0.32 off the pin. The remaining defect is TEXT attribution — the row 14.78-15.84 renders under Carlos via the gap borrow. gap-speech-voice-attribution must splice at the DETECTED VOICE ONSET (~15.8), never the raw row start, or this entry regresses."
-  },
-  {
-   "id": "S3_updates_run",
-   "kind": "single_voice",
-   "start_s": 15.5,
-   "end_s": 20.83,
-   "hold_out": true,
-   "note": "Clip 07 confirmed one voice throughout. May contain silence gaps; asserts label uniformity only."
-  },
-  {
-   "id": "S4_cynthia_banter",
-   "kind": "single_voice",
-   "start_s": 24.5,
-   "end_s": 29.5,
-   "hold_out": false,
-   "note": "Clip 05: Cynthia throughout (user's 'yeah sure' starts at the very end). The pipeline's 26.11 flip ('do we wan|to') is fabricated."
-  },
-  {
-   "id": "S5_cynthia_to_user_yeah_sure",
-   "kind": "voice_change_at",
-   "start_s": 28.5,
-   "end_s": 31.0,
-   "change_at_s": 30.0,
-   "tolerance_s": 0.5,
-   "hold_out": false,
-   "note": "Clips 05+06: Cynthia → user ('Yeah, sure, sure, sure. Yeah, for Paulina, right?' is the USER). User's 0:01 = 29.5 coarse; refined to the measured switch 30.0 (pyannote P2→P1), consistent with the -0.5..-1.1s coarse-reporting offset."
-  },
-  {
-   "id": "S6_user_to_cynthia_yeah",
-   "kind": "voice_change_at",
-   "start_s": 30.5,
-   "end_s": 33.04,
-   "change_at_s": 32.65,
-   "tolerance_s": 0.75,
-   "hold_out": false,
-   "note": "Clip 06: Cynthia interjects 'Yeah' — inside the legacy pipeline's 30.09-34.92 row (missed change). User's 0:03 = 31.5 coarse; refined to the measured different-voice run 32.65-32.97."
-  },
-  {
-   "id": "S7_where_is_ricardo_head",
-   "kind": "multi_voice",
-   "start_s": 33.8,
-   "end_s": 36.8,
-   "hold_out": false,
-   "note": "Re-attested 2026-09-06 on a fresh 33.8-36.8 clip, replacing the earlier 'one voice 0:00-0:06' reading: TWO voices trading — Carlos 'Gotcha' at clip 0:00 (≈33.8), Cynthia 'Where is Ricardo?' ≈33.8-34.8, Carlos 'I don't know' from clip 0:02 (≈35.8). The Cynthia attribution of 'Where is Ricardo' corrects the old user-voice assumption (probe: 34.66-36.21 C-lean 0.259 vs U 0.116; pyannote P3 at 35.0 in 4 windows; engine turn 32.65-36.08 sp1 = Cynthia). Known residual: Carlos's ≈0.5s 'Gotcha' is absorbed into the Cynthia turn (sub-second backchannel, not split by design). Companion entry S7b pins the attested Carlos resumption."
-  },
-  {
-   "id": "S7b_carlos_resumption_36",
-   "kind": "voice_change_at",
-   "start_s": 33.8,
-   "end_s": 37.5,
-   "change_at_s": 36.08,
-   "tolerance_s": 0.75,
-   "hold_out": false,
-   "note": "Companion to S7 (same clip, same attestation): exactly ONE change in-span, pinning the Cynthia→Carlos resumption. User's coarse 'I don't know at 0:02' = 35.8; refined to the engine's corroborated boundary 36.08 (+0.28s, inside the coarse-second offset family). Kills the wrong-attribution scenario: if Cynthia's 'Where is Ricardo' were attributed to Carlos AND a change existed at ≈34, S7b would see 2 changes and fail."
-  },
-  {
-   "id": "S8_okay_interjection_start",
-   "kind": "voice_change_at",
-   "start_s": 37.5,
-   "end_s": 39.2,
-   "change_at_s": 39.13,
-   "tolerance_s": 1.0,
-   "hold_out": false,
-   "note": "Clip 10: brief Cynthia interjection (user: 'okay at 0:06-0:07' = ≈38.0-39.0 coarse). Pin seconds refined to the pyannote argmax track's corroborated interjection run 39.13-39.93 (committed pre-engine evidence, act_run.log); structure per user attestation unchanged."
-  },
-  {
-   "id": "S9_okay_interjection_end",
-   "kind": "voice_change_at",
-   "start_s": 39.3,
-   "end_s": 43.0,
-   "change_at_s": 41.98,
-   "tolerance_s": 1.0,
-   "hold_out": false,
-   "note": "Clip 10: main voice resumes after the brief interjection. The audio has a 39.93-41.98 silence (pyannote); the resumption lands at 41.98 (measured). The user attested the resumption; the clip ended at 41.02 so no within-clip second was claimed."
-  },
-  {
-   "id": "S10_can_you_come_again_trade",
-   "kind": "multi_voice",
-   "start_s": 2772.0,
-   "end_s": 2777.54,
-   "hold_out": false,
-   "note": "Clip 09: 'two people trading' — at least one voice change inside the span; trade count not attested (the clip reads as voices exchanging halves of a sentence)."
-  },
-  {
-   "id": "S11_ricardo_stretch",
-   "kind": "single_voice",
-   "start_s": 2803.0,
-   "end_s": 2820.0,
-   "hold_out": false,
-   "note": "Clip 08: one voice 0:01–end (Ricardo, named by clip 03) after Cynthia's brief 0:00–0:01."
-  },
-  {
-   "id": "S12_cynthia_to_ricardo",
-   "kind": "voice_change_at",
-   "start_s": 2801.5,
-   "end_s": 2804.5,
-   "change_at_s": 2802.08,
-   "tolerance_s": 0.5,
-   "hold_out": false,
-   "note": "Clip 08 0:00-0:01: brief Cynthia then Ricardo. Pin refined to the measured switch 2802.08 (user's 'a bit of Cynthia at the beginning' = a sub-second bit)."
-  },
-  {
-   "id": "S13_ricardo_to_cynthia",
-   "kind": "voice_change_at",
-   "start_s": 2812.0,
-   "end_s": 2826.04,
-   "change_at_s": 2821.0,
-   "tolerance_s": 0.75,
-   "hold_out": true,
-   "note": "Clip 03 0:09: Ricardo until 0:09, Cynthia afterwards. Corrects the old hypothesis (a ~2818 interjection) — Ricardo holds 2812–2821."
-  }
- ],
- "amendments": {
-  "S2_user_to_cynthia_13s": {
-   "user_confirmed": "2026-09-07",
-   "reason": "sub-run change miss at ~12.0s (Cynthia->Carlos \"Yeah\"; user-ear clip_D 2026-09-07: \"definitely around 0.5s not 1.9s\"). The engine holds 9.38-13.03 as one sp1 turn (boundary 13.42, 1.42 off the pin). Fix owned by a separate follow-up change (sub-run change detection), not gap-rescue."
-  }
- }
+  "meeting": "cde5c264",
+  "recorded": "2026-09-04",
+  "source_audio": "~/Music/meetily-recordings/Meeting 2026-06-22_16-04-01_2026-06-22_14-04/audio.mp4",
+  "voices_note": "user = softer male; Cynthia = louder female; Ricardo = third voice. Times are meeting-absolute seconds (clip answers resolved via fixture_clips/offsets.json).",
+  "single_voice_semantics": "All turns/segments overlapping the span by >0.25s must carry the SAME speaker label. Silence-delimited same-speaker boundaries inside the span are NOT violations (the ear attests voices, not turn units).",
+  "known_limitations": [],
+  "entries": [
+    {
+      "id": "S14_banter_anchor_161",
+      "kind": "voice_change_at",
+      "start_s": 155.0,
+      "end_s": 170.0,
+      "change_at_s": 161.36,
+      "tolerance_s": 1.0,
+      "hold_out": false,
+      "note": "The 02:12-02:50 anchor (clip 02, 155.0-170.0): user heard exactly ONE voice change ('at 0:06' = 161.0 coarse). Re-attested 2026-09-06 on a fresh 158.0-165.0 clip: change at ≈0:03 (≈161.0). Pin = the engine's boundary 161.36, 0.36s from the coarse answer; independently corroborated by pyannote slot flips at ≈161.4 (6 windows), the F0 female→male step 235→125 Hz, and the TitaNet anchor crossover. The old 162.78 pin was a merged-track crosstalk reading AFTER the real handoff. Structure (exactly one change, tail on the earlier speaker) is the user's attestation."
+    },
+    {
+      "id": "S1_five_years_sentence",
+      "kind": "single_voice",
+      "start_s": 9.38,
+      "end_s": 11.8,
+      "hold_out": false,
+      "note": "One continuous sentence across the 12.07 whisper-row edge (the legacy pipeline flipped label there). Narrowed to the attested sentence: the banter before it (7.29-8.57) is a genuine short other-voice exchange ('All good, all good. You?'). Identity adjudicated by the user 2026-09-07: this sentence is CYNTHIA's voice — matching the engine's cluster attribution and the acoustic probes (supersedes the earlier 'User voice' note, which was the session's unverified working assumption). Re-pinned 2026-09-07 via clip_D (11.5-14.5s): Cynthia's sentence ends and the user's \"Yeah\" begins around meeting ~12.0 (clip ~0.5s, \"definitely around 0.5s not 1.9s\") — end_s 12.8 -> 11.8 so the span ends before the attested change."
+    },
+    {
+      "id": "S2_user_to_cynthia_13s",
+      "kind": "voice_change_at",
+      "start_s": 11.8,
+      "end_s": 13.5,
+      "change_at_s": 12.0,
+      "tolerance_s": 0.75,
+      "hold_out": false,
+      "note": "RE-PINNED 2026-09-07 via clips C+D (user ear): Cynthia's \"...five years\" ends and the USER's \"Yeah\" begins at meeting ~12.0 (clip_D: change at ~0.5s, \"definitely around 0.5s not 1.9s\"); \"that's right\" (clip 02s) is the user mid-speech - no change at 13.0. FIXED 2026-09-09 (sub-run voice-flip scan): pyannote's decode holds sp1 argmax through the back-channel (contested mush 12.03-12.71, no slot change - unfixable by smoothing knobs); the scan splits the held piece at the confusion-valley start 12.00 with decisive different-cluster embeddings (margins 0.528/0.064). Gate-replay evidence: /tmp/gate_flip1.log equivalent, 16/16 entries asserted-pass, 0 fractures of 180 rows."
+    },
+    {
+      "id": "S2b_oh_man_cynthia",
+      "kind": "voice_change_at",
+      "start_s": 15.0,
+      "end_s": 16.8,
+      "change_at_s": 15.8,
+      "tolerance_s": 0.75,
+      "hold_out": false,
+      "note": "RE-PINNED 2026-09-07 via clip_E (14.3-16.8s): Cynthia's \"Oh, man\" starts at clip ~1.5s = meeting ~15.8 (supersedes the 14.78 Whisper-row-start pin; the legacy row is ~1.0s early — skew attested). PASSES TODAY: the engine's existing 16.12 sp1 boundary is 0.32 off the pin. The remaining defect is TEXT attribution — the row 14.78-15.84 renders under Carlos via the gap borrow. gap-speech-voice-attribution must splice at the DETECTED VOICE ONSET (~15.8), never the raw row start, or this entry regresses."
+    },
+    {
+      "id": "S3_updates_run",
+      "kind": "single_voice",
+      "start_s": 15.5,
+      "end_s": 20.83,
+      "hold_out": true,
+      "note": "Clip 07 confirmed one voice throughout. May contain silence gaps; asserts label uniformity only."
+    },
+    {
+      "id": "S4_cynthia_banter",
+      "kind": "single_voice",
+      "start_s": 24.5,
+      "end_s": 29.5,
+      "hold_out": false,
+      "note": "Clip 05: Cynthia throughout (user's 'yeah sure' starts at the very end). The pipeline's 26.11 flip ('do we wan|to') is fabricated."
+    },
+    {
+      "id": "S5_cynthia_to_user_yeah_sure",
+      "kind": "voice_change_at",
+      "start_s": 28.5,
+      "end_s": 31.0,
+      "change_at_s": 30.0,
+      "tolerance_s": 0.5,
+      "hold_out": false,
+      "note": "Clips 05+06: Cynthia → user ('Yeah, sure, sure, sure. Yeah, for Paulina, right?' is the USER). User's 0:01 = 29.5 coarse; refined to the measured switch 30.0 (pyannote P2→P1), consistent with the -0.5..-1.1s coarse-reporting offset."
+    },
+    {
+      "id": "S6_user_to_cynthia_yeah",
+      "kind": "voice_change_at",
+      "start_s": 30.5,
+      "end_s": 33.04,
+      "change_at_s": 32.65,
+      "tolerance_s": 0.75,
+      "hold_out": false,
+      "note": "Clip 06: Cynthia interjects 'Yeah' — inside the legacy pipeline's 30.09-34.92 row (missed change). User's 0:03 = 31.5 coarse; refined to the measured different-voice run 32.65-32.97."
+    },
+    {
+      "id": "S7_where_is_ricardo_head",
+      "kind": "multi_voice",
+      "start_s": 33.8,
+      "end_s": 36.8,
+      "hold_out": false,
+      "note": "Re-attested 2026-09-06 on a fresh 33.8-36.8 clip, replacing the earlier 'one voice 0:00-0:06' reading: TWO voices trading — Carlos 'Gotcha' at clip 0:00 (≈33.8), Cynthia 'Where is Ricardo?' ≈33.8-34.8, Carlos 'I don't know' from clip 0:02 (≈35.8). The Cynthia attribution of 'Where is Ricardo' corrects the old user-voice assumption (probe: 34.66-36.21 C-lean 0.259 vs U 0.116; pyannote P3 at 35.0 in 4 windows; engine turn 32.65-36.08 sp1 = Cynthia). Known residual: Carlos's ≈0.5s 'Gotcha' is absorbed into the Cynthia turn (sub-second backchannel, not split by design). Companion entry S7b pins the attested Carlos resumption."
+    },
+    {
+      "id": "S7b_carlos_resumption_36",
+      "kind": "voice_change_at",
+      "start_s": 33.8,
+      "end_s": 37.5,
+      "change_at_s": 36.08,
+      "tolerance_s": 0.75,
+      "hold_out": false,
+      "note": "Companion to S7 (same clip, same attestation): exactly ONE change in-span, pinning the Cynthia→Carlos resumption. User's coarse 'I don't know at 0:02' = 35.8; refined to the engine's corroborated boundary 36.08 (+0.28s, inside the coarse-second offset family). Kills the wrong-attribution scenario: if Cynthia's 'Where is Ricardo' were attributed to Carlos AND a change existed at ≈34, S7b would see 2 changes and fail."
+    },
+    {
+      "id": "S8_okay_interjection_start",
+      "kind": "voice_change_at",
+      "start_s": 37.5,
+      "end_s": 39.2,
+      "change_at_s": 39.13,
+      "tolerance_s": 1.0,
+      "hold_out": false,
+      "note": "Clip 10: brief Cynthia interjection (user: 'okay at 0:06-0:07' = ≈38.0-39.0 coarse). Pin seconds refined to the pyannote argmax track's corroborated interjection run 39.13-39.93 (committed pre-engine evidence, act_run.log); structure per user attestation unchanged."
+    },
+    {
+      "id": "S9_okay_interjection_end",
+      "kind": "voice_change_at",
+      "start_s": 39.3,
+      "end_s": 43.0,
+      "change_at_s": 41.98,
+      "tolerance_s": 1.0,
+      "hold_out": false,
+      "note": "Clip 10: main voice resumes after the brief interjection. The audio has a 39.93-41.98 silence (pyannote); the resumption lands at 41.98 (measured). The user attested the resumption; the clip ended at 41.02 so no within-clip second was claimed."
+    },
+    {
+      "id": "S10_can_you_come_again_trade",
+      "kind": "multi_voice",
+      "start_s": 2772.0,
+      "end_s": 2777.54,
+      "hold_out": false,
+      "note": "Clip 09: 'two people trading' — at least one voice change inside the span; trade count not attested (the clip reads as voices exchanging halves of a sentence)."
+    },
+    {
+      "id": "S11_ricardo_stretch",
+      "kind": "single_voice",
+      "start_s": 2803.0,
+      "end_s": 2820.0,
+      "hold_out": false,
+      "note": "Clip 08: one voice 0:01–end (Ricardo, named by clip 03) after Cynthia's brief 0:00–0:01."
+    },
+    {
+      "id": "S12_cynthia_to_ricardo",
+      "kind": "voice_change_at",
+      "start_s": 2801.5,
+      "end_s": 2804.5,
+      "change_at_s": 2802.08,
+      "tolerance_s": 0.5,
+      "hold_out": false,
+      "note": "Clip 08 0:00-0:01: brief Cynthia then Ricardo. Pin refined to the measured switch 2802.08 (user's 'a bit of Cynthia at the beginning' = a sub-second bit)."
+    },
+    {
+      "id": "S13_ricardo_to_cynthia",
+      "kind": "voice_change_at",
+      "start_s": 2812.0,
+      "end_s": 2826.04,
+      "change_at_s": 2821.0,
+      "tolerance_s": 0.75,
+      "hold_out": true,
+      "note": "Clip 03 0:09: Ricardo until 0:09, Cynthia afterwards. Corrects the old hypothesis (a ~2818 interjection) — Ricardo holds 2812–2821."
+    }
+  ],
+  "amendments": {}
 }

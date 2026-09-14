@@ -3,8 +3,9 @@
 //! once with the effective_split grid (Part A baseline), once with in-process
 //! pyannote boundaries (this change) — aligns each output to the real
 //! transcript rows covering the complaint window (Ricardo interjection,
-//! ≈46:58), persists both runs through `SpeakerRepository::persist_aligned_groups`
-//! into throwaway in-memory databases, and asserts the pyannote run persists
+//! ≈46:58), persists both runs through
+//! `SpeakerRepository::persist_regenerated_rendering` into throwaway
+//! in-memory databases, and asserts the pyannote run persists
 //! STRICTLY MORE rows for that window than the chunk-grid baseline.
 //!
 //! Run:
@@ -26,17 +27,28 @@ async fn fetch_window_transcripts() -> Vec<TranscriptInput> {
     let pool = sqlx::SqlitePool::connect(&format!("sqlite:{DB_PATH}?mode=ro"))
         .await
         .expect("connect local DB");
-    let rows = sqlx::query(
-        "SELECT id, transcript, audio_start_time, audio_end_time FROM transcripts \
-         WHERE meeting_id = ? AND audio_start_time IS NOT NULL AND audio_end_time IS NOT NULL \
-         AND audio_end_time >= ? AND audio_start_time <= ? ORDER BY audio_start_time ASC",
+    // The pipeline's alignment input is the immutable source table
+    // (change `align-from-immutable-source`); fall back to the rendering
+    // rows only when the source table is absent (pre-migration DB).
+    let table: String = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'transcript_sources'",
     )
-    .bind(MEETING_ID)
-    .bind(WINDOW.0)
-    .bind(WINDOW.1)
-    .fetch_all(&pool)
+    .fetch_one(&pool)
     .await
-    .expect("fetch window transcripts");
+    .map(|n: i64| if n > 0 { "transcript_sources" } else { "transcripts" }.to_string())
+    .expect("table lookup");
+    let sql = format!(
+        "SELECT id, transcript, audio_start_time, audio_end_time FROM {table} \
+         WHERE meeting_id = ? AND audio_start_time IS NOT NULL AND audio_end_time IS NOT NULL \
+         AND audio_end_time >= ? AND audio_start_time <= ? ORDER BY audio_start_time ASC"
+    );
+    let rows = sqlx::query(&sql)
+        .bind(MEETING_ID)
+        .bind(WINDOW.0)
+        .bind(WINDOW.1)
+        .fetch_all(&pool)
+        .await
+        .expect("fetch window transcripts");
     drop(pool);
     assert!(!rows.is_empty(), "no transcript rows in the complaint window");
     rows.into_iter()
@@ -65,8 +77,8 @@ async fn fetch_window_transcripts() -> Vec<TranscriptInput> {
 
 async fn make_temp_pool() -> sqlx::SqlitePool {
     let pool = sqlx::SqlitePool::connect(":memory:").await.unwrap();
-    // Schema mirrors the production `transcripts` table (same DDL the
-    // split-persistence unit tests use).
+    // Schema mirrors the production `transcripts` + `transcript_sources`
+    // tables (the same DDL the split-persistence unit tests use).
     sqlx::query(
         "CREATE TABLE transcripts (
             id TEXT PRIMARY KEY,
@@ -83,6 +95,22 @@ async fn make_temp_pool() -> sqlx::SqlitePool {
     .execute(&pool)
     .await
     .unwrap();
+    sqlx::query(
+        "CREATE TABLE transcript_sources (
+            id TEXT PRIMARY KEY,
+            meeting_id TEXT NOT NULL,
+            transcript TEXT NOT NULL,
+            timestamp TEXT NOT NULL,
+            summary TEXT, action_items TEXT, key_points TEXT,
+            speaker TEXT,
+            audio_start_time REAL, audio_end_time REAL, duration REAL,
+            token_timestamps TEXT,
+            source_origin TEXT NOT NULL DEFAULT 'stt'
+        )",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
     pool
 }
 
@@ -92,6 +120,20 @@ async fn insert_sources(pool: &sqlx::SqlitePool, transcripts: &[TranscriptInput]
             "INSERT INTO transcripts \
              (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker_source) \
              VALUES (?, ?, ?, '2026-08-24T00:00:00Z', ?, ?, ?, NULL)",
+        )
+        .bind(&t.id)
+        .bind(MEETING_ID)
+        .bind(&t.text)
+        .bind(t.audio_start_ms as f64 / 1000.0)
+        .bind(t.audio_end_ms as f64 / 1000.0)
+        .bind((t.audio_end_ms - t.audio_start_ms) as f64 / 1000.0)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO transcript_sources \
+             (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, token_timestamps, source_origin) \
+             VALUES (?, ?, ?, '2026-08-24T00:00:00Z', ?, ?, ?, NULL, 'stt')",
         )
         .bind(&t.id)
         .bind(MEETING_ID)
@@ -135,9 +177,15 @@ async fn persist_one_path(
         segments.len(),
         aligned.len()
     );
-    let written = app_lib::database::repositories::speaker::SpeakerRepository::persist_aligned_groups(&pool, aligned)
+    let written =
+        app_lib::database::repositories::speaker::SpeakerRepository::persist_regenerated_rendering(
+            &pool,
+            MEETING_ID,
+            aligned,
+            false,
+        )
         .await
-        .expect("persist_aligned_groups");
+        .expect("persist_regenerated_rendering");
     let window_rows = count_window_rows(&pool).await;
     eprintln!(
         "PERSIST-ORACLE [{label}]: wrote {written} rows total, {window_rows} in the complaint window"
