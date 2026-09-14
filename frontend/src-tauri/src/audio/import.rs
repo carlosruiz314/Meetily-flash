@@ -791,21 +791,14 @@ async fn create_meeting_with_transcripts(
     .await
     .map_err(|e| anyhow!("Failed to create meeting: {}", e))?;
 
-    // Insert transcripts
+    // Insert transcripts (dual-write into `transcripts` + `transcript_sources`)
     for segment in segments {
-        sqlx::query(
-            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, token_timestamps)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        crate::database::repositories::transcript::TranscriptsRepository::insert_transcription_row(
+            &mut *tx,
+            &segment.id,
+            &meeting_id,
+            segment,
         )
-        .bind(&segment.id)
-        .bind(&meeting_id)
-        .bind(&segment.text)
-        .bind(&segment.timestamp)
-        .bind(segment.audio_start_time)
-        .bind(segment.audio_end_time)
-        .bind(segment.duration)
-        .bind(&segment.token_timestamps)
-        .execute(&mut *tx)
         .await
         .map_err(|e| anyhow!("Failed to insert transcript: {}", e))?;
     }

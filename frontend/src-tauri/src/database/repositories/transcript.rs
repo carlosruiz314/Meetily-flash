@@ -41,6 +41,53 @@ fn is_unique_violation(e: &SqlxError) -> bool {
 pub struct TranscriptsRepository;
 
 impl TranscriptsRepository {
+    /// Dual-write one fresh transcription row into BOTH tables (design D3,
+    /// change `align-from-immutable-source`): `transcripts` (the rendering
+    /// table every existing reader consumes) and `transcript_sources` (the
+    /// immutable copy the speaker pipeline aligns from). Must be called inside
+    /// the caller's transaction so the two tables cannot diverge. All three
+    /// compiled fresh-row writers (import save, retranscription save,
+    /// `save_transcript`) go through this helper — a future writer bypassing
+    /// it would strand the meeting on an empty source (the D8 drift warning).
+    pub async fn insert_transcription_row<'a>(
+        tx: &mut sqlx::SqliteConnection,
+        id: &str,
+        meeting_id: &str,
+        segment: &TranscriptSegment,
+    ) -> Result<(), SqlxError> {
+        sqlx::query(
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, token_timestamps)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(meeting_id)
+        .bind(&segment.text)
+        .bind(&segment.timestamp)
+        .bind(segment.audio_start_time)
+        .bind(segment.audio_end_time)
+        .bind(segment.duration)
+        .bind(&segment.token_timestamps)
+        .execute(&mut *tx)
+        .await?;
+
+        sqlx::query(
+            "INSERT INTO transcript_sources (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, token_timestamps, source_origin)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'stt')",
+        )
+        .bind(id)
+        .bind(meeting_id)
+        .bind(&segment.text)
+        .bind(&segment.timestamp)
+        .bind(segment.audio_start_time)
+        .bind(segment.audio_end_time)
+        .bind(segment.duration)
+        .bind(&segment.token_timestamps)
+        .execute(tx)
+        .await?;
+
+        Ok(())
+    }
+
     pub async fn save_transcript(
         pool: &SqlitePool,
         meeting_id: &str,
@@ -84,22 +131,10 @@ impl TranscriptsRepository {
 
         for segment in transcripts {
             let transcript_id = format!("transcript-{}", Uuid::new_v4());
-            let result = sqlx::query(
-                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, token_timestamps)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-            )
-            .bind(&transcript_id)
-            .bind(meeting_id)
-            .bind(&segment.text)
-            .bind(&segment.timestamp)
-            .bind(segment.audio_start_time)
-            .bind(segment.audio_end_time)
-            .bind(segment.duration)
-            .bind(&segment.token_timestamps)
-            .execute(&mut *transaction)
-            .await;
-
-            if let Err(e) = result {
+            if let Err(e) =
+                Self::insert_transcription_row(&mut *transaction, &transcript_id, meeting_id, segment)
+                    .await
+            {
                 error!(
                     "Failed to save transcript segment for meeting {}: {}",
                     meeting_id, e

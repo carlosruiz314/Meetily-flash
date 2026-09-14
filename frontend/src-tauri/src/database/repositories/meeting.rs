@@ -300,6 +300,14 @@ async fn delete_meeting_with_transaction(
         .execute(&mut *transaction)
         .await?;
 
+    // 3b. Delete from transcript_sources (the immutable transcription copy,
+    // change `align-from-immutable-source`) — explicit delete, house pattern;
+    // the FK cascade is never relied on.
+    sqlx::query("DELETE FROM transcript_sources WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
+
     // 4. Finally, delete the meeting
     let result = sqlx::query("DELETE FROM meetings WHERE id = ?")
         .bind(meeting_id)
@@ -410,6 +418,7 @@ mod tests {
             "CREATE TABLE transcript_chunks (id TEXT PRIMARY KEY, meeting_id TEXT)",
             "CREATE TABLE summary_processes (id TEXT PRIMARY KEY, meeting_id TEXT)",
             "CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT)",
+            "CREATE TABLE transcript_sources (id TEXT PRIMARY KEY, meeting_id TEXT)",
             "CREATE TABLE speakers (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT DEFAULT 'now', updated_at TEXT DEFAULT 'now')",
             "CREATE TABLE speaker_embeddings (id TEXT PRIMARY KEY, speaker_id TEXT, embedding BLOB NOT NULL, source_meeting_id TEXT NOT NULL, cluster_label TEXT NOT NULL, created_at TEXT DEFAULT 'now')",
         ] { sqlx::query(ddl).execute(&pool).await.unwrap(); }

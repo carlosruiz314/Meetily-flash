@@ -1,6 +1,7 @@
 // Retranscription module - allows re-processing stored audio with different settings
 
 use crate::audio::decoder::decode_audio_file;
+use crate::audio::hallucination::audit;
 use crate::audio::vad::get_speech_chunks_with_progress;
 use super::common::{create_transcript_segments, split_segment_at_silence, write_transcripts_json};
 use super::constants::AUDIO_EXTENSIONS;
@@ -53,6 +54,14 @@ impl Drop for RetranscriptionGuard {
 /// because the entire file is processed at once by VAD, and 400ms fragments
 /// speech at every natural sentence/topic pause (500ms-2s)
 const VAD_REDEMPTION_TIME_MS: u32 = 2000;
+
+/// Circuit breaker (whisper-hallucination-cleanup D3): if more than this
+/// fraction of a run's segments are dropped by the hallucination quarantine,
+/// the job FAILS instead of persisting a gutted transcript — the save path
+/// DELETEs all existing rows before inserting, so a pathological meeting
+/// (music, wrong device) would otherwise publish an empty transcript and
+/// chain to summary.
+const HALLUCINATION_DROP_ABORT_FRACTION: f32 = 0.3;
 
 /// Progress update emitted during retranscription
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +186,24 @@ pub(crate) async fn delete_checkpoints(
     Ok(())
 }
 
+/// Delete ONE checkpoint row (hallucination quarantine resume-drop path: a
+/// still-flagged checkpoint must not survive to a later resume).
+pub(crate) async fn delete_checkpoint_row(
+    pool: &sqlx::SqlitePool,
+    meeting_id: &str,
+    segment_index: usize,
+) -> Result<()> {
+    sqlx::query(
+        "DELETE FROM retranscription_checkpoints WHERE meeting_id = ? AND segment_index = ?",
+    )
+    .bind(meeting_id)
+    .bind(segment_index as i64)
+    .execute(pool)
+    .await
+    .map_err(|e| anyhow!("checkpoint row DELETE failed: {}", e))?;
+    Ok(())
+}
+
 /// Match loaded checkpoints against the re-derived `processable_segments`. A
 /// checkpoint is trusted only if its `(start_ms, end_ms)` matches the segment
 /// at that index (Decision 3 — defends against VAD param drift or a stale
@@ -203,18 +230,30 @@ pub(crate) fn match_checkpoints<'a>(
 /// inline — handles non-contiguous checkpoints (short/empty segments leave
 /// gaps) correctly. Returns the accumulated transcripts (in segment order) and
 /// the summed confidence of all segments that produced a transcript.
-pub(crate) async fn transcribe_segments_checkpointed<F, Fut>(
+///
+/// Hallucination quarantine (whisper-hallucination-cleanup D3): every decoded
+/// text — fresh OR checkpointed — passes [`audit`]. A flagged segment is
+/// retried once via `retry_strict` (a deliberately different decode); a clean
+/// retry replaces the text (and its checkpoint); a still-flagged retry is
+/// dropped, counted, and never persisted. Drops beyond
+/// [`HALLUCINATION_DROP_ABORT_FRACTION`] fail the run.
+pub(crate) async fn transcribe_segments_checkpointed<F, Fut, R, Fut2>(
     meeting_id: &str,
     processable_segments: &[crate::audio::vad::SpeechSegment],
     pool: &sqlx::SqlitePool,
     mut transcribe: F,
+    mut retry_strict: R,
     mut on_progress: impl FnMut(usize, usize),
 ) -> Result<(Vec<(String, f64, f64, Option<String>)>, f32)>
 where
     F: FnMut(usize, &crate::audio::vad::SpeechSegment) -> Fut,
     Fut: std::future::Future<Output = Result<(String, f32, Option<String>)>>,
+    R: FnMut(&crate::audio::vad::SpeechSegment) -> Fut2,
+    Fut2: std::future::Future<Output = Result<(String, f32, Option<String>)>>,
 {
     let total = processable_segments.len();
+    let mut repaired = 0usize;
+    let mut dropped = 0usize;
     let checkpoints = match load_checkpoints(pool, meeting_id).await {
         Ok(c) => c,
         Err(e) => {
@@ -246,9 +285,57 @@ where
         }
 
         // Skip checkpointed segments: push the loaded transcript and continue.
+        // The loaded text is audited like fresh output — a pre-upgrade
+        // checkpoint can hold hallucinated text because it never re-decodes.
         if let Some(cp) = matched.iter().find(|c| c.segment_index == i) {
-            all_transcripts.push((cp.text.clone(), cp.start_ms, cp.end_ms, None));
-            total_confidence += cp.confidence;
+            if !audit(&cp.text, cp.start_ms, cp.end_ms).is_garbage {
+                all_transcripts.push((cp.text.clone(), cp.start_ms, cp.end_ms, None));
+                total_confidence += cp.confidence;
+                continue;
+            }
+            if crate::use_cases::transcription_queue::SHOULD_YIELD.load(Ordering::SeqCst) {
+                return Err(anyhow!(YIELD_SENTINEL));
+            }
+            warn!(
+                "hallucination quarantine: checkpointed segment {} flagged — retrying strict",
+                i
+            );
+            match retry_strict(segment).await {
+                Ok((text, conf, _))
+                    if !audit(&text, cp.start_ms, cp.end_ms).is_garbage =>
+                {
+                    // Keep the checkpoint row alive, now holding repaired text.
+                    if let Err(e) = save_checkpoint(
+                        pool,
+                        meeting_id,
+                        i,
+                        &text,
+                        cp.start_ms,
+                        cp.end_ms,
+                        conf,
+                    )
+                    .await
+                    {
+                        warn!("checkpoint repair write failed for segment {} (continuing): {}", i, e);
+                    }
+                    all_transcripts.push((text, cp.start_ms, cp.end_ms, None));
+                    total_confidence += conf;
+                    repaired += 1;
+                }
+                _ => {
+                    // Still flagged (or the retry failed): drop and remove the
+                    // stale row so no later resume re-serves it.
+                    if let Err(e) = delete_checkpoint_row(pool, meeting_id, i).await {
+                        warn!("checkpoint delete failed for segment {} (continuing): {}", i, e);
+                    }
+                    dropped += 1;
+                    warn!(
+                        "hallucination quarantine: checkpointed segment {} still flagged — dropped",
+                        i
+                    );
+                }
+            }
+            completed += 1;
             continue;
         }
 
@@ -263,28 +350,98 @@ where
 
         let (text, conf, token_ts) = transcribe(i, segment).await?;
         let trimmed = text.trim();
-        if !trimmed.is_empty() {
-            all_transcripts.push((text.clone(), segment.start_timestamp_ms, segment.end_timestamp_ms, token_ts));
-            total_confidence += conf;
-            // Best-effort checkpoint write; never abort the job on failure.
-            if let Err(e) = save_checkpoint(
-                pool,
-                meeting_id,
+        if trimmed.is_empty() {
+            debug!("Segment {}/{}: empty transcription", i + 1, total);
+            completed += 1;
+            continue;
+        }
+
+        // Quarantine: flagged fresh decode → one strictly different retry.
+        let (text, conf, token_ts) = if audit(
+            &text,
+            segment.start_timestamp_ms,
+            segment.end_timestamp_ms,
+        )
+        .is_garbage
+        {
+            if crate::use_cases::transcription_queue::SHOULD_YIELD.load(Ordering::SeqCst) {
+                return Err(anyhow!(YIELD_SENTINEL));
+            }
+            warn!(
+                "hallucination quarantine: segment {} [{:.1}s-{:.1}s] flagged — retrying strict",
                 i,
-                &text,
-                segment.start_timestamp_ms,
-                segment.end_timestamp_ms,
-                conf,
-            )
-            .await
-            {
-                warn!("checkpoint write failed for segment {} (continuing): {}", i, e);
+                segment.start_timestamp_ms / 1000.0,
+                segment.end_timestamp_ms / 1000.0
+            );
+            match retry_strict(segment).await {
+                Ok((retry_text, retry_conf, retry_ts))
+                    if !audit(
+                        &retry_text,
+                        segment.start_timestamp_ms,
+                        segment.end_timestamp_ms,
+                    )
+                    .is_garbage =>
+                {
+                    repaired += 1;
+                    (retry_text, retry_conf, retry_ts)
+                }
+                Ok((retry_text, _, _)) => {
+                    dropped += 1;
+                    warn!(
+                        "hallucination quarantine: segment {} still flagged after retry — dropped: {:?}",
+                        i,
+                        &retry_text[..retry_text.len().min(80)]
+                    );
+                    completed += 1;
+                    continue;
+                }
+                Err(e) => {
+                    dropped += 1;
+                    warn!(
+                        "hallucination quarantine: segment {} retry failed ({}) — dropped",
+                        i, e
+                    );
+                    completed += 1;
+                    continue;
+                }
             }
         } else {
-            debug!("Segment {}/{}: empty transcription", i + 1, total);
+            (text, conf, token_ts)
+        };
+
+        all_transcripts.push((text.clone(), segment.start_timestamp_ms, segment.end_timestamp_ms, token_ts));
+        total_confidence += conf;
+        // Best-effort checkpoint write; never abort the job on failure.
+        if let Err(e) = save_checkpoint(
+            pool,
+            meeting_id,
+            i,
+            &text,
+            segment.start_timestamp_ms,
+            segment.end_timestamp_ms,
+            conf,
+        )
+        .await
+        {
+            warn!("checkpoint write failed for segment {} (continuing): {}", i, e);
         }
         completed += 1;
     }
+
+    // Circuit breaker: a run that drops most of its segments is not a
+    // transcript — fail the job instead of deleting-and-publishing the rest.
+    if total > 0 && (dropped as f32 / total as f32) > HALLUCINATION_DROP_ABORT_FRACTION {
+        return Err(anyhow!(
+            "hallucination circuit breaker: {}/{} segments dropped (> {:.0}%) — nothing persisted",
+            dropped,
+            total,
+            HALLUCINATION_DROP_ABORT_FRACTION * 100.0
+        ));
+    }
+    info!(
+        "hallucination quarantine: {} repaired by strict retry, {} dropped ({} segments)",
+        repaired, dropped, total
+    );
 
     on_progress(completed, total);
     Ok((all_transcripts, total_confidence))
@@ -582,6 +739,14 @@ async fn run_retranscription<R: Runtime>(
     // the loop has no direct dependency on AppHandle (testable).
     let app_for_progress = app.clone();
     let meeting_id_for_progress = meeting_id.clone();
+
+    // Quarantine retry language: pinned to a concrete code — the run's own
+    // code when it has one, `en` otherwise (auto runs decode English-default).
+    let strict_language: Option<String> = Some(match language.as_deref() {
+        Some(code) if code != "auto" && code != "auto-translate" => code.to_string(),
+        _ => "en".to_string(),
+    });
+
     let (all_transcripts, total_confidence) = transcribe_segments_checkpointed(
         &meeting_id,
         &processable_segments,
@@ -598,6 +763,21 @@ async fn run_retranscription<R: Runtime>(
                     .await
                     .map_err(|e| anyhow!("Whisper transcription failed on segment {}: {}", i, e))?;
                 Ok((text, conf, token_ts))
+            }
+        },
+        |segment| {
+            // Strict retry: greedy/temperature-0/pinned-language — a
+            // deliberately different decode (whisper_engine::transcribe_audio_strict).
+            let whisper_engine = whisper_engine.clone();
+            let strict_language = strict_language.clone();
+            let samples = segment.samples.clone();
+            let segment_offset_ms = segment.start_timestamp_ms as i64;
+            async move {
+                let engine = whisper_engine.as_ref().unwrap();
+                engine
+                    .transcribe_audio_strict(samples, strict_language, segment_offset_ms)
+                    .await
+                    .map_err(|e| anyhow!("strict retry failed: {}", e))
             }
         },
         |done, total| {
@@ -653,20 +833,22 @@ async fn run_retranscription<R: Runtime>(
         .await
         .map_err(|e| anyhow!("Failed to delete existing transcripts: {}", e))?;
 
-    for segment in &segments {
-        sqlx::query(
-            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, token_timestamps)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
-        )
-        .bind(&segment.id)
+    // Clean-slate for BOTH tables (change `align-from-immutable-source`): the
+    // fresh decode regenerates the immutable source, healing any
+    // frozen-degraded backfilled rows with full-punctuation engine output.
+    sqlx::query("DELETE FROM transcript_sources WHERE meeting_id = ?")
         .bind(&meeting_id)
-        .bind(&segment.text)
-        .bind(&segment.timestamp)
-        .bind(segment.audio_start_time)
-        .bind(segment.audio_end_time)
-        .bind(segment.duration)
-        .bind(&segment.token_timestamps)
         .execute(&mut *tx)
+        .await
+        .map_err(|e| anyhow!("Failed to delete existing transcript sources: {}", e))?;
+
+    for segment in &segments {
+        crate::database::repositories::transcript::TranscriptsRepository::insert_transcription_row(
+            &mut *tx,
+            &segment.id,
+            &meeting_id,
+            segment,
+        )
         .await
         .map_err(|e| anyhow!("Failed to insert transcript: {}", e))?;
     }
@@ -1259,6 +1441,7 @@ mod tests {
                     Ok((format!("new-{}", i), 0.5f32, None))
                 }
             },
+            |_seg| async { Ok(("retry clean speech".to_string(), 0.5f32, None)) },
             |_, _| {},
         )
         .await
@@ -1295,6 +1478,7 @@ mod tests {
             &segments,
             &pool,
             |i, _seg| async move { Ok((format!("post-crash-{}", i), 0.5f32, None)) },
+            |_seg| async { Ok(("retry clean speech".to_string(), 0.5f32, None)) },
             |_, _| {},
         )
         .await
@@ -1366,6 +1550,7 @@ mod tests {
                     Ok(("fresh".to_string(), 0.5f32, None))
                 }
             },
+            |_seg| async { Ok(("retry clean speech".to_string(), 0.5f32, None)) },
             |_, _| {},
         )
         .await
@@ -1412,6 +1597,7 @@ mod tests {
             &segments,
             &pool,
             |_i, _seg| async { Ok(("text".to_string(), 0.5f32, None)) },
+            |_seg| async { Ok(("retry clean speech".to_string(), 0.5f32, None)) },
             |_, _| {},
         )
         .await
@@ -1441,6 +1627,7 @@ mod tests {
             &segments,
             &pool,
             |_i, _seg| async { Ok(("new".to_string(), 0.5f32, None)) },
+            |_seg| async { Ok(("retry clean speech".to_string(), 0.5f32, None)) },
             move |loaded, total| {
                 let mut g = fp.lock().unwrap();
                 if g.is_none() {
@@ -1511,6 +1698,7 @@ mod tests {
                     Ok((format!("new-{}", i), 0.5f32, None))
                 }
             },
+            |_seg| async { Ok(("retry clean speech".to_string(), 0.5f32, None)) },
             |_, _| {},
         )
         .await
@@ -1547,6 +1735,7 @@ mod tests {
             &segments,
             &pool,
             |_i, _seg| async { Ok(("new".to_string(), 0.5f32, None)) },
+            |_seg| async { Ok(("retry clean speech".to_string(), 0.5f32, None)) },
             move |loaded, total| {
                 let mut g = fp.lock().unwrap();
                 if g.is_none() {
@@ -1587,6 +1776,7 @@ mod tests {
             &segments,
             &pool,
             |_i, _seg| async { Ok(("new".to_string(), 0.5f32, None)) },
+            |_seg| async { Ok(("retry clean speech".to_string(), 0.5f32, None)) },
             move |done, _total| { c.lock().unwrap().push(done); },
         )
         .await
@@ -1624,6 +1814,7 @@ mod tests {
             &segments,
             &pool,
             |_i, _seg| async { panic!("fully-checkpointed meeting must skip transcription") },
+            |_seg| async { Ok(("retry clean speech".to_string(), 0.5f32, None)) },
             move |done, _total| { c.lock().unwrap().push(done); },
         )
         .await
@@ -1655,6 +1846,7 @@ mod tests {
             &segments,
             &pool,
             |_i, _seg| async { Ok(("".to_string(), 0.5f32, None)) },
+            |_seg| async { Ok(("retry clean speech".to_string(), 0.5f32, None)) },
             move |done, _total| { c.lock().unwrap().push(done); },
         )
         .await
@@ -1717,6 +1909,7 @@ mod tests {
                     Ok((format!("initial-{}", i), 0.5f32, None))
                 }
             },
+            |_seg| async { Ok(("retry clean speech".to_string(), 0.5f32, None)) },
             |_, _| {},
         )
         .await
@@ -1748,6 +1941,7 @@ mod tests {
                     Ok((format!("resumed-{}", i), 0.7f32, None))
                 }
             },
+            |_seg| async { Ok(("retry clean speech".to_string(), 0.5f32, None)) },
             |_, _| {},
         )
         .await
@@ -1872,6 +2066,7 @@ mod tests {
                     Ok((format!("initial-{}", i), 0.5f32, None))
                 }
             },
+            |_seg| async { Ok(("retry clean speech".to_string(), 0.5f32, None)) },
             |_, _| {},
         )
         .await
@@ -1928,6 +2123,7 @@ mod tests {
                     Ok((format!("resumed-{}", i), 0.7f32, None))
                 }
             },
+            |_seg| async { Ok(("retry clean speech".to_string(), 0.5f32, None)) },
             |_, _| {},
         )
         .await
@@ -2004,4 +2200,162 @@ mod tests {
         }
         None
     }
+
+    // ── whisper-hallucination-cleanup: quarantine tests (tasks 3.1–3.3) ────
+
+    fn garbage_text() -> String {
+        "Okay. ".repeat(40).trim_end().to_string()
+    }
+
+    // Task 3.1 — flagged fresh decode → clean strict retry REPLACES text and
+    // the checkpoint holds the repaired text.
+    #[tokio::test]
+    #[serial]
+    async fn flagged_fresh_retry_clean_replaces_text_and_checkpoint() {
+        reset_flags();
+        let pool = checkpoint_pool().await;
+        let meeting_id = "meet-quarantine-clean";
+
+        let segments = vec![seg(0., 1000.)];
+        let (all, _) = transcribe_segments_checkpointed(
+            meeting_id,
+            &segments,
+            &pool,
+            |_i, _seg| async { Ok((garbage_text(), 0.2f32, None)) },
+            |_seg| async { Ok(("real speech about capacity".to_string(), 0.9f32, None)) },
+            |_, _| {},
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(all.len(), 1, "repaired text must reach the accumulator");
+        assert_eq!(all[0].0, "real speech about capacity");
+        let cps = load_checkpoints(&pool, meeting_id).await.unwrap();
+        assert_eq!(cps.len(), 1);
+        assert_eq!(cps[0].text, "real speech about capacity", "checkpoint must hold the repaired text");
+    }
+
+    // Task 3.1 — still-flagged retry → dropped: not accumulated, no checkpoint.
+    // 4 segments / 1 drop stays under the 30% circuit breaker.
+    #[tokio::test]
+    #[serial]
+    async fn flagged_fresh_retry_still_garbage_is_dropped() {
+        reset_flags();
+        let pool = checkpoint_pool().await;
+        let meeting_id = "meet-quarantine-drop";
+
+        let segments: Vec<SpeechSegment> =
+            (0..4).map(|i| seg(i as f64 * 1000., (i + 1) as f64 * 1000.)).collect();
+        let (all, _) = transcribe_segments_checkpointed(
+            meeting_id,
+            &segments,
+            &pool,
+            |i, _seg| async move {
+                if i == 0 {
+                    Ok((garbage_text(), 0.2f32, None))
+                } else {
+                    Ok((format!("clean speech {i}"), 0.9f32, None))
+                }
+            },
+            |_seg| async { Ok((garbage_text(), 0.2f32, None)) },
+            |_, _| {},
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(all.len(), 3, "only the clean segments may persist");
+        assert_eq!(all[0].0, "clean speech 1");
+        let cps = load_checkpoints(&pool, meeting_id).await.unwrap();
+        assert_eq!(cps.len(), 3, "dropped segment leaves no checkpoint");
+        assert!(!cps.iter().any(|c| c.segment_index == 0));
+    }
+
+    // Task 3.2 — flagged CHECKPOINT, still-flagged retry → row deleted, dropped.
+    // 4 segments / 1 drop stays under the 30% circuit breaker.
+    #[tokio::test]
+    #[serial]
+    async fn resume_flagged_checkpoint_still_garbage_is_deleted() {
+        reset_flags();
+        let pool = checkpoint_pool().await;
+        let meeting_id = "meet-quarantine-resume-drop";
+
+        let segments: Vec<SpeechSegment> =
+            (0..4).map(|i| seg(i as f64 * 1000., (i + 1) as f64 * 1000.)).collect();
+        save_checkpoint(&pool, meeting_id, 0, &garbage_text(), 0., 1000., 0.9).await.unwrap();
+
+        let (all, _) = transcribe_segments_checkpointed(
+            meeting_id,
+            &segments,
+            &pool,
+            |i, _seg| async move { Ok((format!("fresh speech {i}"), 0.9f32, None)) },
+            |_seg| async { Ok((garbage_text(), 0.2f32, None)) },
+            |_, _| {},
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(all.len(), 3, "still-flagged checkpoint must not persist");
+        assert_eq!(all[0].0, "fresh speech 1");
+        let cps = load_checkpoints(&pool, meeting_id).await.unwrap();
+        assert!(cps.iter().all(|c| c.segment_index != 0), "stale flagged checkpoint row must be deleted");
+    }
+
+    // Task 3.3 — circuit breaker: mass drops fail the run, nothing persists.
+    #[tokio::test]
+    #[serial]
+    async fn circuit_breaker_fails_on_mass_drops() {
+        reset_flags();
+        let pool = checkpoint_pool().await;
+        let meeting_id = "meet-quarantine-breaker";
+
+        let segments: Vec<SpeechSegment> = (0..5).map(|i| seg(i as f64 * 1000., (i + 1) as f64 * 1000.)).collect();
+        let err = transcribe_segments_checkpointed(
+            meeting_id,
+            &segments,
+            &pool,
+            |_i, _seg| async { Ok((garbage_text(), 0.2f32, None)) },
+            |_seg| async { Ok((garbage_text(), 0.2f32, None)) },
+            |_, _| {},
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("circuit breaker"),
+            "expected circuit breaker, got: {err}"
+        );
+    }
+
+    // Task 3.2 — flagged CHECKPOINT on resume → clean retry replaces the row.
+    #[tokio::test]
+    #[serial]
+    async fn resume_flagged_checkpoint_is_retried_and_replaced() {
+        reset_flags();
+        let pool = checkpoint_pool().await;
+        let meeting_id = "meet-quarantine-resume-clean";
+
+        let segments = vec![seg(0., 1000.)];
+        save_checkpoint(&pool, meeting_id, 0, &garbage_text(), 0., 1000., 0.9).await.unwrap();
+
+        let (all, _) = transcribe_segments_checkpointed(
+            meeting_id,
+            &segments,
+            &pool,
+            |_i, _seg| async { Ok(("should not run".to_string(), 0.5f32, None)) },
+            |_seg| async { Ok(("repaired from checkpoint".to_string(), 0.8f32, None)) },
+            |_, _| {},
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].0, "repaired from checkpoint");
+        let cps = load_checkpoints(&pool, meeting_id).await.unwrap();
+        assert_eq!(cps.len(), 1, "checkpoint row stays alive with repaired text");
+        assert_eq!(cps[0].text, "repaired from checkpoint");
+    }
+
+    // Task 3.2 — flagged CHECKPOINT, still-flagged retry → row deleted, dropped.
+    // (covered by resume_flagged_checkpoint_still_garbage_is_deleted above,
+    // sized to stay under the circuit breaker)
 }

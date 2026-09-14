@@ -1721,7 +1721,7 @@ async fn pyannote_cde5c264_real_persist() {
 
     let threshold_fp = (threshold * 65536.0) as u32;
     eprintln!("PERSIST: running run_diarization_for_meeting...");
-    let result = app_lib::audio::speaker::commands::run_diarization_for_meeting(
+    let result = app_lib::audio::speaker::commands::run_diarization_for_meeting_auto(
         &pool, meeting_id, threshold_fp, registry,
     ).await.expect("run_diarization_for_meeting");
     eprintln!("PERSIST: {} speakers, {} segments labeled",

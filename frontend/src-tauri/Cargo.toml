@@ -120,9 +120,8 @@ async-trait = "0.1"  # Trait abstraction for async methods
 
 reqwest = { version = "0.11", features = ["blocking", "multipart", "json", "stream"] }
 
-# crossbeam
-crossbeam = "0.8.4"
-dashmap = "6.1.0"
+# Hallucination audit: Unicode script classes for non-Latin detection
+unicode-script = "0.5"
 
 # Directories
 dirs = "5.0.1"
@@ -224,6 +223,7 @@ futures-channel = "0.3.31"
 
 [dev-dependencies]
 tempfile = "3.3.0"
+sha2 = "0.10"
 infer = "0.15"
 criterion = { version = "0.5.1", features = ["async_tokio"] }
 memory-stats = "1.0"

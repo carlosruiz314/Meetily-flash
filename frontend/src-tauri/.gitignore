@@ -5,3 +5,6 @@
 
 Cargo.lock
 Cargo.toml.orig
+# User transcripts never enter git (whisper-hallucination-cleanup task 5.3)
+# — pattern covers re-pin snapshots and their .bak copies
+tests/fixtures/cde5c264_transcripts*

@@ -534,10 +534,6 @@ impl WhisperEngine {
         language: Option<String>,
         segment_offset_ms: i64,
     ) -> Result<(String, f32, bool, Option<String>)> {
-        let ctx_lock = self.current_context.read().await;
-        let ctx = ctx_lock.as_ref()
-            .ok_or_else(|| anyhow!("No model loaded. Please load a model first."))?;
-
         // Get adaptive configuration based on hardware
         let hardware_profile = crate::audio::HardwareProfile::detect();
         let adaptive_config = hardware_profile.get_whisper_config();
@@ -578,6 +574,13 @@ impl WhisperEngine {
         params.set_suppress_nst(true);
         params.set_temperature(adaptive_config.temperature);
         params.set_max_initial_ts(1.0);
+        // NOTE: this whisper.cpp binding has no compression_ratio_threshold —
+        // the repetition gate here is entropy_thold (whisper.h: "similar to
+        // OpenAI's compression_ratio_threshold"). The temperature-fallback
+        // ladder is active via the default temperature_inc (0.2): a window
+        // that fails these gates is retried at rising temperatures, but if
+        // every rung fails the last decode is still emitted — which is why
+        // the lane audits text after decode (audio::hallucination).
         params.set_entropy_thold(2.4);
         params.set_logprob_thold(-1.0);
         // BALANCED FIX: Lowered from 0.75 to 0.55 to allow quiet speech detection
@@ -598,6 +601,77 @@ impl WhisperEngine {
 
         let duration_seconds = audio_data.len() as f64 / 16000.0;
         let is_partial = duration_seconds < 15.0; // Consider chunks under 15s as partial
+
+        let (text, confidence, token_timestamps) =
+            self.decode_with_params(params, audio_data, segment_offset_ms).await?;
+        Ok((text, confidence, is_partial, token_timestamps))
+    }
+
+    /// The hallucination-quarantine re-decode (whisper-hallucination-cleanup
+    /// D3): deliberately DIFFERENT search from the first attempt — greedy
+    /// sampling at temperature 0 (the beam-search attempt is deterministic,
+    /// so a same-params retry would reproduce flagged text verbatim) with the
+    /// language pinned to a concrete code, never auto-detect.
+    ///
+    /// `language` maps like the batch lane resolves it: `auto` /
+    /// `auto-translate` / None pin `en`; an explicit code pins that code.
+    pub async fn transcribe_audio_strict(
+        &self,
+        audio_data: Vec<f32>,
+        language: Option<String>,
+        segment_offset_ms: i64,
+    ) -> Result<(String, f32, Option<String>)> {
+        let pinned: String = match language.as_deref() {
+            Some("auto") | Some("auto-translate") | None => "en".to_string(),
+            Some(code) => code.to_string(),
+        };
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 5 });
+        params.set_language(Some(pinned.as_str()));
+        params.set_translate(false);
+
+        params.set_no_timestamps(true);     // Same chunking posture as the batch decode
+        params.set_token_timestamps(true);
+
+        params.set_print_special(false);
+        params.set_print_progress(false);
+        params.set_print_realtime(false);
+        params.set_print_timestamps(false);
+
+        params.set_suppress_blank(true);
+        params.set_suppress_nst(true);
+        // temperature 0 + default temperature_inc (0.2) = the fallback ladder
+        // [0.0, 0.2, ..., <1.0], now under greedy search.
+        params.set_temperature(0.0);
+        params.set_max_initial_ts(1.0);
+        params.set_entropy_thold(2.4);
+        params.set_logprob_thold(-1.0);
+        params.set_no_speech_thold(0.55);
+        params.set_max_len(200);
+        params.set_single_segment(false);
+
+        let hardware_profile = crate::audio::HardwareProfile::detect();
+        let adaptive_config = hardware_profile.get_whisper_config();
+        if let Some(max_threads) = adaptive_config.max_threads {
+            params.set_n_threads(max_threads as i32);
+        }
+        let audio_ctx = ((audio_data.len() / 320) + 32).min(1500) as i32;
+        params.set_audio_ctx(audio_ctx);
+
+        self.decode_with_params(params, audio_data, segment_offset_ms).await
+    }
+
+    /// Shared decode path: acquire the loaded context, run whisper, join
+    /// segments, clean, and extract offset token timestamps. Callers build the
+    /// FullParams; everything after is identical.
+    async fn decode_with_params(
+        &self,
+        params: FullParams<'_, '_>,
+        audio_data: Vec<f32>,
+        segment_offset_ms: i64,
+    ) -> Result<(String, f32, Option<String>)> {
+        let ctx_lock = self.current_context.read().await;
+        let ctx = ctx_lock.as_ref()
+            .ok_or_else(|| anyhow!("No model loaded. Please load a model first."))?;
 
         // PERFORMANCE: Suppress verbose C library logs during transcription
         // This hides whisper_full_with_state debug logs and beam search details
@@ -662,7 +736,7 @@ impl WhisperEngine {
                 )
             });
 
-        Ok((cleaned_result, avg_confidence, is_partial, token_timestamps))
+        Ok((cleaned_result, avg_confidence, token_timestamps))
     }
 
     pub async fn transcribe_audio(&self, audio_data: Vec<f32>, language: Option<String>) -> Result<String> {
@@ -719,8 +793,8 @@ impl WhisperEngine {
         params.set_max_len(200);                 // Reasonable length
         params.set_single_segment(false);        // Allow multiple segments for better accuracy
 
-        // Note: compression_ratio_threshold would be ideal but not available in current whisper-rs
-        // This would help detect repetitive outputs: params.set_compression_ratio_threshold(2.4);
+        // NOTE: this binding has no compression_ratio_threshold — the gate is
+        // entropy_thold (set above); see transcribe_audio_with_confidence.
 
         if let Some(max_threads) = adaptive_config.max_threads {
             params.set_n_threads(max_threads as i32);

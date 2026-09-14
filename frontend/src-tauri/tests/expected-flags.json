@@ -1,0 +1,388 @@
+{
+ "ad1ebbb777110d59d28c86f8ef009d3aba3dd801c2b92e637cddd94a98f37e1c": {
+  "fixture": "cde5c264_transcripts.pre-live.json",
+  "rows_total": 240,
+  "flagged": [
+   {
+    "id": "8b1cbbae-2dc5-47f1-aec9-8b2009b86b11",
+    "start_ms": 205723,
+    "signals": {
+     "non_latin": 0,
+     "fffd": 0,
+     "loop_ratio": 0.59,
+     "loop_count": 50,
+     "wps": 3.8
+    }
+   },
+   {
+    "id": "323b6ffe-cc50-4251-bb64-8fc02c3159cb",
+    "start_ms": 866440,
+    "signals": {
+     "non_latin": 4,
+     "fffd": 3,
+     "loop_ratio": 0.05,
+     "loop_count": 3,
+     "wps": 3.1
+    }
+   },
+   {
+    "id": "32064d83-54f3-4f9f-9778-d2f985a611aa",
+    "start_ms": 971628,
+    "signals": {
+     "non_latin": 0,
+     "fffd": 0,
+     "loop_ratio": 0.86,
+     "loop_count": 38,
+     "wps": 4.6
+    }
+   },
+   {
+    "id": "016b9110-9b9a-4ac7-87b1-61374cb4849b",
+    "start_ms": 1842969,
+    "signals": {
+     "non_latin": 58,
+     "fffd": 8,
+     "loop_ratio": 0.03,
+     "loop_count": 4,
+     "wps": 7.3
+    }
+   },
+   {
+    "id": "339b0871-3e76-4ebd-90c5-a8aeca2c20c7",
+    "start_ms": 1885030,
+    "signals": {
+     "non_latin": 58,
+     "fffd": 33,
+     "loop_ratio": 0.16,
+     "loop_count": 32,
+     "wps": 166.4
+    }
+   },
+   {
+    "id": "transcript-e572aa07-e25f-43fa-83f4-246c8654a22d",
+    "start_ms": 1909980,
+    "signals": {
+     "non_latin": 55,
+     "fffd": 26,
+     "loop_ratio": 0.01,
+     "loop_count": 1,
+     "wps": 11.3
+    }
+   },
+   {
+    "id": "transcript-55f4d25a-0039-43ae-bd1f-58e227f7177d",
+    "start_ms": 1923960,
+    "signals": {
+     "non_latin": 72,
+     "fffd": 12,
+     "loop_ratio": 0.01,
+     "loop_count": 1,
+     "wps": 101.9
+    }
+   },
+   {
+    "id": "85ac8dd5-bff0-4334-a480-9803a47ea5fc",
+    "start_ms": 1943150,
+    "signals": {
+     "non_latin": 5,
+     "fffd": 1,
+     "loop_ratio": 0.09,
+     "loop_count": 3,
+     "wps": 1.7
+    }
+   },
+   {
+    "id": "24381e52-a060-42b6-a655-eae66e12016c",
+    "start_ms": 2153115,
+    "signals": {
+     "non_latin": 88,
+     "fffd": 8,
+     "loop_ratio": 0.01,
+     "loop_count": 1,
+     "wps": 10.8
+    }
+   },
+   {
+    "id": "b0e04c71-4066-4e81-8098-c21e65ae36cc",
+    "start_ms": 2204566,
+    "signals": {
+     "non_latin": 19,
+     "fffd": 2,
+     "loop_ratio": 0.04,
+     "loop_count": 1,
+     "wps": 3.1
+    }
+   },
+   {
+    "id": "transcript-7c023d16-7cee-4707-967d-1321d02bc3c0",
+    "start_ms": 2218350,
+    "signals": {
+     "non_latin": 3,
+     "fffd": 207,
+     "loop_ratio": 0.1,
+     "loop_count": 1,
+     "wps": 5.0
+    }
+   },
+   {
+    "id": "f7bf29bc-575c-42ca-a731-2714371b2a2b",
+    "start_ms": 2641005,
+    "signals": {
+     "non_latin": 10,
+     "fffd": 0,
+     "loop_ratio": 0.04,
+     "loop_count": 2,
+     "wps": 31.5
+    }
+   },
+   {
+    "id": "5fbe0ea7-4b2e-4238-8a49-33071a28b255",
+    "start_ms": 2821635,
+    "signals": {
+     "non_latin": 45,
+     "fffd": 22,
+     "loop_ratio": 0.01,
+     "loop_count": 2,
+     "wps": 4.6
+    }
+   },
+   {
+    "id": "6c6e313c-d416-4274-af0a-f4b85cd55b1a",
+    "start_ms": 2857966,
+    "signals": {
+     "non_latin": 0,
+     "fffd": 3,
+     "loop_ratio": 0.09,
+     "loop_count": 2,
+     "wps": 3.9
+    }
+   },
+   {
+    "id": "94286f0d-2755-4083-b8d0-74acf013b7fc",
+    "start_ms": 2931770,
+    "signals": {
+     "non_latin": 11,
+     "fffd": 2,
+     "loop_ratio": 0.13,
+     "loop_count": 6,
+     "wps": 37.1
+    }
+   },
+   {
+    "id": "transcript-e30aa6ee-605d-4be4-a3d3-14645960e8fc",
+    "start_ms": 2938800,
+    "signals": {
+     "non_latin": 52,
+     "fffd": 23,
+     "loop_ratio": 0.03,
+     "loop_count": 7,
+     "wps": 4.9
+    }
+   },
+   {
+    "id": "72b6c828-4b27-47c4-91f9-cafa9f53eafd",
+    "start_ms": 3370005,
+    "signals": {
+     "non_latin": 59,
+     "fffd": 22,
+     "loop_ratio": 0.02,
+     "loop_count": 3,
+     "wps": 7.6
+    }
+   },
+   {
+    "id": "a335cd27-ee56-44e4-aa1a-b04e21e201ba",
+    "start_ms": 4558360,
+    "signals": {
+     "non_latin": 41,
+     "fffd": 11,
+     "loop_ratio": 0.05,
+     "loop_count": 10,
+     "wps": 7.8
+    }
+   },
+   {
+    "id": "2cdfe738-d32f-455f-b888-5943b453e3a6",
+    "start_ms": 4586473,
+    "signals": {
+     "non_latin": 11,
+     "fffd": 5,
+     "loop_ratio": 0.03,
+     "loop_count": 1,
+     "wps": 30.5
+    }
+   },
+   {
+    "id": "2cf928a0-bba6-4a1a-93fd-e58de9898bf1",
+    "start_ms": 4595340,
+    "signals": {
+     "non_latin": 119,
+     "fffd": 37,
+     "loop_ratio": 0.01,
+     "loop_count": 4,
+     "wps": 14.1
+    }
+   },
+   {
+    "id": "1e0dbefe-5615-49a8-8e00-511424c9b043",
+    "start_ms": 4880671,
+    "signals": {
+     "non_latin": 69,
+     "fffd": 15,
+     "loop_ratio": 0.03,
+     "loop_count": 7,
+     "wps": 5.2
+    }
+   },
+   {
+    "id": "63301149-c8ac-433b-864f-9059f525e4bb",
+    "start_ms": 4934790,
+    "signals": {
+     "non_latin": 4,
+     "fffd": 3,
+     "loop_ratio": 0.14,
+     "loop_count": 3,
+     "wps": 0.6
+    }
+   }
+  ]
+ },
+ "af1e24656ee3522f0017737bc2bade5f9776a389d57c828d74d8208758b7ce43": {
+  "fixture": "cde5c264_transcripts.json",
+  "rows_total": 182,
+  "flagged": [
+   {
+    "id": "b545d48a-1459-49fb-b619-e684c975464e",
+    "start_ms": 866651,
+    "signals": {
+     "non_latin": 4,
+     "fffd": 3,
+     "loop_ratio": 0.05,
+     "loop_count": 3,
+     "wps": 3.0
+    }
+   },
+   {
+    "id": "32e4a32d-e02a-42a1-b305-c8e27ed3d3ae",
+    "start_ms": 1814440,
+    "signals": {
+     "non_latin": 21,
+     "fffd": 0,
+     "loop_ratio": 0.03,
+     "loop_count": 4,
+     "wps": 4.4
+    }
+   },
+   {
+    "id": "0863305b-9865-44a3-8eec-5acd77ece982",
+    "start_ms": 1846192,
+    "signals": {
+     "non_latin": 37,
+     "fffd": 8,
+     "loop_ratio": 0.03,
+     "loop_count": 2,
+     "wps": 4.3
+    }
+   },
+   {
+    "id": "ba168f9c-4533-4334-bd14-c124bd3d75c9",
+    "start_ms": 1875270,
+    "signals": {
+     "non_latin": 190,
+     "fffd": 70,
+     "loop_ratio": 0.01,
+     "loop_count": 3,
+     "wps": 4.2
+    }
+   },
+   {
+    "id": "487daf14-37be-4ce9-8365-a5fbaae3828f",
+    "start_ms": 2152890,
+    "signals": {
+     "non_latin": 88,
+     "fffd": 8,
+     "loop_ratio": 0.01,
+     "loop_count": 2,
+     "wps": 11.2
+    }
+   },
+   {
+    "id": "66f690ac-7ab1-4b02-be9a-f6b6d0fe1d8d",
+    "start_ms": 2204881,
+    "signals": {
+     "non_latin": 22,
+     "fffd": 209,
+     "loop_ratio": 0.04,
+     "loop_count": 2,
+     "wps": 1.6
+    }
+   },
+   {
+    "id": "7f114fb9-44a0-4359-98c2-535d99e12c2e",
+    "start_ms": 2590634,
+    "signals": {
+     "non_latin": 10,
+     "fffd": 0,
+     "loop_ratio": 0.05,
+     "loop_count": 7,
+     "wps": 2.7
+    }
+   },
+   {
+    "id": "1f811a4f-b85e-463e-aaff-9e0ac810024a",
+    "start_ms": 2820962,
+    "signals": {
+     "non_latin": 45,
+     "fffd": 25,
+     "loop_ratio": 0.02,
+     "loop_count": 3,
+     "wps": 4.6
+    }
+   },
+   {
+    "id": "7ab31169-dc54-4aa7-9e13-e33866989703",
+    "start_ms": 2931600,
+    "signals": {
+     "non_latin": 63,
+     "fffd": 25,
+     "loop_ratio": 0.03,
+     "loop_count": 7,
+     "wps": 4.6
+    }
+   },
+   {
+    "id": "79fc535b-423f-4d40-b416-ffdebc4fb408",
+    "start_ms": 3368392,
+    "signals": {
+     "non_latin": 59,
+     "fffd": 22,
+     "loop_ratio": 0.02,
+     "loop_count": 4,
+     "wps": 4.3
+    }
+   },
+   {
+    "id": "c32fdddf-f0de-4594-b3dd-2ee10e67c4ea",
+    "start_ms": 4586280,
+    "signals": {
+     "non_latin": 171,
+     "fffd": 53,
+     "loop_ratio": 0.01,
+     "loop_count": 4,
+     "wps": 15.5
+    }
+   },
+   {
+    "id": "e633daa3-6060-45fc-bfd6-86096882f3cd",
+    "start_ms": 4880353,
+    "signals": {
+     "non_latin": 73,
+     "fffd": 18,
+     "loop_ratio": 0.03,
+     "loop_count": 8,
+     "wps": 4.3
+    }
+   }
+  ]
+ }
+}
