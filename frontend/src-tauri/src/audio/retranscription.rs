@@ -53,7 +53,7 @@ impl Drop for RetranscriptionGuard {
 /// Batch processing needs longer redemption (2000ms) than live pipeline (400ms)
 /// because the entire file is processed at once by VAD, and 400ms fragments
 /// speech at every natural sentence/topic pause (500ms-2s)
-const VAD_REDEMPTION_TIME_MS: u32 = 2000;
+#[doc(hidden)] pub const VAD_REDEMPTION_TIME_MS: u32 = 2000;
 
 /// Circuit breaker (whisper-hallucination-cleanup D3): if more than this
 /// fraction of a run's segments are dropped by the hallucination quarantine,
@@ -237,7 +237,7 @@ pub(crate) fn match_checkpoints<'a>(
 /// retry replaces the text (and its checkpoint); a still-flagged retry is
 /// dropped, counted, and never persisted. Drops beyond
 /// [`HALLUCINATION_DROP_ABORT_FRACTION`] fail the run.
-pub(crate) async fn transcribe_segments_checkpointed<F, Fut, R, Fut2>(
+#[doc(hidden)] pub async fn transcribe_segments_checkpointed<F, Fut, R, Fut2>(
     meeting_id: &str,
     processable_segments: &[crate::audio::vad::SpeechSegment],
     pool: &sqlx::SqlitePool,
