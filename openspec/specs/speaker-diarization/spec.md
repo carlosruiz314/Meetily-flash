@@ -344,7 +344,14 @@ When the user assigns a name, the frontend SHALL invoke `label_speaker(meeting_i
 
 The inline input SHALL show suggestion chips of existing named speakers (excluding auto-generated "Speaker N" labels). Selecting an existing speaker name SHALL merge the current cluster into that speaker — all transcript segments for the cluster are relabeled to the selected name. This is an intentional merge action, not a rename.
 
-Manually-named speaker badges SHALL show a small undo icon (visible on hover) that reverts that speaker to its original auto-generated cluster label. Clicking the icon SHALL invoke `revert_speaker_label(meeting_id, speaker_label)`, which restores all transcript rows for that speaker in the meeting to their `previous_label`, sets `speaker_source` to `NULL`, and unlinks the corresponding embedding. The undo icon SHALL NOT appear on auto-generated labels ("Speaker N") or when `previous_label IS NULL`.
+Speaker badges SHALL show a small undo icon (visible on hover) for every non-auto-generated label. Clicking the icon SHALL invoke `revert_speaker_label(meeting_id, speaker_label)`, which restores every row carrying that label in the meeting to its pre-label state and unlinks the speaker recognition that produced it. The undo icon SHALL NOT appear on auto-generated labels ("Speaker N") or "Unknown" labels.
+
+`revert_speaker_label` SHALL restore two kinds of label history in one invocation:
+
+1. **Manual rename** (rows with `previous_label IS NOT NULL`): each row SHALL be restored to its own `previous_label`, `speaker_source` set to `NULL`, and `previous_label` cleared to `NULL`.
+2. **Recognized name** (rows with `previous_label IS NULL` — diarization matched a stamped speaker and wrote the person's name directly): the system SHALL recover the cluster label the run stored on the matched embedding (`speaker_embeddings.cluster_label`, joined via `speakers.name` for the meeting's embeddings) and relabel those rows to it with `speaker_source = NULL`. If several clusters of the meeting matched the same name (over-split voice), the rows carry no per-cluster marker and SHALL collapse onto the lowest recovered cluster label.
+
+After either path relabels rows, the corresponding embeddings SHALL be unlinked (`speaker_id = NULL`) for the meeting, so future meetings stop recognizing that voice as the named speaker.
 
 #### Scenario: Label an unknown speaker
 
@@ -383,9 +390,32 @@ Manually-named speaker badges SHALL show a small undo icon (visible on hover) th
 - **THEN** some transcript rows revert to "Speaker 0" and others revert to "Speaker 2" (each row has its own `previous_label`)
 - **AND** the two original clusters are restored independently
 
-#### Scenario: Revert disabled for auto-generated labels and legacy manual labels
+#### Scenario: Revert a recognized speaker name to its cluster label
 
-- **GIVEN** a transcript segment with `speaker_label = "Speaker 0"` (auto-generated) or a manual label from before the `previous_label` migration (where `previous_label IS NULL`)
+- **GIVEN** a meeting where diarization recognized a stamped speaker and wrote "Cynthia Wu" directly onto its rows (`speaker_source = 'auto'`, `previous_label IS NULL`), with the run's embedding row for that cluster storing `cluster_label = "Speaker 1"` and `speaker_id` pointing at the "Cynthia Wu" speaker
+- **WHEN** the user hovers over the "Cynthia Wu" badge and clicks the undo icon
+- **THEN** all transcript rows with `speaker_label = "Cynthia Wu"` in that meeting revert to `speaker_label = "Speaker 1"`
+- **AND** `speaker_source` is set to `NULL`
+- **AND** the matched embeddings of the meeting are unlinked (`speaker_id = NULL`), so future meetings stop recognizing that voice as "Cynthia Wu"
+
+#### Scenario: Over-split recognized name collapses onto the lowest cluster label
+
+- **GIVEN** a meeting where two clusters ("Speaker 1" and "Speaker 3") both matched the same stamped speaker "Cynthia Wu", so all their rows carry `speaker_label = "Cynthia Wu"` with no per-cluster marker
+- **WHEN** the user reverts "Cynthia Wu"
+- **THEN** all those rows relabel to "Speaker 1" (the lowest recovered cluster label)
+- **AND** the trade-off is accepted: one person's over-split rows render under one label rather than their pre-recognition split
+
+#### Scenario: Revert handles mixed manual and recognized rows under one name
+
+- **GIVEN** a meeting with recognized "Cynthia Wu" rows (`previous_label IS NULL`) AND rows manually renamed to "Cynthia Wu" (each with its own `previous_label`)
+- **WHEN** the user reverts "Cynthia Wu"
+- **THEN** the manual rows restore to their own `previous_label` values
+- **AND** the recognized rows relabel to the recovered cluster label
+- **AND** no row is processed by both paths
+
+#### Scenario: Revert not offered for auto-generated labels
+
+- **GIVEN** a transcript segment with an auto-generated label (`speaker_label = "Speaker 0"`) or an "Unknown" label
 - **THEN** the undo icon is not shown on the badge
 
 #### Scenario: Full reset clears previous_label
