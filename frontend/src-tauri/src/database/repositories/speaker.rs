@@ -674,6 +674,11 @@ impl SpeakerRepository {
         meeting_id: &str,
         manual_label: &str,
     ) -> Result<u64> {
+        // One transaction: a partial revert (relabel without unlink) could
+        // never self-heal — a retry would match 0 rows and skip the unlink,
+        // leaving the recognition live under generic labels.
+        let mut tx = pool.begin().await?;
+
         // Original cluster labels of the rows being reverted — captured BEFORE
         // the reset below nulls previous_label.
         let originals: Vec<String> = sqlx::query_as(
@@ -681,7 +686,7 @@ impl SpeakerRepository {
         )
         .bind(meeting_id)
         .bind(manual_label)
-        .fetch_all(pool)
+        .fetch_all(&mut *tx)
         .await?
         .into_iter()
         .map(|(l,): (String,)| l)
@@ -692,35 +697,84 @@ impl SpeakerRepository {
         )
         .bind(meeting_id)
         .bind(manual_label)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+        let mut reverted = result.rows_affected();
 
-        if result.rows_affected() > 0 {
+        // Recognized-name rows (diarization matched a stamped speaker and
+        // wrote the person's name directly) carry no previous_label — their
+        // "original" is the cluster label the run stored on the matched
+        // embedding. Relabel to it so undo always lands on a "Speaker X"
+        // label; the unlink below then stops future meetings from
+        // recognizing this voice as the named speaker. If several clusters
+        // of this meeting matched the same name (over-split voice), the rows
+        // are indistinguishable per-row, so they collapse onto the lowest
+        // cluster label (numeric order — lexical sort puts "Speaker 10"
+        // before "Speaker 2"). The `previous_label IS NULL` predicate keeps
+        // the two paths disjoint; it also sweeps a row whose manual override
+        // came from a NULL label (previous_label stayed NULL) to the cluster
+        // label when a matched embedding exists — accepted, its prior state
+        // was unlabeled and previous_label remains NULL.
+        let recovered: Vec<(String,)> = sqlx::query_as(
+            "SELECT DISTINCT cluster_label FROM speaker_embeddings \
+             WHERE source_meeting_id = ? AND speaker_id = (SELECT id FROM speakers WHERE name = ?) \
+             ORDER BY CAST(substr(cluster_label, 9) AS INTEGER), cluster_label",
+        )
+        .bind(meeting_id)
+        .bind(manual_label)
+        .fetch_all(&mut *tx)
+        .await?;
+        if let Some((cluster_label,)) = recovered.first() {
+            let relabeled = sqlx::query(
+                "UPDATE transcripts SET speaker_label = ?, speaker_source = NULL \
+                 WHERE meeting_id = ? AND speaker_label = ? AND previous_label IS NULL",
+            )
+            .bind(cluster_label)
+            .bind(meeting_id)
+            .bind(manual_label)
+            .execute(&mut *tx)
+            .await?;
+            reverted += relabeled.rows_affected();
+        }
+
+        if reverted > 0 {
             // Symmetric unlink: exactly the embeddings that labeling linked
             // for these clusters — their ORIGINAL cluster labels (from
             // previous_label, captured before the reset above) or the speaker
             // id the badge displayed. The old `cluster_label NOT IN (current
             // labels)` form both over-unlinked unrelated clusters and missed
             // the reverted one.
-            let placeholders = originals.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-            let sql = format!(
-                "UPDATE speaker_embeddings SET speaker_id = NULL WHERE source_meeting_id = ? AND (cluster_label IN ({}) OR speaker_id = (SELECT id FROM speakers WHERE name = ?))",
-                placeholders
-            );
-            let mut unlink = sqlx::query(&sql).bind(meeting_id);
-            for original in &originals {
-                unlink = unlink.bind(original);
+            if originals.is_empty() {
+                sqlx::query(
+                    "UPDATE speaker_embeddings SET speaker_id = NULL WHERE source_meeting_id = ? \
+                     AND speaker_id = (SELECT id FROM speakers WHERE name = ?)",
+                )
+                .bind(meeting_id)
+                .bind(manual_label)
+                .execute(&mut *tx)
+                .await?;
+            } else {
+                let placeholders = originals.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+                let sql = format!(
+                    "UPDATE speaker_embeddings SET speaker_id = NULL WHERE source_meeting_id = ? AND (cluster_label IN ({}) OR speaker_id = (SELECT id FROM speakers WHERE name = ?))",
+                    placeholders
+                );
+                let mut unlink = sqlx::query(&sql).bind(meeting_id);
+                for original in &originals {
+                    unlink = unlink.bind(original);
+                }
+                unlink = unlink.bind(manual_label);
+                unlink.execute(&mut *tx).await?;
             }
-            unlink = unlink.bind(manual_label);
-            unlink.execute(pool).await?;
             info!(
                 "Reverted {} transcript rows from '{}' in meeting {}",
-                result.rows_affected(),
+                reverted,
                 manual_label,
                 meeting_id
             );
         }
-        Ok(result.rows_affected())
+        tx.commit().await?;
+        Ok(reverted)
     }
 
     fn serialize_embedding(values: &[f32]) -> Vec<u8> {
@@ -920,12 +974,16 @@ mod tests {
     }
 
     // 4.3 — a manual override on a row that was never labeled (speaker_label was
-    // NULL) leaves previous_label NULL, so revert_speaker_label cannot undo it.
-    // Documents the known limitation (design D3); fixing it needs previous_label
-    // surfaced to the UI to gate the undo affordance.
+    // NULL) leaves previous_label NULL, and with no matched embedding there is
+    // no recovered cluster label either — so revert_speaker_label cannot undo
+    // it and the manual label is stuck (documented limitation, design D3).
     #[tokio::test]
     async fn manual_override_on_never_labeled_row_is_not_revertible() {
         let pool = speaker_test_pool().await;
+        // revert consults speakers/speaker_embeddings for a recoverable
+        // cluster label, so the minimal tables must exist here too.
+        sqlx::query("CREATE TABLE speakers (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT, created_at TEXT NOT NULL DEFAULT 'now', updated_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE speaker_embeddings (id TEXT PRIMARY KEY, speaker_id TEXT, embedding BLOB NOT NULL, source_meeting_id TEXT NOT NULL, cluster_label TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
         let transcript_id = format!("never-{}", uuid::Uuid::new_v4());
         sqlx::query(
             "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker_label, speaker_source)
@@ -976,6 +1034,171 @@ mod tests {
             label.0, "Alice",
             "the manual label is stuck — the documented limitation"
         );
+    }
+
+    // 4.4 — recognized-name undo: diarization matched a stamped speaker and
+    // wrote the person's name directly (no previous_label). Undo must restore
+    // the cluster label the run stored on the matched embedding and unlink the
+    // recognition so future meetings stop recognizing the voice.
+    #[tokio::test]
+    async fn recognized_name_revert_restores_cluster_label_and_unlinks() {
+        let pool = speaker_test_pool().await;
+        // revert touches speakers/speaker_embeddings once a row is actually
+        // relabeled, so the minimal tables must exist here.
+        sqlx::query("CREATE TABLE speakers (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT, created_at TEXT NOT NULL DEFAULT 'now', updated_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE speaker_embeddings (id TEXT PRIMARY KEY, speaker_id TEXT, embedding BLOB NOT NULL, source_meeting_id TEXT NOT NULL, cluster_label TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO speakers (id, name) VALUES ('sp-c', 'Cynthia Wu')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO speaker_embeddings (id, speaker_id, embedding, source_meeting_id, cluster_label) VALUES ('e1', 'sp-c', x'00', 'm', 'Speaker 1')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for (id, label) in [("r1", Some("Cynthia Wu")), ("r2", Some("Speaker 0"))] {
+            sqlx::query(
+                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker_label, speaker_source, previous_label)
+                 VALUES (?, 'm', 't', '00:00', 0.0, 1.0, 1.0, ?, 'auto', NULL)",
+            )
+            .bind(id)
+            .bind(label)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let reverted = SpeakerRepository::revert_speaker_label(&pool, "m", "Cynthia Wu")
+            .await
+            .unwrap();
+        assert_eq!(reverted, 1, "only the recognized-name rows relabel");
+
+        let (label, source): (String, Option<String>) =
+            sqlx::query_as("SELECT speaker_label, speaker_source FROM transcripts WHERE id = 'r1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(label, "Speaker 1", "undo lands on the cluster label");
+        assert!(source.is_none());
+
+        let other: (String,) =
+            sqlx::query_as("SELECT speaker_label FROM transcripts WHERE id = 'r2'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(other.0, "Speaker 0", "unrelated cluster untouched");
+
+        let unlinked: (Option<String>,) =
+            sqlx::query_as("SELECT speaker_id FROM speaker_embeddings WHERE id = 'e1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(unlinked.0.is_none(), "recognition is unlinked");
+    }
+
+    // 4.4b — several clusters of one meeting matched the same stamped speaker
+    // (over-split voice): the rows carry no per-cluster marker, so undo
+    // collapses them onto the lowest cluster label. The fixture uses 2-digit
+    // and 1-digit numbers to pin NUMERIC ordering (lexical sort would pick
+    // "Speaker 10" over "Speaker 2").
+    #[tokio::test]
+    async fn recognized_name_over_split_clusters_collapse_to_lowest_label() {
+        let pool = speaker_test_pool().await;
+        sqlx::query("CREATE TABLE speakers (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT, created_at TEXT NOT NULL DEFAULT 'now', updated_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE speaker_embeddings (id TEXT PRIMARY KEY, speaker_id TEXT, embedding BLOB NOT NULL, source_meeting_id TEXT NOT NULL, cluster_label TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO speakers (id, name) VALUES ('sp-c', 'Cynthia Wu')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        for (emb_id, cluster) in [("e10", "Speaker 10"), ("e2", "Speaker 2")] {
+            sqlx::query("INSERT INTO speaker_embeddings (id, speaker_id, embedding, source_meeting_id, cluster_label) VALUES (?, 'sp-c', x'00', 'm', ?)")
+                .bind(emb_id)
+                .bind(cluster)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        for id in ["r-a", "r-b"] {
+            sqlx::query(
+                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker_label, speaker_source, previous_label)
+                 VALUES (?, 'm', 't', '00:00', 0.0, 1.0, 1.0, 'Cynthia Wu', 'auto', NULL)",
+            )
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let reverted = SpeakerRepository::revert_speaker_label(&pool, "m", "Cynthia Wu")
+            .await
+            .unwrap();
+        assert_eq!(reverted, 2);
+
+        let labels: Vec<(String,)> =
+            sqlx::query_as("SELECT speaker_label FROM transcripts ORDER BY id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert!(
+            labels.iter().all(|(l,)| l == "Speaker 2"),
+            "both rows collapse onto the numerically lowest cluster label, got {:?}",
+            labels
+        );
+    }
+
+    // 4.4c — mixed manual + recognized rows under one name: the manual row
+    // restores to its own previous_label, the recognized row relabels to the
+    // recovered cluster label, and no row is processed twice (the recognized
+    // path's `previous_label IS NULL` predicate is what keeps them apart).
+    #[tokio::test]
+    async fn revert_handles_mixed_manual_and_recognized_rows_under_one_name() {
+        let pool = speaker_test_pool().await;
+        sqlx::query("CREATE TABLE speakers (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT, created_at TEXT NOT NULL DEFAULT 'now', updated_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE speaker_embeddings (id TEXT PRIMARY KEY, speaker_id TEXT, embedding BLOB NOT NULL, source_meeting_id TEXT NOT NULL, cluster_label TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO speakers (id, name) VALUES ('sp-c', 'Cynthia Wu')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO speaker_embeddings (id, speaker_id, embedding, source_meeting_id, cluster_label) VALUES ('e1', 'sp-c', x'00', 'm', 'Speaker 1')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // Recognized row: written by the run, no label history.
+        sqlx::query(
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker_label, speaker_source, previous_label)
+             VALUES ('r-auto', 'm', 't', '00:00', 0.0, 1.0, 1.0, 'Cynthia Wu', 'auto', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        // Manual row: "Speaker 0" renamed to "Cynthia Wu" by the user.
+        sqlx::query(
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker_label, speaker_source, previous_label)
+             VALUES ('r-manual', 'm', 't', '00:00', 0.0, 1.0, 1.0, 'Cynthia Wu', 'manual', 'Speaker 0')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let reverted = SpeakerRepository::revert_speaker_label(&pool, "m", "Cynthia Wu")
+            .await
+            .unwrap();
+        assert_eq!(reverted, 2, "one row per path, no double-processing");
+
+        let auto: (String,) =
+            sqlx::query_as("SELECT speaker_label FROM transcripts WHERE id = 'r-auto'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(auto.0, "Speaker 1", "recognized row lands on the recovered cluster label");
+
+        let manual: (String, Option<String>) = sqlx::query_as(
+            "SELECT speaker_label, previous_label FROM transcripts WHERE id = 'r-manual'",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(manual.0, "Speaker 0", "manual row restores to its own previous_label");
+        assert!(manual.1.is_none(), "history cleared exactly once");
     }
 
     // 4.5 — set-once CASE invariant on the previously-labeled path (4.3 can't
