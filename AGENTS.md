@@ -121,7 +121,7 @@ frontend/src/
 ## 3. Spec-Driven Development
 
 - Every behavioral change, even a small one, goes through OpenSpec.
-- `openspec/project.md` carries the canonical context fed into every proposal.
+- This rulebook is the canonical proposal context: the CLI's artifact templates are plugin-owned, inject nothing repo-specific, and `openspec/project.md` is a legacy OpenSpec shape the current CLI no longer reads — don't create it expecting injection.
 - `openspec/specs/` holds living capability specs (one per capability).
 - `openspec/changes/` holds in-flight proposals. Archived proposals move under `openspec/changes/archive/`.
 - Workflow: `/opsx:propose <kebab-case-name>` → edit artifacts → `/opsx:apply` → implement tasks → `/opsx:archive`.
