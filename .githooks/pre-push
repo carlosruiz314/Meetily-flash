@@ -1,7 +1,8 @@
 #!/usr/bin/env sh
 # Pre-push smoke gate — cross-platform-automated-smoke-tests.
-# Runs Vitest plus the branch-scoped Playwright smoke spec (derived from the
-# fix/<change> | enhance/<change> branch convention) before a push reaches the remote.
+# Runs Vitest plus Playwright before a push reaches the remote:
+#   fix/<change> | enhance/<change> branch  -> the branch-scoped smoke spec
+#   any other branch (main direct pushes)   -> the FULL Playwright suite
 # Bypass for WIP/emergency pushes: SKIP_SMOKE=1 git push
 
 if [ -n "$SKIP_SMOKE" ]; then
@@ -16,7 +17,9 @@ FRONTEND="$REPO_ROOT/frontend"
 
 BRANCH=$(git rev-parse --abbrev-ref HEAD)
 
-# Only fix/|enhance/ branches carry a change name; anything else gets Vitest only.
+# Only fix/|enhance/ branches carry a change name; anything else gets the
+# full E2E suite — main-direct pushes must not skip Playwright (the E2E ask
+# in AGENTS.md §3 is prose; this hook is the mechanical gate).
 CHANGE=""
 case "$BRANCH" in
   fix/*) CHANGE="${BRANCH#fix/}" ;;
@@ -40,10 +43,18 @@ if [ -n "$CHANGE" ]; then
       exit 1
     }
   else
-    echo "[smoke] no scoped spec at $SPEC — Vitest-only gate."
+    echo "[smoke] no scoped spec at $SPEC — falling back to full Playwright suite."
+    ( cd "$FRONTEND" && pnpm exec playwright test ) || {
+      echo "[smoke] Playwright suite failed — push aborted. Bypass: SKIP_SMOKE=1 git push"
+      exit 1
+    }
   fi
 else
-  echo "[smoke] branch has no fix/|enhance/ prefix — Vitest-only gate."
+  echo "[smoke] branch has no fix/|enhance/ prefix — full Playwright suite."
+  ( cd "$FRONTEND" && pnpm exec playwright test ) || {
+    echo "[smoke] Playwright suite failed — push aborted. Bypass: SKIP_SMOKE=1 git push"
+    exit 1
+  }
 fi
 
 echo "[smoke] gate passed."
