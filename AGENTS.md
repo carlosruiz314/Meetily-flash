@@ -180,6 +180,18 @@ For every use case, write at least one red test from every applicable category *
 | Oversized request | 10 MB JSON body to any API endpoint |
 | Missing required fields | POST body missing `meeting_id` |
 
+### Frontend / UI
+For every use case whose outcome users see or trigger in the app — components, views, dialogs, badges, AND backend commands behind them — write at least one Playwright smoke spec (`frontend/e2e/smoke/<change-name>.spec.ts`, fail-closed Tauri mock; see §3 for the deliverable rule and `recognized-name-badge-revert.spec.ts` for the pattern):
+
+| Category | Example |
+|---|---|
+| Silent no-op | Affordance renders and dispatch fires, but the backend matches 0 rows — the change must make the outcome visible (recognized speaker name reverting to its cluster label) |
+| Broken wiring | Click dispatches wrong or missing args (`meeting_id` absent, wrong scope) — assert via the mock's call log |
+| Missing / stray affordance | Undo icon absent on a revertible label, or present where it must not be ("Speaker N" labels) |
+| Stale render after refetch | Command succeeds but the refetch keeps the old state — badge must flip to the restored label |
+| Scope leak | Undo click ALSO opens the rename editor (missing stopPropagation) |
+| Empty / cold start | Zero transcripts, zero speakers — page renders empty states without crashing |
+
 Property-based tests (`proptest` in Rust, `hypothesis` in Python, `fast-check` in TypeScript) cover the transcript → summary pipeline: invariants must hold for any valid input within defined bounds.
 
 ---
