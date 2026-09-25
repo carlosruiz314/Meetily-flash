@@ -265,6 +265,11 @@ async fn gap_rescue_v3_scan() {
             (s, e)
         })
         .collect();
+    // Historical probe pinned to the pre-review refs semantics
+    // (list_stamped_embeddings, per-row). Production now anchors via
+    // list_enrollment_refs (one mean voiceprint per named speaker,
+    // deterministic order) — these probes' recorded verdicts date from the
+    // old semantics; swap here ONLY if re-baselining the probes.
     let references = app_lib::database::repositories::speaker::SpeakerRepository::list_stamped_embeddings(&pool)
         .await
         .unwrap_or_default();
