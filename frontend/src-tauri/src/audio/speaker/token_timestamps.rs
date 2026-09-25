@@ -93,6 +93,88 @@ pub fn offset_token_timestamps(json: &str, offset_ms: i64) -> Option<String> {
     serde_json::to_string(&words).ok()
 }
 
+/// whisper sometimes emits the same run of pieces twice — the second copy
+/// with degenerate walls (all pieces zero-span, pinned to one point, usually
+/// the row's end edge). Measured: the cde5c264 source row at 1193.55 s
+/// repeated "I am okay to do it as long as they give us an actual plan." with
+/// the ghost collapsed to a single point; the render then split the ghost
+/// into the NEXT speaker's row, fabricating a verbatim echo. A repeat whose
+/// second copy is acoustically weightless is a decode ghost — dropped. Real
+/// repeats (people actually saying it twice) carry real walls and stay.
+const GHOST_MAX_PIECES: usize = 32;
+/// A run whose pieces all sit inside this window is weightless.
+const GHOST_MAX_SPAN_MS: i64 = 50;
+
+/// Returns the indices of `items` that survive ghost dedup (order kept).
+/// Generic over the item shape: dedup runs at WORD granularity in
+/// `valid_token_words` (the ghost's text is part of the row text, so pieces
+/// must still merge — only the merged words are droppable).
+pub fn dedupe_degenerate_repeats_by<T>(
+    items: &[T],
+    text: impl Fn(&T) -> &str,
+    start: impl Fn(&T) -> i64,
+    end: impl Fn(&T) -> i64,
+) -> Vec<usize> {
+    if items.len() < 2 {
+        return (0..items.len()).collect();
+    }
+    let norm: Vec<String> = items
+        .iter()
+        .map(|it| {
+            text(it).to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect()
+        })
+        .collect();
+    let weightless = |run: &[T]| {
+        let mut lo = i64::MAX;
+        let mut hi = i64::MIN;
+        for it in run {
+            if end(it) - start(it) > 1 {
+                return false;
+            }
+            lo = lo.min(start(it));
+            hi = hi.max(end(it));
+        }
+        hi - lo < GHOST_MAX_SPAN_MS
+    };
+    let mut out = Vec::with_capacity(items.len());
+    let mut i = 0usize;
+    while i < items.len() {
+        // Longest normalized repeat of the immediately preceding run whose
+        // copy is weightless wins; anything else is kept as-is.
+        let mut drop_k = 0usize;
+        for k in (1..=GHOST_MAX_PIECES.min(i)).rev() {
+            if i + k > items.len() {
+                continue;
+            }
+            let prev = norm[i - k..i].concat();
+            if prev.is_empty() || prev != norm[i..i + k].concat() {
+                continue;
+            }
+            if weightless(&items[i..i + k]) {
+                drop_k = k;
+                break;
+            }
+        }
+        if drop_k > 0 {
+            i += drop_k;
+            continue;
+        }
+        out.push(i);
+        i += 1;
+    }
+    out
+}
+
+/// TokenWord convenience wrapper (piece-level callers; tests).
+pub fn dedupe_degenerate_repeats(pieces: &[TokenWord]) -> Vec<usize> {
+    dedupe_degenerate_repeats_by(
+        pieces,
+        |p| &p.word,
+        |p| p.start_ms,
+        |p| p.end_ms,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,6 +211,82 @@ mod tests {
         assert!(!is_eot_marker("hello"));
         assert!(!is_eot_marker(""));
         assert!(!is_eot_marker("[_EOT_] extra"));
+    }
+
+    fn tw(w: &str, s: i64, e: i64) -> TokenWord {
+        TokenWord { word: w.to_string(), start_ms: s, end_ms: e }
+    }
+
+    #[test]
+    fn drops_zero_wall_ghost_repeat() {
+        // Real shape (cde5c264 1193.55 row): "I am okay … plan." with real
+        // walls, then the same run with every piece zero-span at the row end.
+        let pieces = vec![
+            tw("I", 1_200_400, 1_200_470),
+            tw("am", 1_200_710, 1_200_860),
+            tw("okay", 1_201_210, 1_202_000),
+            tw("to", 1_202_300, 1_202_500),
+            tw("do", 1_202_600, 1_202_800),
+            tw("it", 1_202_900, 1_203_000),
+            tw("as", 1_203_100, 1_203_200),
+            tw("long", 1_203_210, 1_203_400),
+            tw("as", 1_203_410, 1_203_500),
+            tw("they", 1_203_600, 1_203_800),
+            tw("give", 1_203_900, 1_204_100),
+            tw("us", 1_204_200, 1_204_300),
+            tw("an", 1_204_400, 1_204_450),
+            tw("actual", 1_204_500, 1_204_800),
+            tw("plan", 1_204_900, 1_205_100),
+            tw("I", 1_215_600, 1_215_600),
+            tw("am", 1_215_600, 1_215_600),
+            tw("okay", 1_215_600, 1_215_600),
+            tw("to", 1_215_600, 1_215_600),
+            tw("do", 1_215_600, 1_215_600),
+            tw("it", 1_215_600, 1_215_600),
+            tw("as", 1_215_600, 1_215_600),
+            tw("long", 1_215_600, 1_215_600),
+            tw("as", 1_215_600, 1_215_600),
+            tw("they", 1_215_600, 1_215_600),
+            tw("give", 1_215_600, 1_215_600),
+            tw("us", 1_215_600, 1_215_600),
+            tw("an", 1_215_600, 1_215_600),
+            tw("actual", 1_215_600, 1_215_600),
+            tw("plan", 1_215_600, 1_215_600),
+        ];
+        let kept: Vec<&TokenWord> =
+            dedupe_degenerate_repeats(&pieces).into_iter().map(|i| &pieces[i]).collect();
+        assert_eq!(kept.len(), 15, "ghost run dropped, real copy intact");
+        assert_eq!(kept.last().unwrap().word, "plan");
+        assert_eq!(kept[0].start_ms, 1_200_400);
+    }
+
+    #[test]
+    fn keeps_real_repeats() {
+        // People actually repeating: real walls on both copies.
+        let pieces = vec![
+            tw("No", 100, 200),
+            tw("no", 300, 400),
+            tw("no", 500, 600),
+        ];
+        assert_eq!(dedupe_degenerate_repeats(&pieces).len(), 3);
+        let echo = vec![tw("hi", 1_000, 1_100), tw("hi", 2_000, 2_100)];
+        assert_eq!(dedupe_degenerate_repeats(&echo).len(), 2);
+    }
+
+    #[test]
+    fn both_weightless_drops_second_copy_only() {
+        // Whole region degenerate: the first copy may still be resolvable by
+        // the wall merge; only the repeat is dropped.
+        let pieces = vec![tw("word", 5_000, 5_000), tw("word", 5_000, 5_000)];
+        let kept: Vec<usize> = dedupe_degenerate_repeats(&pieces);
+        assert_eq!(kept, vec![0]);
+    }
+
+    #[test]
+    fn near_identical_but_divergent_text_is_kept() {
+        // "plan" vs "a" — normalization differs, nothing drops.
+        let pieces = vec![tw("plan", 1_000, 1_200), tw("a", 1_215_600, 1_215_600)];
+        assert_eq!(dedupe_degenerate_repeats(&pieces).len(), 2);
     }
 
     #[test]
