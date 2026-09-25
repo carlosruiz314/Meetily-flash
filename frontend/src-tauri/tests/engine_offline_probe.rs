@@ -232,19 +232,47 @@ async fn boundary_diagnostics_at_ear_pins() {
 
 /// Cached 16kHz mono f32 samples beside the audio (the decode costs ~6.5
 /// min; the both-bars iteration loop must not re-pay it). Format: raw
-/// little-endian f32, sample count in `samples_16k.meta.json`.
+/// little-endian f32; `samples_16k.meta.json` pins the sample count AND the
+/// source audio's sha256, so a stale or wrong-meeting cache fails loudly
+/// (same sha256-in-meta rule as the gate, but asserts instead of
+/// re-decoding on mismatch — this is a probe, failing loud is the point;
+/// legacy count-only metas are trusted
+/// with a warning — delete the cache to upgrade).
 fn load_samples() -> Vec<f32> {
+    use sha2::{Digest, Sha256};
     let home = std::env::var("USERPROFILE").unwrap();
     let audio_path = format!("{home}/{AUDIO}");
     let dir = std::path::Path::new(&audio_path).parent().unwrap().to_path_buf();
     let cache = dir.join("samples_16k.f32");
     let meta = dir.join("samples_16k.meta.json");
+    let mut h = Sha256::new();
+    let mut file = std::fs::File::open(&audio_path).expect("open source audio");
+    std::io::copy(&mut file, &mut h).expect("hash source audio");
+    let source_sha = format!("{:x}", h.finalize());
     if cache.exists() && meta.exists() {
-        let bytes = std::fs::read(&cache).expect("read samples cache");
-        let n: usize = serde_json::from_str(
+        let meta_json: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(&meta).expect("read samples meta"),
         )
         .expect("parse samples meta");
+        let pinned_sha = meta_json.get("audio_sha256").and_then(|v| v.as_str());
+        if let Some(pinned) = pinned_sha {
+            assert_eq!(
+                pinned, source_sha,
+                "samples cache was built from different audio — delete samples_16k.f32"
+            );
+        } else {
+            eprintln!(
+                "PROBE: WARNING samples cache has NO audio provenance (legacy meta) — delete it to re-pin"
+            );
+        }
+        let n: usize = match meta_json.get("samples") {
+            Some(v) => v.as_u64().expect("samples count") as usize,
+            None => serde_json::from_str(
+                &std::fs::read_to_string(&meta).expect("read samples meta"),
+            )
+            .expect("parse legacy samples meta"),
+        };
+        let bytes = std::fs::read(&cache).expect("read samples cache");
         let samples: Vec<f32> = bytes
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
@@ -261,7 +289,8 @@ fn load_samples() -> Vec<f32> {
         .flat_map(|v| v.to_le_bytes())
         .collect();
     std::fs::write(&cache, &bytes).expect("write samples cache");
-    std::fs::write(&meta, samples.len().to_string()).expect("write samples meta");
+    let meta_json = serde_json::json!({ "samples": samples.len(), "audio_sha256": source_sha });
+    std::fs::write(&meta, meta_json.to_string()).expect("write samples meta");
     eprintln!(
         "PROBE: decoded {:.1}s and cached {} samples to {}",
         decoded.duration_seconds,
@@ -337,13 +366,16 @@ async fn embedding_separation_at_pin_b() {
 
 /// Census of pyannote "confusion valleys" meeting-wide — the candidate set
 /// for the sub-run voice-flip scan. A valley frame sits inside a speech run
-/// and is contested: argmax speaker mass < 0.7 while another speaker's mass
-/// ≥ 0.15 (the 12.03-12.71 signature at pin B). Prints valley count, total
-/// valley seconds (≈ production embedding cost driver), and every valley in
-/// the two pin windows.
+/// and is contested per the same thresholds the production detector uses
+/// (run_assembly's FLIP_VALLEY_*; the 12.03-12.71 signature at pin B).
+/// Prints valley count, total valley seconds (≈ production embedding cost
+/// driver), and every valley in the two pin windows.
 #[tokio::test]
 #[ignore = "offline probe: MEETIFY_LIVE_DIAG=1 cargo test --release --test engine_offline_probe valley_census -- --ignored --nocapture"]
 async fn valley_census() {
+    use app_lib::audio::speaker::run_assembly::{
+        FLIP_VALLEY_ARGMAX_MAX, FLIP_VALLEY_MERGE_FRAMES, FLIP_VALLEY_SECOND_MIN,
+    };
     if std::env::var("MEETIFY_LIVE_DIAG").is_err() {
         return;
     }
@@ -353,7 +385,7 @@ async fn valley_census() {
     let contested = |fp: &app_lib::audio::speaker::pyannote_segmentation::FrameMasses| {
         let mut s = [fp.speaker[0], fp.speaker[1], fp.speaker[2]];
         s.sort_by(|a, b| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
-        s[0] < 0.7 && s[1] >= 0.15
+        s[0] < FLIP_VALLEY_ARGMAX_MAX && s[1] >= FLIP_VALLEY_SECOND_MIN
     };
     let mut in_run = vec![false; fm.frames.len()];
     for r in &runs {
@@ -374,11 +406,11 @@ async fn valley_census() {
             _ => {}
         }
     }
-    // Merge valleys separated by < 10 frames (~0.17s).
+    // Merge valleys per the production gap rule (~0.17s).
     let mut merged: Vec<(usize, usize)> = Vec::new();
     for v in valleys {
         match merged.last_mut() {
-            Some(last) if v.0 - last.1 < 10 => last.1 = v.1,
+            Some(last) if v.0 - last.1 < FLIP_VALLEY_MERGE_FRAMES => last.1 = v.1,
             _ => merged.push(v),
         }
     }

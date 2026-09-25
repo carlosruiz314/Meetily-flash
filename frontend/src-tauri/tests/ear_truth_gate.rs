@@ -380,31 +380,85 @@ async fn ear_truth_gate_cde5c264() {
     // `decode_audio_file().to_whisper_format()` result, so loading it is
     // equivalent (meta file pins the sample count).
     let samples = {
+        // The samples cache carries the SOURCE AUDIO's sha256 so a stale or
+        // wrong-meeting cache cannot silently pass (the frame-mass cache
+        // already proves its model provenance; the samples were the gap).
+        // Old count-only metas are accepted with a loud warning — delete
+        // samples_16k.f32 to upgrade the cache to pinned provenance.
+        use sha2::{Digest, Sha256};
         let dir = std::path::Path::new(&audio_path).parent().unwrap().to_path_buf();
         let cache = dir.join("samples_16k.f32");
         let meta = dir.join("samples_16k.meta.json");
-        if cache.exists() && meta.exists() {
-            let bytes = std::fs::read(&cache).expect("read samples cache");
-            let n: usize =
-                serde_json::from_str(&std::fs::read_to_string(&meta).expect("samples meta"))
-                    .expect("parse samples meta");
-            let s: Vec<f32> = bytes
-                .chunks_exact(4)
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-                .collect();
-            assert_eq!(s.len(), n, "samples cache/meta mismatch");
-            eprintln!("GATE: samples loaded from cache ({n} = {:.1}s)", n as f64 / 16_000.0);
-            s
-        } else {
+        let source_sha = {
+            let mut h = Sha256::new();
+            let mut file = std::fs::File::open(&audio_path).expect("open source audio");
+            std::io::copy(&mut file, &mut h).expect("hash source audio");
+            format!("{:x}", h.finalize())
+        };
+        let decode_and_cache = || {
             let decoded =
                 app_lib::audio::decoder::decode_audio_file(std::path::Path::new(&audio_path))
                     .expect("decode audio");
             let s = decoded.to_whisper_format();
             let bytes: Vec<u8> = s.iter().flat_map(|v| v.to_le_bytes()).collect();
             std::fs::write(&cache, &bytes).expect("write samples cache");
-            std::fs::write(&meta, s.len().to_string()).expect("write samples meta");
+            let meta_json = serde_json::json!({ "samples": s.len(), "audio_sha256": source_sha });
+            std::fs::write(&meta, meta_json.to_string()).expect("write samples meta");
             eprintln!("GATE: decoded {:.1}s — samples cached to {}", decoded.duration_seconds, cache.display());
             s
+        };
+        if cache.exists() && meta.exists() {
+            let meta_json: serde_json::Value = serde_json::from_str(
+                &std::fs::read_to_string(&meta).expect("samples meta"),
+            )
+            .expect("parse samples meta");
+            let cached_sha = meta_json.get("audio_sha256").and_then(|v| v.as_str());
+            let n: usize = match meta_json.get("samples") {
+                Some(v) => v.as_u64().expect("samples count") as usize,
+                // legacy count-only meta
+                None => serde_json::from_str::<usize>(
+                    &std::fs::read_to_string(&meta).expect("samples meta"),
+                )
+                .unwrap_or_else(|_| {
+                    panic!("samples meta is neither pinned JSON nor a count")
+                }),
+            };
+            match cached_sha {
+                Some(sha) if sha != source_sha => {
+                    eprintln!(
+                        "GATE: samples cache audio_sha256 mismatch (cache {sha} != source) — re-decoding"
+                    );
+                    decode_and_cache()
+                }
+                Some(_) => {
+                    let bytes = std::fs::read(&cache).expect("read samples cache");
+                    let s: Vec<f32> = bytes
+                        .chunks_exact(4)
+                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        .collect();
+                    assert_eq!(s.len(), n, "samples cache/meta mismatch");
+                    eprintln!(
+                        "GATE: samples loaded from cache ({n} = {:.1}s, provenance OK)",
+                        n as f64 / 16_000.0
+                    );
+                    s
+                }
+                None => {
+                    let bytes = std::fs::read(&cache).expect("read samples cache");
+                    let s: Vec<f32> = bytes
+                        .chunks_exact(4)
+                        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                        .collect();
+                    assert_eq!(s.len(), n, "samples cache/meta mismatch");
+                    eprintln!(
+                        "GATE: WARNING samples cache has NO audio provenance (legacy meta) — trusting {} samples; delete the cache to re-pin",
+                        n
+                    );
+                    s
+                }
+            }
+        } else {
+            decode_and_cache()
         }
     };
 
@@ -481,7 +535,7 @@ async fn ear_truth_gate_cde5c264() {
         {
             Ok(pool) => {
                 let refs =
-                    app_lib::database::repositories::speaker::SpeakerRepository::list_stamped_embeddings(&pool)
+                    app_lib::database::repositories::speaker::SpeakerRepository::list_enrollment_refs(&pool)
                         .await
                         .unwrap_or_default();
                 refs
@@ -795,9 +849,55 @@ async fn ear_truth_gate_cde5c264() {
                 start_ms: (t.start_seconds * 1000.0) as i64,
                 end_ms: (t.end_seconds * 1000.0) as i64,
                 speaker_id: t.speaker_id,
+                sustained_split: t.starts_voice_split,
             })
             .collect();
-        let mut aligned = align_transcripts_with_diarization(inputs, &diarization_segs);
+        let rescue_segs: Vec<DiarizationSegment> = out
+            .rescue_seams
+            .iter()
+            .map(|(s, e, c)| DiarizationSegment {
+                start_ms: (s * 1000.0) as i64,
+                end_ms: (e * 1000.0) as i64,
+                speaker_id: *c,
+                sustained_split: false,
+            })
+            .collect();
+        let mut vote_segs: Vec<DiarizationSegment> = out
+            .voice_votes
+            .iter()
+            .map(|(s, e, c)| DiarizationSegment {
+                start_ms: (s * 1000.0) as i64,
+                end_ms: (e * 1000.0) as i64,
+                speaker_id: *c,
+                sustained_split: false,
+            })
+            .collect();
+        // Word-wall atom votes (production parity): the live path computes
+        // these in commands.rs; the gate replays the same call over the
+        // fixture inputs so the render-text pins hold by the same evidence.
+        {
+            let cent_pairs: Vec<(u32, Vec<f32>)> = out
+                .centroids
+                .iter()
+                .map(|(k, v)| (*k, v.clone()))
+                .collect();
+            let wall = run_engine::wall_atom_voice_votes(
+                &samples,
+                &inputs,
+                &extractor,
+                &cent_pairs,
+                &references,
+            );
+            eprintln!("GATE: +{} word-wall atom voice votes", wall.len());
+            vote_segs.extend(wall.iter().map(|(s, e, c)| DiarizationSegment {
+                start_ms: (s * 1000.0) as i64,
+                end_ms: (e * 1000.0) as i64,
+                speaker_id: *c,
+                sustained_split: false,
+            }));
+        }
+        let mut aligned =
+            align_transcripts_with_diarization(inputs, &diarization_segs, &rescue_segs, &vote_segs);
         let fragment_count = aligned.len();
         let unknown_before = aligned
             .iter()
@@ -943,41 +1043,192 @@ async fn ear_truth_gate_cde5c264() {
                 ),
             );
         }
-        // RENDER-TEXT acceptance (task 4.3): the rescue's user-visible win —
-        // the fragments covering the rescued span carry the rescuing turn's
-        // label (the "Oh, man" words land under UserB, not the borrowed
-        // UserA badge).
+        // RENDER-TEXT acceptance (task 4.3, re-pinned to the current decode
+        // after ear verdict 2026-09-20): the user reads PERSISTED TEXT, not
+        // spans — proportional wall placement shifts ~1 s across long rows,
+        // so a span window can pass vacuously while the "Oh, man." words
+        // render under UserA (the exact S2b regression the user caught).
+        // Anchor on the TEXT: every fragment containing "Oh, man" must carry
+        // UserB's cluster (1 = UserB in this fixture's cluster order;
+        // 0 = UserA speaks first at 1.11 s).
         {
-            // interior of the rescued span (ear: "Oh, man" ≈15.8) — avoids
-            // i64-truncation edges at the turn boundary itself
-            let rescue_span = (15_700i64, 16_000i64);
-            let expected = out
-                .turns
+            let bad: Vec<&app_lib::audio::speaker::alignment::AlignedSegment> = merged
                 .iter()
-                .find(|t| {
-                    (t.start_seconds * 1000.0) as i64 <= rescue_span.0
-                        && (t.end_seconds * 1000.0) as i64 >= rescue_span.1
+                .filter(|s| {
+                    let norm = s.text.to_lowercase();
+                    norm.contains("oh, man") || norm.contains("oh man")
                 })
-                .map(|t| format!("Speaker {}", t.speaker_id));
-            let covering: Vec<&app_lib::audio::speaker::alignment::AlignedSegment> = merged
-                .iter()
-                .filter(|s| s.audio_start_ms < rescue_span.1 && s.audio_end_ms > rescue_span.0)
+                .filter(|s| s.speaker != "Speaker 1")
                 .collect();
-            let labels: Vec<&str> = covering.iter().map(|s| s.speaker.as_str()).collect();
-            let ok = !covering.is_empty()
-                && expected
-                    .as_ref()
-                    .map(|exp| labels.iter().all(|l| *l == exp.as_str()))
-                    .unwrap_or(false);
+            let total: Vec<&app_lib::audio::speaker::alignment::AlignedSegment> = merged
+                .iter()
+                .filter(|s| {
+                    let norm = s.text.to_lowercase();
+                    norm.contains("oh, man") || norm.contains("oh man")
+                })
+                .collect();
+            let ok = !total.is_empty() && bad.is_empty();
             eprintln!(
-                "RENDER-TEXT span {rescue_span:?} -> {} fragment(s), labels {labels:?}, expected {expected:?}: {}",
-                covering.len(),
+                "RENDER-TEXT 'Oh, man' -> {} fragment(s), labels {:?}: {}",
+                total.len(),
+                total.iter().map(|s| s.speaker.as_str()).collect::<Vec<_>>(),
                 if ok { "OK" } else { "MISMATCH" }
             );
             if !ok {
                 render_failures.push(format!(
-                    "render-text acceptance failed: span [15.64,16.12] labels {labels:?}, expected {expected:?}"
+                    "render-text acceptance failed: 'Oh, man' fragment(s) not under UserB (Speaker 1): labels {:?}",
+                    total.iter().map(|s| s.speaker.as_str()).collect::<Vec<_>>()
                 ));
+            }
+        }
+        // RENDER-TEXT acceptance (ear verdicts 2026-09-22: people don't
+        // monologue). (a) The response to "I have some updates" is another
+        // voice than UserB's — ear + TitaNet agree it's UserA (Speaker
+        // 0). (b) The recording question and its "Yeah, sure, sure" answer
+        // are TWO DIFFERENT voices — the user attested the structure (the
+        // asker is not the answerer); the specific mapping is NOT attested,
+        // so only difference is pinned.
+        {
+            // Scoped to the attested spot: the response following
+            // "I have some updates" in the opening exchange (before 30 s —
+            // UserB says "roadmap" legitimately later in the meeting).
+            let total: Vec<&app_lib::audio::speaker::alignment::AlignedSegment> = merged
+                .iter()
+                .filter(|s| {
+                    s.text.to_lowercase().contains("on the roadmap")
+                        && s.audio_start_ms < 30_000
+                })
+                .collect();
+            let bad: Vec<
+                &app_lib::audio::speaker::alignment::AlignedSegment,
+            > = total.iter().copied().filter(|s| s.speaker != "Speaker 0").collect();
+            let ok = !total.is_empty() && bad.is_empty();
+            eprintln!(
+                "RENDER-TEXT 'on the roadmap' -> {} fragment(s), labels {:?}: {}",
+                total.len(),
+                total.iter().map(|s| s.speaker.as_str()).collect::<Vec<_>>(),
+                if ok { "OK" } else { "MISMATCH" }
+            );
+            if !ok {
+                render_failures.push(
+                    "render-text acceptance failed: response to updates not under UserA (Speaker 0)"
+                        .to_string(),
+                );
+            }
+        }
+        // RENDER-TEXT acceptance (ear verdict 2026-09-06 + TitaNet wall
+        // probe 2026-09-24 agree): "Gotcha." between UserB's "Yeah." and
+        // her "Where is UserC?" is USERA (Speaker 0). At its true token
+        // walls the clip scores UserA at margin 0.46; the wall-atom votes
+        // must carry it out of UserB's fused row.
+        {
+            let total: Vec<&app_lib::audio::speaker::alignment::AlignedSegment> = merged
+                .iter()
+                .filter(|s| {
+                    s.text.to_lowercase().contains("gotcha") && s.audio_start_ms < 40_000
+                })
+                .collect();
+            let bad: Vec<
+                &app_lib::audio::speaker::alignment::AlignedSegment,
+            > = total.iter().copied().filter(|s| s.speaker != "Speaker 0").collect();
+            let ok = !total.is_empty() && bad.is_empty();
+            eprintln!(
+                "RENDER-TEXT 'Gotcha' -> {} fragment(s), labels {:?}: {}",
+                total.len(),
+                total.iter().map(|s| s.speaker.as_str()).collect::<Vec<_>>(),
+                if ok { "OK" } else { "MISMATCH" }
+            );
+            if !ok {
+                render_failures.push(
+                    "render-text acceptance failed: 'Gotcha' not under UserA (Speaker 0)"
+                        .to_string(),
+                );
+            }
+        }
+        // RENDER-TEXT acceptance (ear ruling 2026-09-24, task 4.4 resolved):
+        // "Oh, you're wearing the t-shirt" inside the 45.19-55.12 row is
+        // USERA's — TitaNet's sustained-split vote there was wrong and the
+        // render must keep the row whole under Speaker 0.
+        {
+            let total: Vec<&app_lib::audio::speaker::alignment::AlignedSegment> = merged
+                .iter()
+                .filter(|s| {
+                    s.text.to_lowercase().contains("wearing the t-shirt")
+                        && s.audio_start_ms > 44_000
+                        && s.audio_start_ms < 56_000
+                })
+                .collect();
+            let bad: Vec<
+                &app_lib::audio::speaker::alignment::AlignedSegment,
+            > = total.iter().copied().filter(|s| s.speaker != "Speaker 0").collect();
+            let ok = !total.is_empty() && bad.is_empty();
+            eprintln!(
+                "RENDER-TEXT 't-shirt' -> {} fragment(s), labels {:?}: {}",
+                total.len(),
+                total.iter().map(|s| s.speaker.as_str()).collect::<Vec<_>>(),
+                if ok { "OK" } else { "MISMATCH" }
+            );
+            if !ok {
+                render_failures.push(
+                    "render-text acceptance failed: 'wearing the t-shirt' not under UserA (Speaker 0)"
+                        .to_string(),
+                );
+            }
+        }
+        // RENDER-TEXT acceptance (ear ruling 2026-09-24, INVARIANT; HARD pin
+        // since turn-boundary-wall-realignment 1.4): "I don't know" is
+        // USERA's, re-anchored past the 36.08 voice boundary (user replay
+        // 2026-09-25: words at 36.1-36.7; whisper's walls were DTW-smeared).
+        {
+            let total: Vec<&app_lib::audio::speaker::alignment::AlignedSegment> = merged
+                .iter()
+                .filter(|s| {
+                    s.text.to_lowercase().contains("i don't know")
+                        && s.audio_start_ms >= 35_800
+                        && s.audio_start_ms <= 36_400
+                })
+                .collect();
+            let bad: Vec<
+                &app_lib::audio::speaker::alignment::AlignedSegment,
+            > = total.iter().copied().filter(|s| s.speaker != "Speaker 0").collect();
+            let ok = !total.is_empty() && bad.is_empty();
+            eprintln!(
+                "RENDER-TEXT 'I don't know' -> {} fragment(s), labels {:?}: {}",
+                total.len(),
+                total.iter().map(|s| s.speaker.as_str()).collect::<Vec<_>>(),
+                if ok { "OK" } else { "MISMATCH" }
+            );
+            if !ok {
+                render_failures.push(format!(
+                    "S7c_idontknow_userA: 'I don't know' fragment(s) under {:?} — ear ruling says UserA (Speaker 0)",
+                    total.iter().map(|s| s.speaker.as_str()).collect::<Vec<_>>()
+                ));
+            }
+        }
+        {
+            let q: Vec<&app_lib::audio::speaker::alignment::AlignedSegment> = merged
+                .iter()
+                .filter(|s| s.text.to_lowercase().contains("record this"))
+                .collect();
+            let a: Vec<&app_lib::audio::speaker::alignment::AlignedSegment> = merged
+                .iter()
+                .filter(|s| s.text.to_lowercase().contains("sure, sure")
+                    || s.text.to_lowercase().contains("sure sure"))
+                .collect();
+            let q_badges: Vec<&str> = q.iter().map(|s| s.speaker.as_str()).collect();
+            let a_badges: Vec<&str> = a.iter().map(|s| s.speaker.as_str()).collect();
+            let ok = !q.is_empty() && !a.is_empty() && q_badges != a_badges;
+            eprintln!(
+                "RENDER-TEXT Q/A split: question labels {:?}, answer labels {:?}: {}",
+                q_badges,
+                a_badges,
+                if ok { "OK" } else { "MISMATCH" }
+            );
+            if !ok {
+                render_failures.push(
+                    "render-text acceptance failed: recording question and its answer share one badge (self-answer monologue)"
+                        .to_string(),
+                );
             }
         }
         if zero_dur > 0 {
