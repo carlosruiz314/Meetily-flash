@@ -289,6 +289,31 @@ mod tests {
         assert_eq!(dedupe_degenerate_repeats(&pieces).len(), 2);
     }
 
+    proptest::proptest! {
+        #[test]
+        fn proptest_dedup_output_is_order_preserving_subsequence(
+            words in proptest::collection::vec("[a-z]{1,4}", 0..40),
+            spans in proptest::collection::vec((0i64..1_000_000, 0i64..50), 0..40),
+        ) {
+            let n = words.len().min(spans.len());
+            let pieces: Vec<TokenWord> = (0..n)
+                .map(|i| TokenWord {
+                    word: words[i].clone(),
+                    start_ms: spans[i].0,
+                    end_ms: spans[i].0 + spans[i].1,
+                })
+                .collect();
+            let kept = dedupe_degenerate_repeats(&pieces);
+            // Subsequence: ascending indices, walls and order preserved.
+            proptest::prop_assert!(kept.windows(2).all(|w| w[0] < w[1]));
+            for &i in &kept {
+                proptest::prop_assert_eq!(pieces[i].word.clone(), words[i].clone());
+                proptest::prop_assert_eq!(pieces[i].start_ms, spans[i].0);
+                proptest::prop_assert_eq!(pieces[i].end_ms, spans[i].0 + spans[i].1);
+            }
+        }
+    }
+
     #[test]
     fn strip_eot_markers_removes_embedded_and_standalone() {
         assert_eq!(strip_eot_markers("hello [_EOT_] world"), "hello world");

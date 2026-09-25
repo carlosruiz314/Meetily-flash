@@ -588,6 +588,7 @@ fn subturn_voice_pass(
         return (turns, Vec::new());
     }
     let mut anchors: Vec<Vec<f32>> = centroids.to_vec();
+    let mut claimed: Vec<usize> = Vec::new();
     for (_, r) in references {
         if let Some((best, _)) = centroids
             .iter()
@@ -595,6 +596,13 @@ fn subturn_voice_pass(
             .map(|(i, c)| (i, cosine(c, r)))
             .max_by(|a, b| a.1.total_cmp(&b.1))
         {
+            if claimed.contains(&best) {
+                log::warn!(
+                    "sub-turn pass: two enrolled references anchor the same centroid {} — the later one wins; enrollment refs may be too similar",
+                    best
+                );
+            }
+            claimed.push(best);
             anchors[best] = r.clone();
         }
     }
@@ -708,6 +716,7 @@ pub fn wall_atom_voice_votes(
         return Vec::new();
     }
     let mut anchors: Vec<(u32, Vec<f32>)> = centroids.to_vec();
+    let mut claimed: Vec<usize> = Vec::new();
     for (_, r) in references {
         if let Some((best, _)) = centroids
             .iter()
@@ -715,6 +724,13 @@ pub fn wall_atom_voice_votes(
             .map(|(i, (_, c))| (i, cosine(c, r)))
             .max_by(|a, b| a.1.total_cmp(&b.1))
         {
+            if claimed.contains(&best) {
+                log::warn!(
+                    "wall-atom votes: two enrolled references anchor the same centroid {} — the later one wins; enrollment refs may be too similar",
+                    best
+                );
+            }
+            claimed.push(best);
             anchors[best].1 = r.clone();
         }
     }

@@ -171,7 +171,12 @@ async fn persist_one_path(
 ) -> usize {
     let pool = make_temp_pool().await;
     insert_sources(&pool, transcripts).await;
-    let aligned = align_transcripts_with_diarization(transcripts.to_vec(), segments);
+    let aligned = align_transcripts_with_diarization(
+        transcripts.to_vec(),
+        segments,
+        &[],
+        &[],
+    );
     eprintln!(
         "PERSIST-ORACLE [{label}]: {} diarization segments → {} aligned splits",
         segments.len(),
@@ -256,6 +261,7 @@ async fn persistence_oracle_cde5c264() {
                 start_ms: (s.start_seconds * 1000.0) as i64,
                 end_ms: (s.end_seconds * 1000.0) as i64,
                 speaker_id: s.speaker_id,
+                sustained_split: false,
             })
             .collect()
     };

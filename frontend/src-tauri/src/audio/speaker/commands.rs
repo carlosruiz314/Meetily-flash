@@ -702,7 +702,7 @@ pub async fn run_diarization_for_meeting(
                     &references,
                 );
                 if !wall.is_empty() {
-                    log::warn!(
+                    log::info!(
                         "DIARIZATION: +{} word-wall atom voice votes",
                         wall.len()
                     );

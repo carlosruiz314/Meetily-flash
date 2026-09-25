@@ -1641,8 +1641,9 @@ async fn pyannote_cde5c264_alignment_parity() {
         start_ms: (s.start_seconds * 1000.0) as i64,
         end_ms: (s.end_seconds * 1000.0) as i64,
         speaker_id: s.speaker_id,
+        sustained_split: false,
     }).collect();
-    let aligned = align_transcripts_with_diarization(transcripts, &diar_segs);
+    let aligned = align_transcripts_with_diarization(transcripts, &diar_segs, &[], &[]);
 
     // What would be persisted in the banter window and around 2818s?
     let banter_rows: Vec<&app_lib::audio::speaker::alignment::AlignedSegment> = aligned.iter()
