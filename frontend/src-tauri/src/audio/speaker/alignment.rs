@@ -1461,14 +1461,15 @@ mod tests {
             seg(39_000, 39_930, 1),
         ];
         // Production vote chunks, derived the way commands.rs derives them:
-        // token_wall_atoms over this row's own token walls (the trailing
+        // validity-gated streams through token_wall_atoms (the trailing
         // period merges across the 400 ms gap — review finding), voices from
         // the measured embeddings. "I don't know ." voted USERB (the stale
         // pre-realignment chunk) — the aligner's vote filter must drop it so
         // the realigned atom's turn containment (UserA) stands.
-        let atom_spans = crate::audio::speaker::run_assembly::token_wall_atoms(
-            t.token_words.as_deref().expect("tokens"),
-        );
+        let atom_spans = crate::audio::speaker::run_engine::wall_vote_token_streams(std::slice::from_ref(&t))
+            .first()
+            .map(|tokens| crate::audio::speaker::run_assembly::token_wall_atoms(tokens))
+            .unwrap_or_default();
         let voice_for = |s: i64| -> u32 {
             match s {
                 // stale chunk: measured UserB 0.32 margin on the mixture
