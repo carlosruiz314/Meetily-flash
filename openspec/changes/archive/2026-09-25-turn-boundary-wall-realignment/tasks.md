@@ -35,6 +35,15 @@ All tasks complete 2026-09-25: gate 18/18 (S7c hard pin OK), live persisted 274 
       whisper-walls vs pyannote-boundary) is timing-only, no label impact;
       audit clips cut for optional ear check.
 
+- [x] 1.8 Review-loop hardening (round 2, converged round 3 2026-09-25):
+      guard tests were reworked after the round-2 review showed four of
+      them passed via the WRONG guard (deleting the guard would have kept
+      the suite green). Each negative test now calls
+      `realign_straddling_atoms` directly with the named guard as the sole
+      rejector + a positive control; side-min guard pinned (design
+      adversarial #2); head-room pin mutation-verified. Design
+      adversarial-test section amended to match.
+
 ## §3 smoke-spec decision
 
 No E2E smoke spec: the Speakers diarization run (~12 min, real models, real
