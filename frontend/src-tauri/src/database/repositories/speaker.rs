@@ -249,6 +249,70 @@ impl SpeakerRepository {
         Ok(result)
     }
 
+    /// Enrollment references for the diarization engine: ONE mean-normalized
+    /// voiceprint per named speaker, in deterministic `speaker_id` order.
+    /// Unlike `list_stamped_embeddings` (registry hydration wants every
+    /// stored vector), refs feed `take(max_speakers - 1)` — per-row output
+    /// there let one speaker's extra embeddings crowd other voices out of
+    /// the anchor budget, and SQLite's unspecified row order made the anchor
+    /// set (and therefore badge numbering) unstable across runs.
+    pub async fn list_enrollment_refs(pool: &SqlitePool) -> Result<Vec<(String, Vec<f32>)>> {
+        #[derive(sqlx::FromRow)]
+        struct EmbeddingWithSpeaker {
+            embedding: Vec<u8>,
+            speaker_id: String,
+        }
+
+        let rows = sqlx::query_as::<_, EmbeddingWithSpeaker>(
+            "SELECT e.embedding, e.speaker_id \
+             FROM speaker_embeddings e \
+             JOIN speakers s ON e.speaker_id = s.id \
+             WHERE e.speaker_id IS NOT NULL AND s.id NOT LIKE 'speaker-auto-%' \
+             ORDER BY e.speaker_id, e.id",
+        )
+        .fetch_all(pool)
+        .await?;
+
+        let mut per_speaker: std::collections::BTreeMap<String, Vec<Vec<f32>>> =
+            std::collections::BTreeMap::new();
+        for row in rows {
+            let embedding = Self::deserialize_embedding(&row.embedding)?;
+            per_speaker.entry(row.speaker_id).or_default().push(embedding);
+        }
+
+        let mut result = Vec::with_capacity(per_speaker.len());
+        for (speaker_id, vectors) in per_speaker {
+            let dim = vectors[0].len();
+            if vectors.iter().any(|v| v.len() != dim) {
+                // Mixed dimensions cannot be averaged; drop the speaker
+                // rather than emit a ref the cosine math would poison.
+                log::warn!(
+                    "enrollment refs: dropping speaker {speaker_id} — {} embeddings with mixed dimensions",
+                    vectors.len()
+                );
+                continue;
+            }
+            let mut mean = vec![0.0f32; dim];
+            for v in &vectors {
+                for (m, x) in mean.iter_mut().zip(v) {
+                    *m += x;
+                }
+            }
+            let norm = mean.iter().map(|x| x * x).sum::<f32>().sqrt();
+            if norm <= f32::EPSILON {
+                log::warn!(
+                    "enrollment refs: dropping speaker {speaker_id} — zero-norm mean embedding"
+                );
+                continue;
+            }
+            for x in mean.iter_mut() {
+                *x /= norm;
+            }
+            result.push((speaker_id, mean));
+        }
+        Ok(result)
+    }
+
     pub async fn link_embedding_to_speaker(
         pool: &SqlitePool,
         embedding_id: &str,
@@ -1462,7 +1526,7 @@ mod tests {
     }
 
     fn diar_seg(start: i64, end: i64, speaker: u32) -> DiarizationSegment {
-        DiarizationSegment { start_ms: start, end_ms: end, speaker_id: speaker }
+        DiarizationSegment { start_ms: start, end_ms: end, speaker_id: speaker, sustained_split: false }
     }
 
     /// Terminators that close a sentence containing at least one alphanumeric
@@ -1491,7 +1555,7 @@ mod tests {
         inputs: &[TranscriptInput],
         diarization: &[DiarizationSegment],
     ) -> anyhow::Result<usize> {
-        let mut aligned = align_transcripts_with_diarization(inputs.to_vec(), diarization);
+        let mut aligned = align_transcripts_with_diarization(inputs.to_vec(), diarization, &[], &[]);
         aligned = crate::audio::speaker::commands::merge_same_label_fragments(aligned);
         aligned = resolve_duplicate_clusters(aligned);
         SpeakerRepository::persist_regenerated_rendering(pool, meeting_id, aligned, false).await
@@ -2096,6 +2160,8 @@ mod tests {
         let aligned_segs = align_transcripts_with_diarization(
             vec![t],
             &[diar_seg(5000, 7000, 0), diar_seg(7000, 9000, 1)],
+            &[],
+            &[],
         );
         let res = SpeakerRepository::persist_regenerated_rendering(
             &pool,
@@ -2133,7 +2199,7 @@ mod tests {
             audio_end_ms: 9000,
             token_words: None,
         };
-        let aligned_segs = align_transcripts_with_diarization(vec![t], &[]);
+        let aligned_segs = align_transcripts_with_diarization(vec![t], &[], &[], &[]);
         assert_eq!(aligned_segs.len(), 1);
         assert_eq!(aligned_segs[0].speaker, "Unknown Speaker");
         let written =
@@ -2214,12 +2280,12 @@ mod tests {
                 .map(|(off, dur, sp)| {
                     let s = src_start + (off % width);
                     let e = s + dur;
-                    DiarizationSegment { start_ms: s, end_ms: e, speaker_id: sp }
+                    DiarizationSegment { start_ms: s, end_ms: e, speaker_id: sp, sustained_split: false }
                 })
                 .filter(|d| d.start_ms < d.end_ms && d.start_ms >= src_start && d.end_ms <= src_end)
                 .collect();
             let diarization = if diarization.is_empty() {
-                vec![DiarizationSegment { start_ms: src_start, end_ms: src_end, speaker_id: 0 }]
+                vec![DiarizationSegment { start_ms: src_start, end_ms: src_end, speaker_id: 0, sustained_split: false }]
             } else {
                 diarization
             };
@@ -2238,7 +2304,7 @@ mod tests {
                     audio_end_ms: src_end,
                     token_words: None,
                 };
-                let al = align_transcripts_with_diarization(vec![t], &diarization);
+                let al = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
                 SpeakerRepository::persist_regenerated_rendering(&pool, "m-prop", al, false).await.unwrap();
                 assert_invariants(&pool, "m-prop", src_start, src_end, &text).await;
 
@@ -2259,7 +2325,7 @@ mod tests {
                     audio_end_ms: src_end,
                     token_words: Some(tokens),
                 };
-                let al2 = align_transcripts_with_diarization(vec![ti], &diarization);
+                let al2 = align_transcripts_with_diarization(vec![ti], &diarization, &[], &[]);
                 SpeakerRepository::persist_regenerated_rendering(&pool, "m-tok", al2, false).await.unwrap();
                 assert_invariants(&pool, "m-tok", src_start, src_end, &tok_text).await;
             });
@@ -2764,6 +2830,48 @@ mod tests {
         SpeakerRepository::store_embedding(&pool, "emb-null", None, &v, "m1", "Speaker 0").await.unwrap();
         let stamped = SpeakerRepository::list_stamped_embeddings(&pool).await.unwrap();
         assert!(stamped.is_empty(), "NULL-speaker rows must never enter the match pool");
+    }
+    // --- Enrollment refs (engine-boundary-and-identity-accuracy) ---
+
+    #[tokio::test]
+    async fn enrollment_refs_collapse_per_speaker_and_hold_deterministic_order() {
+        let pool = embeddings_test_pool().await;
+        SpeakerRepository::create_speaker(&pool, "speaker-b", "Bob", "#222").await.unwrap();
+        SpeakerRepository::create_speaker(&pool, "speaker-a", "Alice", "#111").await.unwrap();
+        // Bob owns TWO rows (a re-stamp after an earlier enrollment). The
+        // refs budget is take(max_speakers - 1): per-row output let Bob's
+        // duplicate crowd Alice out of a 2-slot cap, and unordered SELECT
+        // output made the anchor set flip between runs.
+        let half = vec![0.5f32; DIM];
+        let full = vec![1.0f32; DIM];
+        SpeakerRepository::store_embedding(&pool, "emb-b-2", Some("speaker-b"), &full, "m1", "Speaker 1").await.unwrap();
+        SpeakerRepository::store_embedding(&pool, "emb-b-1", Some("speaker-b"), &half, "m1", "Speaker 0").await.unwrap();
+        SpeakerRepository::store_embedding(&pool, "emb-a-1", Some("speaker-a"), &half, "m1", "Speaker 0").await.unwrap();
+
+        let refs = SpeakerRepository::list_enrollment_refs(&pool).await.unwrap();
+        assert_eq!(refs.len(), 2, "one ref per speaker, not per row: {:?}", refs.iter().map(|(k, _)| k).collect::<Vec<_>>());
+        assert_eq!(refs[0].0, "speaker-a", "speaker_id order is deterministic (BTreeMap)");
+        assert_eq!(refs[1].0, "speaker-b");
+        let expected = 1.0f32 / (DIM as f32).sqrt();
+        for x in &refs[1].1 {
+            assert!((x - expected).abs() < 1e-6, "Bob's ref is the normalized mean of his two rows");
+        }
+        for x in &refs[0].1 {
+            assert!((x - expected).abs() < 1e-6, "single-row speaker normalizes to unit length");
+        }
+    }
+
+    #[tokio::test]
+    async fn enrollment_refs_drop_unusable_speakers_instead_of_poisoning_cosine() {
+        let pool = embeddings_test_pool().await;
+        SpeakerRepository::create_speaker(&pool, "speaker-mixed", "Mix", "#333").await.unwrap();
+        SpeakerRepository::create_speaker(&pool, "speaker-zero", "Zero", "#444").await.unwrap();
+        SpeakerRepository::store_embedding(&pool, "emb-mix-64", Some("speaker-mixed"), &vec![0.5f32; 64], "m1", "S").await.unwrap();
+        SpeakerRepository::store_embedding(&pool, "emb-mix-128", Some("speaker-mixed"), &vec![0.5f32; DIM], "m1", "S").await.unwrap();
+        SpeakerRepository::store_embedding(&pool, "emb-zero", Some("speaker-zero"), &vec![0.0f32; DIM], "m1", "S").await.unwrap();
+
+        let refs = SpeakerRepository::list_enrollment_refs(&pool).await.unwrap();
+        assert!(refs.is_empty(), "mixed-dimension and zero-norm speakers are dropped, both here: {refs:?}");
     }
     // --- Rename/revert identity linking (3.1-3.3) ---
 

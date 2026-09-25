@@ -379,6 +379,11 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 /// threshold keeps the same meaning (merge while the closest pair's average
 /// linkage ≥ `threshold`). Ties → smallest index pair. Deterministic;
 /// returns (assignment, per-cluster mean centroids).
+///
+/// Complexity: O(n²) memory (two distance matrices) and O(n³) worst-case
+/// time (linear linkage update per merge, up to n merges). Acceptable for
+/// the batch engine path at `PIECE_CAP`; a Lance–Williams formulation would
+/// bound it if piece budgets ever grow.
 pub fn cluster_pieces_ahc(embeddings: &[Vec<f32>], threshold: f32) -> (Vec<usize>, Vec<Vec<f32>>) {
     let n = embeddings.len();
     if n == 0 {
@@ -674,6 +679,10 @@ pub struct TurnOut {
     pub continues_previous: bool,
     pub dur_secs: f64,
     pub attached_secs: f64,
+    /// True when this turn was created by the sub-turn voice pass — its
+    /// START boundary is a sustained (TitaNet-evidenced) voice change the
+    /// render may split unpunctuated atoms at.
+    pub starts_voice_split: bool,
 }
 
 /// Resolve ordered pieces into turns:
@@ -706,6 +715,7 @@ pub fn resolve_turns(pieces: &[PieceIn]) -> Vec<TurnOut> {
                 continues_previous: turns.last().map_or(false, |prev| prev.cluster == c),
                 dur_secs: p.dur_secs + pending_forward,
                 attached_secs: pending_forward,
+                starts_voice_split: false,
             };
             pending_forward = 0.0;
             if let Some(prev) = turns.last_mut() {
@@ -751,6 +761,7 @@ pub fn resolve_turns(pieces: &[PieceIn]) -> Vec<TurnOut> {
                 continues_previous: true,
                 dur_secs: p.dur_secs,
                 attached_secs: p.dur_secs,
+                starts_voice_split: false,
             });
         }
     }
@@ -1123,6 +1134,306 @@ pub fn confusion_valleys(frames: &[FrameMasses], run: &SpeechRun) -> Vec<(usize,
         }
     }
     spans
+}
+
+// ---------------------------------------------------------------------------
+// Voice-flip split decision (change `engine-boundary-and-identity-accuracy`).
+// Pure half of the engine's flip scan: geometry, identity bar, splice. The
+// engine (run_engine) owns the I/O — frame masses, sample windows, embedding
+// extraction — and calls these per valley.
+// ---------------------------------------------------------------------------
+
+/// Embedding check window on each side of a split candidate.
+pub const FLIP_WINDOW_SECS: f64 = 1.2;
+/// How far past the piece end the right check window may reach (short right
+/// halves still get a full window — the valley sits near the measured 13.03s
+/// piece end).
+pub const FLIP_RIGHT_SPILL_SECS: f64 = 0.5;
+
+/// Window-fit guard for a split at `valley_start_secs` inside one piece:
+/// both check windows must be embeddable and each half must stay at or above
+/// [`PROMOTION_FLOOR_SECS`] (a split may not manufacture sub-floor pieces).
+pub fn flip_geometry_ok(piece_start_secs: f64, piece_end_secs: f64, valley_start_secs: f64) -> bool {
+    !(valley_start_secs - FLIP_WINDOW_SECS < piece_start_secs
+        || valley_start_secs - piece_start_secs < PROMOTION_FLOOR_SECS
+        || piece_end_secs - valley_start_secs < PROMOTION_FLOOR_SECS
+        || valley_start_secs + FLIP_WINDOW_SECS > piece_end_secs + FLIP_RIGHT_SPILL_SECS)
+}
+
+/// Identity bar for a split: both sides must embed DECISIVELY (margin ≥
+/// [`AMBIGUITY_MARGIN`]) to DIFFERENT final centroids — the same bar a
+/// labeled piece must clear, so an undecided or same-voice valley can never
+/// manufacture a split. (When the engine cannot embed a side it feeds a
+/// negative margin, which fails here — abstain.)
+pub fn flip_is_decisive(
+    left_cluster: usize,
+    left_margin: f32,
+    right_cluster: usize,
+    right_margin: f32,
+) -> bool {
+    left_margin >= AMBIGUITY_MARGIN && right_margin >= AMBIGUITY_MARGIN && left_cluster != right_cluster
+}
+
+/// One accepted flip: the piece's index in the CURRENT round's piece list,
+/// the split time, and each half's (cluster, margin) verdict.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlipSplit {
+    pub piece_idx: usize,
+    pub split_secs: f64,
+    pub left_cluster: usize,
+    pub left_margin: f32,
+    pub right_cluster: usize,
+    pub right_margin: f32,
+}
+
+/// Replace each flipped piece with its two halves. Descending piece index
+/// keeps earlier positions valid (each piece flips at most once per round).
+/// The union [start, start+dur] of every flipped piece is preserved.
+pub fn splice_flips(piece_ins: &mut Vec<PieceIn>, flips: &[FlipSplit]) {
+    let mut ordered: Vec<&FlipSplit> = flips.iter().collect();
+    ordered.sort_by(|a, b| b.piece_idx.cmp(&a.piece_idx));
+    for f in ordered {
+        let piece = piece_ins[f.piece_idx];
+        let left = PieceIn {
+            start_secs: piece.start_secs,
+            dur_secs: f.split_secs - piece.start_secs,
+            cluster: Some(f.left_cluster),
+            margin: Some(f.left_margin),
+            promoted_subfloor: false,
+        };
+        let right = PieceIn {
+            start_secs: f.split_secs,
+            dur_secs: piece.start_secs + piece.dur_secs - f.split_secs,
+            cluster: Some(f.right_cluster),
+            margin: Some(f.right_margin),
+            promoted_subfloor: false,
+        };
+        piece_ins[f.piece_idx] = right;
+        piece_ins.insert(f.piece_idx, left);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sub-turn voice attribution (change `subturn-voice-attribution`, 2026-09-22).
+// Ear verdict: "constantly absorbing my sentences into UserB's and vice
+// versa" — census showed 45 MIXED + 6 DISAGREE rows of 229. Root cause:
+// pyannote holds one label across fast voice handoffs, so no valley exists,
+// the flip scan never fires, and whole exchanges render under one badge.
+// The engine slices each turn into voiced chunks and votes TitaNet against
+// the final centroids; this pure half decides where a SUSTAINED run of
+// another voice earns a split. Short contrary votes never split — TitaNet
+// misvotes sub-second back-channels (the ear-attested UserB "Oh, man."
+// window votes UserA) — so every ear pin holds by construction.
+// ---------------------------------------------------------------------------
+
+/// A turn shorter than this is never probed for sub-turn voice changes.
+pub const SUBTURN_MIN_TURN_SECS: f64 = 1.0;
+/// Voiced chunks are chunked to at most this span (embedding reliability).
+pub const VOICE_CHUNK_MAX_SECS: f64 = 3.0;
+/// Voiced sub-runs below this are not worth an embedding.
+pub const VOICE_CHUNK_MIN_SECS: f64 = 0.3;
+/// A qualifying run needs at least this many decided chunks…
+pub const SUBTURN_MIN_RUN_VOTES: usize = 2;
+/// …AND at least this much voiced time…
+pub const SUBTURN_MIN_RUN_SECS: f64 = 1.2;
+/// …OR one chunk of at least this much (the misvote class lives under ~1s).
+pub const SUBTURN_LONG_SINGLE_SECS: f64 = 2.0;
+/// Per-chunk vote margin (same bar the gap rescue trusts).
+pub const SUBTURN_VOTE_MARGIN: f32 = 0.05;
+/// Token words merge into a wall atom across gaps up to this. Generous
+/// because whisper's DTW walls compress trailing words ("UserC?" carries a
+/// 410 ms wall gap to its own punctuation); sentence terminators close the
+/// atom regardless, so the gap only ever merges WITHIN one render atom.
+pub const WALL_ATOM_MAX_MERGE_GAP_MS: i64 = 450;
+/// Wall atoms are capped like the energy chunks (embedding reliability).
+pub const WALL_ATOM_MAX_MS: i64 = 3_000;
+/// Wall atoms below this are not worth an embedding (honest resolution
+/// floor — a vote on less is noise, not evidence).
+pub const WALL_ATOM_MIN_MS: i64 = 250;
+
+/// Merge a row's token words into wall-exact pseudo-atoms: adjacent words
+/// join across gaps ≤ [`WALL_ATOM_MAX_MERGE_GAP_MS`], an atom never exceeds
+/// [`WALL_ATOM_MAX_MS`], spans under [`WALL_ATOM_MIN_MS`] drop, and a
+/// sentence-final word always closes the atom — render atoms split at
+/// sentence punctuation, so a pseudo-atom spanning the terminator could
+/// never sit fully inside one. Pure. The S7 lesson (2026-09-24): energy
+/// chunks straddle word boundaries, so the neighbour's voiced mass
+/// out-voted a decisively different voice inside one word — voting on the
+/// words' own walls fixed the geometry ("Gotcha." at its wall: UserA,
+/// margin 0.46; inside the chunk: UserB).
+pub fn token_wall_atoms(tokens: &[crate::audio::speaker::alignment::TokenWord]) -> Vec<(i64, i64)> {
+    let mut atoms: Vec<(i64, i64)> = Vec::new();
+    let mut cur: Option<(i64, i64)> = None;
+    let mut prev_ends_sentence = true;
+    for t in tokens {
+        let word = t.word.trim();
+        if word.is_empty() || crate::audio::speaker::token_timestamps::is_eot_marker(word) {
+            continue;
+        }
+        if !prev_ends_sentence {
+            if let Some((a, b)) = cur {
+                if t.start_ms - b <= WALL_ATOM_MAX_MERGE_GAP_MS
+                    && t.end_ms - a <= WALL_ATOM_MAX_MS
+                {
+                    cur = Some((a, b.max(t.end_ms)));
+                    prev_ends_sentence = crate::audio::speaker::alignment::word_ends_sentence(word);
+                    continue;
+                }
+            }
+        }
+        if let Some((a, b)) = cur.take() {
+            if b - a >= WALL_ATOM_MIN_MS {
+                atoms.push((a, b));
+            }
+        }
+        cur = Some((t.start_ms, t.end_ms));
+        prev_ends_sentence = crate::audio::speaker::alignment::word_ends_sentence(word);
+    }
+    if let Some((a, b)) = cur {
+        if b - a >= WALL_ATOM_MIN_MS {
+            atoms.push((a, b));
+        }
+    }
+    atoms
+}
+
+/// Meeting-wide speech gate: 25th-percentile hop dB (strided) + 10 dB.
+/// Computed ONCE over the whole recording and shared by every chunked turn —
+/// a per-turn baseline rises above quiet speech when the turn is mostly
+/// louder talk, which erased the S7 clip's quiet "I don't know." from voting
+/// entirely (measured 2026-09-23).
+pub fn speech_gate_db(samples: &[f32], sample_rate: usize) -> f32 {
+    let hop = (sample_rate / 50).max(1);
+    let stride = hop * 8; // ~160 ms — plenty for a percentile floor
+    let mut dbs: Vec<f32> = Vec::new();
+    let mut j = 0usize;
+    while j + hop <= samples.len() {
+        let rms = (samples[j..j + hop].iter().map(|v| v * v).sum::<f32>() / hop as f32).sqrt();
+        dbs.push(20.0 * rms.max(1e-10).log10());
+        j += stride;
+    }
+    if dbs.is_empty() {
+        return -10.0; // silence-only recording: gate everything in
+    }
+    let mut sorted = dbs.clone();
+    sorted.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    sorted[sorted.len() / 4] + 10.0
+}
+
+/// Energy-gated voiced chunks inside [start_secs, end_secs): 20ms RMS hop
+/// against the SHARED meeting-wide gate [`speech_gate_db`], short runs
+/// dropped, long runs chunked to [`VOICE_CHUNK_MAX_SECS`]. Pure — the engine
+/// owns the samples and the gate.
+pub fn voiced_chunks(
+    samples: &[f32],
+    start_secs: f64,
+    end_secs: f64,
+    sample_rate: usize,
+    gate_db: f32,
+) -> Vec<(f64, f64)> {
+    let hop = (sample_rate / 50).max(1);
+    let i0 = (start_secs * sample_rate as f64) as usize;
+    let i1 = ((end_secs * sample_rate as f64) as usize).min(samples.len());
+    let mut dbs: Vec<f32> = Vec::new();
+    let mut j = i0;
+    while j + hop <= i1 {
+        let rms = (samples[j..j + hop].iter().map(|v| v * v).sum::<f32>() / hop as f32).sqrt();
+        dbs.push(20.0 * rms.max(1e-10).log10());
+        j += hop;
+    }
+    if dbs.is_empty() {
+        return Vec::new();
+    }
+    let thr = gate_db;
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut k = 0usize;
+    while k < dbs.len() {
+        if dbs[k] >= thr {
+            let start = k;
+            while k < dbs.len() && dbs[k] >= thr {
+                k += 1;
+            }
+            runs.push((start, k));
+        } else {
+            k += 1;
+        }
+    }
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for r in runs {
+        match merged.last_mut() {
+            Some(last) if r.0 - last.1 < 4 => last.1 = r.1,
+            _ => merged.push(r),
+        }
+    }
+    let mut out = Vec::new();
+    for (s, e) in merged {
+        let a = start_secs + (s * hop) as f64 / sample_rate as f64;
+        let b = start_secs + (e * hop) as f64 / sample_rate as f64;
+        if b - a < VOICE_CHUNK_MIN_SECS {
+            continue;
+        }
+        let mut c = a;
+        while c < b - 1e-9 {
+            let end = (c + VOICE_CHUNK_MAX_SECS).min(b);
+            out.push((c, end));
+            c = end;
+        }
+    }
+    out
+}
+
+/// Split a turn into (start, end, cluster) segments from the decided chunk
+/// votes. A run of same-cluster consecutive votes (abstain gaps don't break
+/// it) qualifies when it has [`SUBTURN_MIN_RUN_VOTES`] chunks spanning ≥
+/// [`SUBTURN_MIN_RUN_SECS`], or one chunk spanning ≥
+/// [`SUBTURN_LONG_SINGLE_SECS`]. Each qualifying run of a voice other than
+/// the current segment's opens a new segment at the run's first chunk; the
+/// head before the first split keeps the turn's cluster (undecided or
+/// minority audio stays with the AHC verdict), so short back-channels and
+/// lone misvotes are absorbed — never split.
+pub fn subturn_segments(
+    votes: &[(f64, f64, usize)],
+    turn_start: f64,
+    turn_end: f64,
+    turn_cluster: usize,
+) -> Vec<(f64, f64, usize)> {
+    if votes.is_empty() {
+        return vec![(turn_start, turn_end, turn_cluster)];
+    }
+    // Consecutive same-cluster votes merge into one run; abstain gaps (and
+    // undecided audio between chunks) never break a run — only a decided
+    // vote of a different cluster does. Run evidence is DECIDED time (sum
+    // of chunk spans): gate regression S9 showed the span across undecided
+    // gaps can cross the bar on under-a-second chunks, which misvote.
+    let mut runs: Vec<(f64, f64, usize, usize, f64)> = Vec::new();
+    for &(s, e, c) in votes {
+        match runs.last_mut() {
+            Some(r) if r.2 == c => {
+                r.1 = e;
+                r.3 += 1;
+                r.4 += e - s;
+            }
+            _ => runs.push((s, e, c, 1, e - s)),
+        }
+    }
+    let qualifies = |count: usize, decided: f64| {
+        (count >= SUBTURN_MIN_RUN_VOTES && decided >= SUBTURN_MIN_RUN_SECS)
+            || decided >= SUBTURN_LONG_SINGLE_SECS
+    };
+    let mut out: Vec<(f64, f64, usize)> = Vec::new();
+    let mut seg_start = turn_start;
+    let mut voice = turn_cluster;
+    for &(rs, _re, rc, count, decided) in &runs {
+        if rc != voice && qualifies(count, decided) {
+            if rs > seg_start {
+                out.push((seg_start, rs, voice));
+            }
+            voice = rc;
+            seg_start = rs;
+        }
+    }
+    out.push((seg_start, turn_end, voice));
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1826,6 +2137,301 @@ mod tests {
         frames[29] = contested;
         let run = SpeechRun { start_frame: 5, end_frame: 25 };
         assert!(confusion_valleys(&frames, &run).is_empty());
+    }
+
+    // ---- voice-flip split decision (geometry / identity bar / splice) ----
+
+    #[test]
+    fn flip_geometry_accepts_the_pin_b_split_and_rejects_clipped_windows() {
+        // The measured pin: valley at 12.00 inside the [9.38, 13.03] piece —
+        // the production-accepted geometry.
+        assert!(flip_geometry_ok(9.38, 13.03, 12.0));
+        // Left window would clip the piece start.
+        assert!(!flip_geometry_ok(11.5, 13.03, 12.0));
+        // Window fit strictly implies the left floor (start <= t-1.2 forces
+        // t-start >= 1.2 > 0.8); the left-floor arm only fires alongside it.
+        assert!(!flip_geometry_ok(11.6, 13.03, 12.0));
+        // Right half below the promotion floor (window spill alone would
+        // allow a 0.7s right half; the floor refuses it).
+        assert!(!flip_geometry_ok(9.38, 12.75, 12.0));
+        // Right window exceeds the piece end plus the spill allowance.
+        assert!(!flip_geometry_ok(9.38, 12.6, 12.0));
+    }
+
+    #[test]
+    fn flip_is_decisive_requires_both_margins_and_different_centroids() {
+        assert!(flip_is_decisive(0, 0.5, 1, 0.06)); // production pin margins 0.528/0.064
+        assert!(!flip_is_decisive(0, 0.5, 0, 0.9), "same centroid = same voice, never split");
+        assert!(!flip_is_decisive(0, AMBIGUITY_MARGIN - 1e-6, 1, 0.9), "weak left side abstains");
+        assert!(!flip_is_decisive(0, 0.9, 1, AMBIGUITY_MARGIN - 1e-6), "weak right side abstains");
+        // The engine's unembeddable-side encoding: negative margin fails even
+        // with differing placeholder clusters.
+        assert!(!flip_is_decisive(0, f32::NEG_INFINITY, 1, 0.9));
+        assert!(!flip_is_decisive(0, 0.9, 1, f32::NEG_INFINITY));
+    }
+
+    #[test]
+    fn splice_flips_replaces_halves_preserving_union_and_order() {
+        let piece = |s: f64, d: f64, c: usize| PieceIn {
+            start_secs: s,
+            dur_secs: d,
+            cluster: Some(c),
+            margin: Some(0.9),
+            promoted_subfloor: false,
+        };
+        let mut pieces = vec![piece(0.0, 2.0, 0), piece(9.38, 3.65, 1), piece(20.0, 1.0, 0)];
+        splice_flips(
+            &mut pieces,
+            &[FlipSplit {
+                piece_idx: 1,
+                split_secs: 12.0,
+                left_cluster: 1,
+                left_margin: 0.528,
+                right_cluster: 0,
+                right_margin: 0.064,
+            }],
+        );
+        assert_eq!(pieces.len(), 4);
+        let starts: Vec<f64> = pieces.iter().map(|p| p.start_secs).collect();
+        assert_eq!(starts, vec![0.0, 9.38, 12.0, 20.0], "time order kept");
+        let (l, r) = (pieces[1], pieces[2]);
+        assert_eq!(l.cluster, Some(1));
+        assert_eq!(r.cluster, Some(0));
+        assert_eq!(l.margin, Some(0.528));
+        assert_eq!(r.margin, Some(0.064));
+        assert!((l.dur_secs - (12.0 - 9.38)).abs() < 1e-12);
+        assert!((r.dur_secs - (13.03 - 12.0)).abs() < 1e-12, "union [9.38,13.03] preserved");
+        assert!(!pieces.iter().any(|p| p.promoted_subfloor), "halves are engine-labeled pieces");
+    }
+
+    #[test]
+    fn splice_flips_survives_multiple_flips_in_one_round() {
+        let piece = |s: f64, d: f64, c: usize| PieceIn {
+            start_secs: s,
+            dur_secs: d,
+            cluster: Some(c),
+            margin: Some(0.9),
+            promoted_subfloor: false,
+        };
+        // Two flips: pieces 0 and 2 of four. Descending application must land
+        // each split inside the piece that EARNED it, not an index-shifted
+        // neighbour.
+        let mut pieces = vec![
+            piece(0.0, 4.0, 0),
+            piece(4.0, 1.0, 1),
+            piece(10.0, 4.0, 1),
+            piece(20.0, 1.0, 0),
+        ];
+        splice_flips(
+            &mut pieces,
+            &[
+                FlipSplit { piece_idx: 0, split_secs: 2.0, left_cluster: 0, left_margin: 0.5, right_cluster: 1, right_margin: 0.5 },
+                FlipSplit { piece_idx: 2, split_secs: 12.0, left_cluster: 1, left_margin: 0.5, right_cluster: 2, right_margin: 0.5 },
+            ],
+        );
+        assert_eq!(pieces.len(), 6);
+        let shape: Vec<(f64, f64, usize)> = pieces
+            .iter()
+            .map(|p| (p.start_secs, p.start_secs + p.dur_secs, p.cluster.unwrap()))
+            .collect();
+        assert_eq!(
+            shape,
+            vec![(0.0, 2.0, 0), (2.0, 4.0, 1), (4.0, 5.0, 1), (10.0, 12.0, 1), (12.0, 14.0, 2), (20.0, 21.0, 0)],
+            "both splits landed on their own pieces; coverage unchanged"
+        );
+    }
+
+    // ---- sub-turn voice attribution (sustained-run split decision) ----
+
+    #[test]
+    fn subturn_lone_contrary_vote_never_splits() {
+        // The ear-attested "Oh, man." shape: one 0.66s contrary window in a
+        // held turn must never split — TitaNet misvotes sub-second windows.
+        let out = subturn_segments(&[(14.42, 15.08, 1)], 14.42, 21.42, 0);
+        assert_eq!(out, vec![(14.42, 21.42, 0)]);
+    }
+
+    #[test]
+    fn subturn_sustained_run_splits_and_rebadges() {
+        let out = subturn_segments(
+            &[(1.0, 2.0, 0), (2.0, 3.0, 0), (5.0, 6.0, 1), (6.0, 7.0, 1)],
+            0.0,
+            10.0,
+            0,
+        );
+        assert_eq!(out, vec![(0.0, 5.0, 0), (5.0, 10.0, 1)]);
+    }
+
+    #[test]
+    fn subturn_unanimous_contrary_rebadges_with_head_sliver() {
+        // DISAGREE census class: every window says the other voice; the head
+        // before the first decided window keeps the AHC verdict.
+        let out = subturn_segments(
+            &[
+                (1.18, 2.0, 2),
+                (2.0, 3.3, 2),
+                (3.3, 4.5, 2),
+                (4.5, 5.6, 2),
+                (5.6, 6.7, 2),
+            ],
+            0.0,
+            7.69,
+            0,
+        );
+        assert_eq!(out, vec![(0.0, 1.18, 0), (1.18, 7.69, 2)]);
+    }
+
+    #[test]
+    fn subturn_alternating_short_backchannels_absorbed() {
+        let out = subturn_segments(
+            &[(1.0, 1.9, 1), (2.0, 2.9, 0), (4.0, 4.9, 1), (5.0, 5.9, 0)],
+            0.0,
+            10.0,
+            0,
+        );
+        assert_eq!(out, vec![(0.0, 10.0, 0)]);
+    }
+
+    #[test]
+    fn subturn_multi_change_three_segments() {
+        let out = subturn_segments(
+            &[
+                (0.0, 3.0, 0),
+                (3.0, 3.5, 0),
+                (6.0, 8.0, 1),
+                (8.0, 10.0, 1),
+                (12.0, 14.0, 0),
+                (14.0, 16.0, 0),
+            ],
+            0.0,
+            20.0,
+            0,
+        );
+        assert_eq!(out, vec![(0.0, 6.0, 0), (6.0, 12.0, 1), (12.0, 20.0, 0)]);
+    }
+
+    #[test]
+    fn subturn_empty_votes_keep_turn() {
+        let out = subturn_segments(&[], 3.0, 4.5, 2);
+        assert_eq!(out, vec![(3.0, 4.5, 2)]);
+    }
+
+    #[test]
+    fn subturn_long_single_chunk_splits() {
+        let out = subturn_segments(&[(3.0, 5.5, 1)], 0.0, 10.0, 0);
+        assert_eq!(out, vec![(0.0, 3.0, 0), (3.0, 10.0, 1)]);
+    }
+
+    #[test]
+    fn token_wall_atoms_match_the_s7_render_atoms() {
+        // Real walls from the cde5c264 source row 32.5-40.2s. The merger must
+        // reproduce exactly the atoms the renderer contests: "Yeah." /
+        // "Gotcha." / "Where is UserC?" / "I don't know" — fusing the
+        // question with its answer (zero wall gap after "?") would make the
+        // pseudo-atom unsittable inside any render atom.
+        use crate::audio::speaker::alignment::TokenWord;
+        let tok = |w: &str, s: i64, e: i64| TokenWord {
+            word: w.to_string(),
+            start_ms: s,
+            end_ms: e,
+        };
+        let toks = vec![
+            tok("Yeah", 32_709, 33_499),
+            tok(".", 33_499, 33_509),
+            tok("Gotcha", 33_709, 34_499),
+            tok(".", 34_499, 34_509),
+            tok("Where", 34_719, 34_799),
+            tok("is", 34_799, 34_909),
+            tok("UserC", 34_909, 35_059),
+            tok("?", 35_469, 35_509),
+            tok("I", 35_509, 35_579),
+            tok("don", 35_719, 35_809),
+            tok("'t", 35_809, 35_939),
+            tok("know", 35_939, 36_069),
+        ];
+        assert_eq!(
+            token_wall_atoms(&toks),
+            vec![
+                (32_709, 33_509),
+                (33_709, 34_509),
+                (34_719, 35_509),
+                (35_509, 36_069),
+            ]
+        );
+    }
+
+    #[test]
+    fn token_wall_atoms_cap_and_drop_slivers() {
+        use crate::audio::speaker::alignment::TokenWord;
+        let tok = |w: &str, s: i64, e: i64| TokenWord {
+            word: w.to_string(),
+            start_ms: s,
+            end_ms: e,
+        };
+        // 3s cap forces a split at the word boundary that would overflow.
+        let long = vec![
+            tok("a", 0, 1_500),
+            tok("b", 1_500, 2_900),
+            tok("c", 2_900, 4_000),
+        ];
+        assert_eq!(token_wall_atoms(&long), vec![(0, 2_900), (2_900, 4_000)]);
+        // A 100ms lone word is below honest embedding resolution.
+        let sliver = vec![tok("hm", 10_000, 10_100)];
+        assert_eq!(token_wall_atoms(&sliver), Vec::<(i64, i64)>::new());
+    }
+
+    #[test]
+    fn subturn_abstain_gap_does_not_break_run() {
+        // Two same-voice chunks separated by undecided audio are one run.
+        let out = subturn_segments(&[(1.0, 1.8, 1), (4.0, 4.9, 1)], 0.0, 10.0, 0);
+        assert_eq!(out, vec![(0.0, 1.0, 0), (1.0, 10.0, 1)]);
+    }
+
+    #[test]
+    fn subturn_gap_span_does_not_count_as_evidence() {
+        // Gate regression S9 (2026-09-22): two short contrary chunks whose
+        // SPAN crosses 1.2s only by counting undecided audio between them.
+        // Only decided time is evidence: 0.32 + 0.58 = 0.90s must not split.
+        let out = subturn_segments(&[(19.98, 20.30, 1), (20.84, 21.42, 1)], 14.42, 21.42, 1);
+        assert_eq!(out, vec![(14.42, 21.42, 1)]);
+    }
+
+    #[test]
+    fn subturn_voice_change_at_turn_start_has_no_prefix() {
+        // The turn opens mid-exchange: a qualifying contrary run at the very
+        // first chunk must not emit a zero-width prefix segment.
+        let out = subturn_segments(
+            &[(0.0, 1.5, 1), (1.5, 3.0, 1), (5.0, 7.0, 1)],
+            0.0,
+            8.0,
+            0,
+        );
+        assert_eq!(out, vec![(0.0, 8.0, 1)]);
+    }
+
+    #[test]
+    fn voiced_chunks_gate_and_chunk_bounds() {
+        // 0.5s silence then 1.0s of tone → one chunk opening at speech onset.
+        let sr = 16_000usize;
+        let mut samples = vec![0.0f32; sr / 2];
+        samples.extend((0..sr).map(|i| 0.5 * (i as f32 * 0.01).sin()));
+        let gate = speech_gate_db(&samples, sr);
+        let chunks = voiced_chunks(&samples, 0.0, 1.5, sr, gate);
+        assert_eq!(chunks.len(), 1);
+        let (a, b) = chunks[0];
+        assert!((a - 0.5).abs() < 0.1, "gate opens at speech onset, got {a}");
+        assert!((b - 1.5).abs() < 0.06);
+        // 2s silence + 5s voiced (silence must hold ≥25% of hops so the
+        // adaptive baseline sits below the voice) → chunked ≤ cap.
+        let mut long = vec![0.0f32; sr * 2];
+        long.extend((0..sr * 5).map(|i| 0.5 * (i as f32 * 0.01).sin()));
+        let gate = speech_gate_db(&long, sr);
+        let chunks = voiced_chunks(&long, 0.0, 7.0, sr, gate);
+        assert!(chunks.len() >= 2, "long run must chunk: {chunks:?}");
+        assert!(
+            chunks.iter().all(|(a, b)| *b - *a <= VOICE_CHUNK_MAX_SECS + 1e-9),
+            "chunk cap violated: {chunks:?}"
+        );
     }
 
     // ---- average-linkage AHC clustering ----

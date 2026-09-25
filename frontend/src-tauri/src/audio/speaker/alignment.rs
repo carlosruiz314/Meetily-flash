@@ -14,6 +14,10 @@ pub struct DiarizationSegment {
     pub start_ms: i64,
     pub end_ms: i64,
     pub speaker_id: u32,
+    /// Sustained (sub-turn-pass-evidenced) voice change at this segment's
+    /// start: the render may split an unpunctuated atom here (ear decree:
+    /// a voice change is an utterance boundary).
+    pub sustained_split: bool,
 }
 
 /// A transcript segment to be aligned.
@@ -72,7 +76,8 @@ const NEAR_TIE_MS: i64 = 100;
 
 /// One whitespace word of a logical unit, with its span (real token times, or
 /// an even proportional share of the unit's span) and its source row index.
-pub(crate) struct UnitWord {
+#[derive(Clone, Debug)]
+pub struct UnitWord {
     pub text: String,
     pub start_ms: i64,
     pub end_ms: i64,
@@ -91,7 +96,7 @@ fn is_closing_quote_or_bracket(c: char) -> bool {
 /// brackets, its final char is a sentence terminator. `…` and `...` need no
 /// pre-normalization: both end in a terminator char (`…` directly, `...` on
 /// the final dot), and the emitted text keeps the original punctuation.
-fn word_ends_sentence(word: &str) -> bool {
+pub(crate) fn word_ends_sentence(word: &str) -> bool {
     word.trim_end_matches(is_closing_quote_or_bracket)
         .chars()
         .last()
@@ -104,12 +109,20 @@ fn text_ends_sentence(text: &str) -> bool {
         .map_or(false, |w| word_ends_sentence(w))
 }
 
-/// A row's token words are a valid span source only when the JSON passes the
-/// sanity clamp (≤ [`MAX_TOKENS_PER_SECOND`]) AND the token-word count
-/// matches the row's whitespace tokenization — segmentation then runs on the
+/// A row's token words are a valid span source when the JSON passes the
+/// sanity clamp (≤ [`MAX_TOKENS_PER_SECOND`]) AND the token pieces merge
+/// back into the row's whitespace words — segmentation then runs on the
 /// same list the spans come from, never on the DB text separately. EOT
 /// sentinels are not words.
-fn valid_token_words(t: &TranscriptInput, row_idx: usize) -> Option<Vec<UnitWord>> {
+///
+/// Whisper emits BPE pieces ("And" + "he" + "'s"), not whitespace words, so
+/// the pieces are merged by exact concatenated reconstruction: a piece run
+/// whose chars spell the next whitespace word becomes one span [first.start,
+/// last.end]. Any mismatch (leftover pieces, divergent text) returns None —
+/// the row falls back to proportional placement honestly. (Before this
+/// merge, the piece-vs-word count comparison rejected EVERY whisper-cpp
+/// row, silently discarding 214/229 rows' real word times.)
+pub fn valid_token_words(t: &TranscriptInput, row_idx: usize) -> Option<Vec<UnitWord>> {
     let tokens = t.token_words.as_ref()?;
     if tokens.is_empty() {
         return None;
@@ -118,27 +131,151 @@ fn valid_token_words(t: &TranscriptInput, row_idx: usize) -> Option<Vec<UnitWord
     if duration_s <= 0.0 {
         return None;
     }
-    let words: Vec<&TokenWord> = tokens
+    let pieces: Vec<&TokenWord> = tokens
         .iter()
         .filter(|w| !crate::audio::speaker::token_timestamps::is_eot_marker(&w.word))
         .collect();
-    if words.is_empty()
-        || words.len() as f64 > MAX_TOKENS_PER_SECOND * duration_s
-        || words.len() != t.text.split_whitespace().count()
-    {
+    if pieces.is_empty() || pieces.len() as f64 > MAX_TOKENS_PER_SECOND * duration_s {
         return None;
     }
-    Some(
-        words
-            .iter()
-            .map(|w| UnitWord {
-                text: w.word.clone(),
-                start_ms: w.start_ms,
-                end_ms: w.end_ms,
-                source_row: row_idx,
-            })
-            .collect(),
-    )
+    let text_words: Vec<&str> = t.text.split_whitespace().collect();
+    let mut out = Vec::with_capacity(text_words.len());
+    let mut i = 0usize;
+    // Backtrack budget (whisper-echo-dedup addendum): pieces the stream
+    // duplicated beyond what the text spells (measured: three audibly-real
+    // `cool` pieces for two text words) are skipped so the row keeps its
+    // real walls instead of falling back to proportional — where the ghost
+    // sentence has no weightless signature at all.
+    let mut skips_left = (pieces.len() / 8).max(2);
+    for text_word in &text_words {
+        let want: Vec<char> = text_word.chars().collect();
+        let mut acc: Vec<char> = Vec::new();
+        let mut start = pieces[i].start_ms;
+        let mut end = pieces[i].end_ms;
+        let mut run: Vec<usize> = Vec::new();
+        let mut word_skips = 0usize;
+        loop {
+            if acc == want {
+                break;
+            }
+            if acc.len() >= want.len() && acc != want {
+                // Overshoot: one consumed piece of this run is an extra the
+                // text doesn't spell. Retry without it only when it is
+                // weightless or duplicates a piece within 2 stream positions;
+                // anything else fails the row honestly.
+                // A word's only piece is never droppable — removing it would
+                // leave no backing span at all.
+                if word_skips < 2 && skips_left > 0 && run.len() >= 2 {
+                    let norm = |s: &str| {
+                        s.trim()
+                            .to_lowercase()
+                            .chars()
+                            .filter(|c| c.is_alphanumeric())
+                            .collect::<String>()
+                    };
+                    let cand = (0..run.len()).find(|&p| {
+                        let w = &pieces[run[p]];
+                        if w.end_ms - w.start_ms <= 1 {
+                            return true; // weightless
+                        }
+                        let lo = run[0].saturating_sub(2);
+                        let hi = run[p] + 3; // next two positions, exclusive
+                        pieces[lo..hi.min(pieces.len())]
+                            .iter()
+                            .enumerate()
+                            .any(|(k, q)| {
+                                let idx = lo + k;
+                                if idx == run[p] || q.word.trim().is_empty() {
+                                    return false;
+                                }
+                                // Raw equality covers punctuation extras (a
+                                // duplicated ","); normalized covers case or
+                                // format drift on word pieces.
+                                q.word.trim() == w.word.trim()
+                                    || {
+                                        let nq: String = q
+                                            .word
+                                            .trim()
+                                            .to_lowercase()
+                                            .chars()
+                                            .filter(|c| c.is_alphanumeric())
+                                            .collect();
+                                        !nq.is_empty()
+                                            && nq == w
+                                                .word
+                                                .trim()
+                                                .to_lowercase()
+                                                .chars()
+                                                .filter(|c| c.is_alphanumeric())
+                                                .collect::<String>()
+                                    }
+                            })
+                    });
+                    if let Some(p) = cand {
+                        run.remove(p);
+                        acc = run
+                            .iter()
+                            .flat_map(|&k| pieces[k].word.trim().chars())
+                            .collect();
+                        start = pieces[run[0]].start_ms;
+                        end = pieces[*run.last().unwrap()].end_ms;
+                        i = run.last().unwrap() + 1;
+                        word_skips += 1;
+                        skips_left -= 1;
+                        continue;
+                    }
+                }
+                return None;
+            }
+            if i >= pieces.len() {
+                return None;
+            }
+            run.push(i);
+            acc.extend(pieces[i].word.trim().chars());
+            end = pieces[i].end_ms;
+            i += 1;
+        }
+        out.push(UnitWord {
+            text: (*text_word).to_string(),
+            start_ms: start,
+            // whisper DTW can hand a piece a zero span; a word must occupy
+            // strictly positive time or the render manufactures zero-duration
+            // rows (a persisted-row invariant).
+            end_ms: end.max(start + 1),
+            source_row: row_idx,
+        });
+    }
+    // DTW piece times can invert or overlap across adjacent words; rows
+    // inherit word spans, so enforce strictly ordered, positive spans (the
+    // no-overlap and no-zero-duration persisted-row invariants).
+    for k in 1..out.len() {
+        if out[k].start_ms < out[k - 1].end_ms {
+            out[k].start_ms = out[k - 1].end_ms;
+        }
+        if out[k].end_ms <= out[k].start_ms {
+            out[k].end_ms = out[k].start_ms + 1;
+        }
+    }
+    if i != pieces.len() {
+        return None; // trailing pieces the text can't account for
+    }
+    // Decode ghosts (whisper-echo-dedup), at WORD granularity — the ghost's
+    // text is part of the row text so its pieces must merge, but the merged
+    // words are weightless (zero-span pieces clamp to 1 ms). A sentence
+    // re-emitted with weightless walls renders as a fabricated verbatim echo
+    // across a badge boundary (measured: cde5c264 1193.55 row) — drop the
+    // weightless copy, keep the one with real walls.
+    let keep = crate::audio::speaker::token_timestamps::dedupe_degenerate_repeats_by(
+        &out,
+        |w| &w.text,
+        |w| w.start_ms,
+        |w| w.end_ms,
+    );
+    if keep.len() != out.len() {
+        let kept: Vec<UnitWord> = keep.iter().map(|&i| out[i].clone()).collect();
+        out = kept;
+    }
+    Some(out)
 }
 
 /// Even proportional share of the row's span per whitespace word (the 237/240
@@ -229,6 +366,125 @@ fn split_cjk_word_at_terminators(
     out
 }
 
+// ---------------------------------------------------------------------------
+// DTW smear repair (change `turn-boundary-wall-realignment`).
+// ---------------------------------------------------------------------------
+
+/// Minimum atom time past a voice-change boundary before the straddle rule
+/// may fire (a normal turn-final sentence has its period AT the boundary —
+/// side ≈ 0 — and must never qualify). Pinned from S7c's 429 ms.
+const STRADDLE_SIDE_MIN_MS: i64 = 300;
+/// Minimum unclaimed voiced head room in the far turn (in the normal case
+/// the next atom starts immediately). Pinned from S7c's 639 ms.
+const STRADDLE_HEAD_ROOM_MIN_MS: i64 = 300;
+/// How far T1's end may sit from T2's start and still count as one seam.
+const STRADDLE_BOUNDARY_TOL_MS: i64 = 250;
+/// The far turn must be a real voice-homogeneous span, not a sliver: the
+/// audit find (2026-09-25, live firings at 3382.68 / 4147.88) had the rule
+/// re-anchor atoms across 0.26-0.5 s low-confidence slivers. Matches the
+/// sub-turn floor [`run_assembly::SUBTURN_MIN_TURN_SECS`].
+const STRADDLE_MIN_FAR_TURN_MS: i64 = 1_000;
+/// Re-anchoring rescales the atom's walls into the head room; below this
+/// compression the fit is considered too lossy and the boundary is left alone.
+const STRADDLE_MIN_SCALE: f64 = 0.5;
+
+/// Whisper's cross-attention walls can slide a whole sentence atom backwards
+/// across a silence onto the previous speaker's trailing audio (measured:
+/// cde5c264 "I don't know." pinned at 35.51–36.51 while the words' real
+/// audio is 36.1–36.7, past the engine's 36.08 turn boundary — user replay
+/// 2026-09-25). An engine turn is voice-homogeneous and a sentence is one
+/// voice, so an atom straddling a genuine voice-change seam whose
+/// sentence-final punctuation wall sits on the far side is a wall error by
+/// construction: re-anchor it into the far turn's unclaimed voiced head,
+/// rescaled to fit between the seam and the next atom's start. Pure — spans
+/// and turn labels only; all constants pinned by the S7c measurements and
+/// enforced from below by the negative tests.
+fn realign_straddling_atoms(
+    units: &mut [(Vec<UnitWord>, bool)],
+    diarization: &[DiarizationSegment],
+) {
+    if diarization.len() < 2 {
+        return;
+    }
+    for pair in diarization.windows(2) {
+        let (t1, t2) = (&pair[0], &pair[1]);
+        if t1.speaker_id == t2.speaker_id || t2.sustained_split {
+            continue;
+        }
+        let b = t2.start_ms;
+        if (t1.end_ms - b).abs() > STRADDLE_BOUNDARY_TOL_MS {
+            continue;
+        }
+        // The far side must be a real turn (audit 2026-09-25: slivers are
+        // noise, not a voice-homogeneous span to re-anchor into).
+        if t2.end_ms - t2.start_ms < STRADDLE_MIN_FAR_TURN_MS {
+            continue;
+        }
+        // Meeting-ordered atom list over real-span units only (proportional
+        // rows have their own boundary-anchored path). Tuples: (unit, word
+        // range [a, bnd), span).
+        let mut atoms: Vec<(usize, usize, usize, i64, i64)> = Vec::new();
+        for (ui, (words, real)) in units.iter().enumerate() {
+            if !real {
+                continue;
+            }
+            for (a, bnd) in sentence_atom_ranges(words) {
+                let start = words[a].start_ms;
+                let end = words[bnd - 1].end_ms;
+                atoms.push((ui, a, bnd, start, end));
+            }
+        }
+        atoms.sort_by_key(|x| x.3);
+        let Some(pos) = atoms.iter().position(|&(_, _, _, s, e)| s < b && e > b) else {
+            continue;
+        };
+        let (ui, a, bnd, s, e) = atoms[pos];
+        // Only this atom may use the seam: a non-qualifying straddler leaves
+        // the boundary untouched (no second-best guessing). The last word
+        // must end a sentence — a complete sentence moves as a unit. No
+        // punct-position check is possible (the merger fuses the period into
+        // the word) or needed: per the ear law the voice does not change
+        // mid-sentence, so a complete-sentence straddle of a genuine voice
+        // change is a wall error by construction.
+        let words = &units[ui].0;
+        let last = &words[bnd - 1];
+        if !word_ends_sentence(&last.text) {
+            continue;
+        }
+        if e - b < STRADDLE_SIDE_MIN_MS {
+            continue;
+        }
+        let Some(next_start) = atoms[pos + 1..].iter().map(|x| x.3).min() else {
+            continue;
+        };
+        let room = next_start - b;
+        if room < STRADDLE_HEAD_ROOM_MIN_MS {
+            continue;
+        }
+        // The room is T2's voiced head only when it ends inside T2 — past
+        // T2's end lies uncovered audio (audit 2026-09-25 firing at 3382.68
+        // reached 11 s across a hole and a third voice).
+        if next_start > t2.end_ms {
+            continue;
+        }
+        let dur = e - s;
+        // Compression only: room ≥ dur means the atom fits by shifting —
+        // scaling up would fabricate wall time (audit 2026-09-25, the
+        // 3382.68 firing stretched a 10.3 s atom to 11.5 s).
+        let scale = (room as f64 / dur as f64).min(1.0);
+        if scale < STRADDLE_MIN_SCALE {
+            continue;
+        }
+        let words = &mut units[ui].0;
+        for w in &mut words[a..bnd] {
+            let rs = (w.start_ms - s) as f64 * scale;
+            let re = (w.end_ms - s) as f64 * scale;
+            w.start_ms = b + (rs as i64);
+            w.end_ms = (b + (re as i64)).max(w.start_ms + 1);
+        }
+    }
+}
+
 /// Rejoin adjacent rows whose predecessor lacks sentence-terminal punctuation
 /// into logical units — the pipeline input contains persisted fragment rows
 /// already split at turn boundaries ("I" is its own row), so per-row
@@ -245,11 +501,19 @@ pub(crate) fn build_logical_units(transcripts: &[TranscriptInput]) -> Vec<(Vec<U
     // `true` = nothing open (or the open unit's last word ended a sentence),
     // so the next row starts a fresh unit.
     let mut open_ends_sentence = true;
+    let mut tokened_rows = 0usize;
+    let mut real_rows = 0usize;
     for (i, t) in transcripts.iter().enumerate() {
         let (words, real) = match valid_token_words(t, i) {
             Some(words) => (words, true),
             None => (proportional_words(t, i), false),
         };
+        if t.token_words.as_ref().is_some_and(|w| !w.is_empty()) {
+            tokened_rows += 1;
+            if real {
+                real_rows += 1;
+            }
+        }
         if words.is_empty() {
             continue; // an empty row neither opens nor closes a unit
         }
@@ -268,6 +532,16 @@ pub(crate) fn build_logical_units(transcripts: &[TranscriptInput]) -> Vec<(Vec<U
             .last()
             .map(|w| word_ends_sentence(&w.text))
             .unwrap_or(open_ends_sentence);
+    }
+    if tokened_rows > 0 && real_rows == 0 {
+        // A 100% fallback rate once sat silent for weeks (the piece-vs-word
+        // validator rejected every whisper row); the fallback must never be
+        // the only signal again.
+        log::warn!(
+            "token-wall extraction rejected ALL {} tokened row(s) — the meeting \
+             renders on proportional walls; the validator is failing, not whisper",
+            tokened_rows
+        );
     }
     units
         .into_iter()
@@ -321,12 +595,329 @@ fn overlaps_span(seg: &DiarizationSegment, start: i64, end: i64) -> bool {
 /// speaker id — never hash order). Returns the winning speaker id, or None
 /// when NO turn overlaps the range (those atoms stay "Unknown Speaker"; the
 /// cap-borrow is `assign_engine_gap_fragments`'s job alone).
+// ---------------------------------------------------------------------------
+// Boundary-anchored atom assignment (ear verdict 2026-09-20: "Oh, man." is
+// UserB's). Even wall-clock word shares drift ~1 s across a long
+// multi-voice row, so per-atom overlap majority misplaces atoms that sit
+// near a true voice change — the render was re-deciding badges the engine
+// had already resolved. The ear decree — a voice never changes
+// mid-sentence — makes the fix mechanical: every interior turn boundary
+// MUST fall on an atom gap, so snap each boundary to its nearest gap
+// (monotone, one gap per boundary) and assign atoms from the boundary-
+// delimited stretch, whose true speaker is constant. Stretches dilute the
+// skew that broke single atoms. Deterministic; falls back to per-atom
+// majority whenever a row's boundaries can't be matched to gaps.
+// ---------------------------------------------------------------------------
+
+/// Speaker-change seams strictly inside one row's span: seam midpoint plus
+/// the flanking turns' inner edges (L.end, R.start). L.end < R.start marks a
+/// SILENT seam — pyannote heard neither voice in the gap.
+///
+/// Sort is by start only, so overlapping (non-engine) diarization input can
+/// yield non-monotone mids; the monotone snap then degrades to nearest-in-
+/// order rather than misordering. Engine turns are disjoint by construction.
+/// Each boundary carries the incoming (right) segment's `sustained_split`
+/// flag — true only where the sub-turn pass proved the voice change.
+fn interior_boundaries(
+    diarization: &[DiarizationSegment],
+    start: i64,
+    end: i64,
+) -> Vec<(i64, i64, i64, bool)> {
+    let mut clipped: Vec<(i64, i64, u32, bool)> = diarization
+        .iter()
+        .filter(|s| s.end_ms > start && s.start_ms < end)
+        .map(|s| {
+            (
+                s.start_ms.max(start),
+                s.end_ms.min(end),
+                s.speaker_id,
+                s.sustained_split,
+            )
+        })
+        .filter(|(s, e, _, _)| e > s)
+        .collect();
+    clipped.sort_by_key(|(s, _, _, _)| *s);
+    let mut out: Vec<(i64, i64, i64, bool)> = Vec::new();
+    for w in clipped.windows(2) {
+        if w[0].2 != w[1].2 {
+            let (l_end, r_start) = (w[0].1, w[1].0);
+            let mid = (l_end + r_start) / 2;
+            if out.last().map(|(m, _, _, _)| *m) != Some(mid) {
+                out.push((mid, l_end, r_start, w[1].3));
+            }
+        }
+    }
+    out
+}
+
+/// The ear decree — a voice never changes mid-sentence — cuts both ways:
+/// where a SUSTAINED voice change falls inside one unpunctuated atom
+/// (Whisper merges a Q→A handoff into one run-on segment), the atom is not
+/// one sentence, and the render must split it at the nearest word gap.
+/// Only `sustained_split` boundaries qualify; raw pyannote seams misfire on
+/// the back-channels the ear keeps inside one sentence.
+fn split_atoms_at_sustained_boundaries<'a>(
+    mut atoms: Vec<&'a [UnitWord]>,
+    bounds: &[(i64, i64, i64, bool)],
+) -> Vec<&'a [UnitWord]> {
+    for &(mid, _, _, sustained) in bounds {
+        if !sustained {
+            continue;
+        }
+        let Some(i) = atoms.iter().position(|a| {
+            mid > a.first().expect("non-empty").start_ms
+                && mid < a.last().expect("non-empty").end_ms
+        }) else {
+            continue;
+        };
+        let best = atoms[i]
+            .windows(2)
+            .enumerate()
+            .min_by_key(|(k, w)| {
+                let gap = (w[0].end_ms + w[1].start_ms) / 2;
+                (gap - mid).abs()
+            })
+            .map(|(k, _)| k);
+        if let Some(k) = best {
+            let (l, r) = atoms[i].split_at(k + 1);
+            atoms[i] = r;
+            atoms.insert(i, l);
+        }
+    }
+    atoms
+}
+
+/// Match each boundary (in order) to its nearest unused atom gap, preserving
+/// order: an earlier boundary never takes a later gap than a later boundary's.
+/// When there are MORE boundaries than gaps (the sub-turn pass legitimately
+/// finds more voice changes than the row has sentence gaps), consecutive
+/// boundaries may share the final gaps — a shared boundary simply vanishes
+/// from the stretch walk rather than aborting the whole unit to per-atom
+/// majority. None only when there are no gaps at all — the caller falls back
+/// to per-atom majority rather than guess.
+fn snap_boundaries_to_gaps(boundaries: &[i64], gaps: &[i64]) -> Option<Vec<usize>> {
+    if gaps.is_empty() {
+        return None;
+    }
+    // Reuse only under starvation, so existing strict outcomes never change.
+    let allow_reuse = boundaries.len() > gaps.len();
+    let mut chosen: Vec<usize> = Vec::with_capacity(boundaries.len());
+    for &b in boundaries {
+        let min_k = chosen
+            .last()
+            .map_or(0, |&prev| if allow_reuse { prev } else { prev + 1 });
+        let mut best: Option<(i64, usize)> = None;
+        for (k, &g) in gaps.iter().enumerate() {
+            if k < min_k {
+                continue; // monotone: never earlier than the last chosen gap
+            }
+            let d = (g - b).abs();
+            if best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, k));
+            }
+        }
+        let (_, k) = best?;
+        chosen.push(k);
+    }
+    Some(chosen)
+}
+
+/// Per-atom speakers for one multi-atom unit whose row crosses voice
+/// changes, or None when boundary matching isn't possible (caller falls back
+/// to per-atom majority). Atoms between two snapped boundaries share one
+/// speaker: with every interior boundary snapped to a gap, the true voice is
+/// constant inside a stretch, so overlap majority over the WHOLE stretch is
+/// skew-resistant where single-atom majority was not.
+///
+/// None is also returned when any stretch has zero diarization overlap
+/// (`speaker_for_span` has no majority to read) — the same per-atom
+/// fallback, just triggered by silence instead of unmatchable geometry.
+fn boundary_anchored_speakers(
+    atoms: &[&[UnitWord]],
+    diarization: &[DiarizationSegment],
+    previous_badge: Option<&str>,
+    voice_votes: &[DiarizationSegment],
+) -> Option<(Vec<u32>, std::collections::BTreeSet<usize>)> {
+    if atoms.len() < 2 {
+        return None;
+    }
+    let first = atoms.first()?.first()?.start_ms;
+    let last = atoms.last()?.last()?.end_ms;
+    let bounds = interior_boundaries(diarization, first, last);
+    if bounds.is_empty() {
+        return None;
+    }
+    // Split unpunctuated atoms at sustained voice changes BEFORE computing
+    // gaps, so every such boundary has a gap to snap to.
+    let atoms = split_atoms_at_sustained_boundaries(atoms.to_vec(), &bounds);
+    let gaps: Vec<i64> = atoms
+        .windows(2)
+        .map(|w| {
+            (w[0].last().expect("non-empty").end_ms + w[1].first().expect("non-empty").start_ms)
+                / 2
+        })
+        .collect();
+    let mids: Vec<i64> = bounds.iter().map(|(m, _, _, _)| *m).collect();
+    let mut snapped = snap_boundaries_to_gaps(&mids, &gaps)?;
+    // Atoms moved to the incoming side by absorption — ear-pinned exceptions
+    // the voice-vote override must not touch.
+    let mut absorbed: std::collections::BTreeSet<usize> = Default::default();
+
+    // Silent-seam absorption. A silent seam's true text sits at the seam in
+    // audio time, but proportional wall placement can leave it a word-share
+    // or more on the far side of the snapped gap (ear verdict 2026-09-20:
+    // "Oh, man." is UserB's, yet its wall span ends 50 ms short of her
+    // turn). When the atom ENDING at a silent seam's snapped gap reaches the
+    // seam region — its wall END lies within one average word-share of the
+    // incoming voice's turn start AND closer to it than to the outgoing
+    // turn's end — the change moves one atom earlier so that atom joins the
+    // incoming voice's stretch. The reach bound keeps straddling atoms whose
+    // majority clearly favors the outgoing voice (end far past the seam)
+    // from flipping. Whole atoms only, one atom max, monotonicity guarded.
+    for (b_idx, &(_mid, l_end, r_start, _sustained)) in bounds.iter().enumerate() {
+        if l_end >= r_start {
+            continue; // voiced seam: both voices heard, nearest snap is exact
+        }
+        let gap_idx = snapped[b_idx];
+        let min_gap = if b_idx > 0 { snapped[b_idx - 1] + 1 } else { 0 };
+        if gap_idx == 0 || gap_idx - 1 < min_gap {
+            continue;
+        }
+        let atom = atoms[gap_idx];
+        let atom_start = atom.first().expect("non-empty").start_ms;
+        let atom_end = atom.last().expect("non-empty").end_ms;
+        // Ear law 2026-09-22: a question is never absorbed into its own
+        // answer's voice — the asker and the responder are different people,
+        // so a '?'-ending atom always stays with the outgoing speaker.
+        let last_char = atom
+            .last()
+            .and_then(|w| w.text.chars().filter(|c| !c.is_whitespace()).last())
+            .unwrap_or(' ');
+        if last_char == '?' {
+            continue;
+        }
+        let avg_word = (atom_end - atom_start) / atom.len() as i64;
+        let reaches_seam = atom_end <= r_start + avg_word && atom_end >= l_end;
+        if reaches_seam && (r_start - atom_end).abs() < (atom_end - l_end).abs() {
+            absorbed.insert(gap_idx);
+            snapped[b_idx] = gap_idx - 1;
+        }
+    }
+
+    let mut speakers: Vec<u32> = Vec::with_capacity(atoms.len());
+    let mut stretch_start = first;
+    let mut prev: Option<String> = previous_badge.map(str::to_string);
+    let mut next_atom = 0usize;
+    for &gap_idx in &snapped {
+        if gap_idx < next_atom {
+            continue; // starved boundary collapsed onto an already-consumed gap
+        }
+        let stretch_end = atoms[gap_idx].last().expect("non-empty").end_ms;
+        let speaker =
+            speaker_for_span(stretch_start, stretch_end, diarization, prev.as_deref())?;
+        for atom_i in next_atom..=gap_idx {
+            speakers.push(speaker);
+            let _ = atom_i;
+        }
+        prev = Some(format!("Speaker {speaker}"));
+        next_atom = gap_idx + 1;
+        stretch_start = atoms
+            .get(gap_idx + 1)
+            .and_then(|a| a.first())
+            .map(|w| w.start_ms)
+            .unwrap_or(stretch_end);
+    }
+    // Voice-vote override: an atom with DECIDED, sustained chunk evidence
+    // (>= 2 margin-gated chunks, >= 500 ms) takes that voice even when the
+    // turn stretch majority disagrees — pyannote holds labels through fast
+    // handoffs (ear verdicts 2026-09-22: the response to "I have some
+    // updates" and the recording question are the other voice). Absorbed
+    // atoms are ear-pinned exceptions and keep their absorption verdict.
+    for (i, atom) in atoms.iter().enumerate() {
+        if absorbed.contains(&i) {
+            continue;
+        }
+        let a_start = atom.first().expect("non-empty").start_ms;
+        let a_end = atom.last().expect("non-empty").end_ms;
+        if let Some(v) = voice_vote_majority(a_start, a_end, voice_votes) {
+            if i < speakers.len() {
+                speakers[i] = v;
+            }
+        }
+    }
+
+    // Tail stretch: atoms after the final snapped boundary share the voice
+    // that owns [last gap, row end].
+    if next_atom < atoms.len() {
+        let speaker = speaker_for_span(stretch_start, last, diarization, prev.as_deref())?;
+        for _ in next_atom..atoms.len() {
+            speakers.push(speaker);
+        }
+    }
+    Some((speakers, absorbed))
+}
+
+/// Majority voice among the pass's decided chunks overlapping [start_ms,
+/// end_ms). Two acceptance tiers: >= 2 chunks covering >= 500 ms, or a
+/// single chunk of >= 250 ms — on REAL token walls a single decided chunk
+/// is reliable (the S7 clip's "I don't know." is 340 ms and the ear says
+/// UserA); the historical misvote class ("Oh, man.") was voted on
+/// proportional walls, which no longer exist. Absorbed atoms (ear-pinned)
+/// never reach this function.
+fn voice_vote_majority(
+    start_ms: i64,
+    end_ms: i64,
+    voice_votes: &[DiarizationSegment],
+) -> Option<u32> {
+    // Pass 1 — chunks FULLY inside the atom are direct evidence for it and
+    // decide alone: turn-sized chunks straddling the wall belong (at least
+    // partly) to the neighbor and must not out-mass them (S7: the UserB
+    // chunk tail rode 550 ms into "I don't know." and out-voted UserA's
+    // fully-contained 340 ms chunk).
+    let contained: Vec<&DiarizationSegment> = voice_votes
+        .iter()
+        .filter(|v| v.start_ms >= start_ms && v.end_ms <= end_ms)
+        .collect();
+    let pool = if !contained.is_empty() {
+        contained
+    } else {
+        voice_votes.iter().collect::<Vec<_>>()
+    };
+    let mut per: std::collections::BTreeMap<u32, (i64, usize)> = Default::default();
+    for v in pool {
+        let overlap = (end_ms.min(v.end_ms) - start_ms.max(v.start_ms)).max(0);
+        if overlap > 0 {
+            let e = per.entry(v.speaker_id).or_default();
+            e.0 += overlap;
+            e.1 += 1;
+        }
+    }
+    let mut ranked: Vec<(u32, i64, usize)> =
+        per.into_iter().map(|(c, (ms, n))| (c, ms, n)).collect();
+    ranked.sort_by(|a, b| b.1.cmp(&a.1).then(b.2.cmp(&a.2)).then(a.0.cmp(&b.0)));
+    let (c, ms, n) = ranked.first()?;
+    if (*n >= 2 && *ms >= 500) || (*n >= 1 && *ms >= 250) {
+        Some(*c)
+    } else {
+        None
+    }
+}
+
 fn majority_turn(
     words: &[UnitWord],
     diarization: &[DiarizationSegment],
     previous_badge: Option<&str>,
 ) -> Option<u32> {
     let (start, end) = piece_span(words)?;
+    speaker_for_span(start, end, diarization, previous_badge)
+}
+
+fn speaker_for_span(
+    start: i64,
+    end: i64,
+    diarization: &[DiarizationSegment],
+    previous_badge: Option<&str>,
+) -> Option<u32> {
     let mid = (start + end) / 2;
     // speaker → (total overlap_ms, min edge distance, first turn index)
     let mut agg: std::collections::BTreeMap<u32, (i64, i64, usize)> = Default::default();
@@ -419,6 +1010,8 @@ fn join_words(words: &[UnitWord]) -> String {
 pub fn align_transcripts_with_diarization(
     transcripts: Vec<TranscriptInput>,
     diarization: &[DiarizationSegment],
+    rescue_seams: &[DiarizationSegment],
+    voice_votes: &[DiarizationSegment],
 ) -> Vec<AlignedSegment> {
     if transcripts.is_empty() {
         return Vec::new();
@@ -438,20 +1031,83 @@ pub fn align_transcripts_with_diarization(
             .collect();
     }
 
-    let units = build_logical_units(&transcripts);
+    let mut units = build_logical_units(&transcripts);
+    realign_straddling_atoms(&mut units, diarization);
     let mut results = Vec::new();
     let mut previous_badge: Option<String> = None;
     for (unit_words, spans_real) in &units {
-        for (a, b) in sentence_atom_ranges(unit_words) {
-            let atom = &unit_words[a..b];
-            let source = if *spans_real {
-                SpeakerSource::Auto
-            } else {
-                SpeakerSource::Fallback
-            };
+        let source = if *spans_real {
+            SpeakerSource::Auto
+        } else {
+            SpeakerSource::Fallback
+        };
+        let atoms: Vec<&[UnitWord]> = sentence_atom_ranges(unit_words)
+            .into_iter()
+            .map(|(a, b)| &unit_words[a..b])
+            .collect();
+        // Boundary-anchored assignment first: PROPORTIONAL rows (no usable
+        // token timestamps) crossing voice changes get their atoms from
+        // boundary-delimited stretches, then rescue-seam pinning — atoms
+        // whose skewed wall span touches a voice-attributed silence seam
+        // take the seam's speaker (identity evidence beats geometric skew).
+        // Token-aligned rows have exact word times and keep the per-atom
+        // majority below; so do rows without usable interior boundaries —
+        // identical behavior for single-speaker rows.
+        if !*spans_real {
+            if let Some((speakers, _absorbed)) = boundary_anchored_speakers(
+                &atoms,
+                diarization,
+                previous_badge.as_deref(),
+                voice_votes,
+            ) {
+                let speakers = pin_rescue_seams(&atoms, speakers, rescue_seams);
+                if std::env::var_os("MEETIFY_ALIGN_DEBUG").is_some() {
+                    for (atom, sp) in atoms.iter().zip(&speakers) {
+                        eprintln!(
+                            "ALIGN-BA [{}-{}] sp{} | {}",
+                            atom.first().unwrap().start_ms as f64 / 1000.0,
+                            atom.last().unwrap().end_ms as f64 / 1000.0,
+                            sp,
+                            join_words(atom)
+                        );
+                    }
+                }
+                for (atom, speaker) in atoms.iter().zip(&speakers) {
+                    results.push(AlignedSegment {
+                        original_id: owner_row_id(atom, &transcripts),
+                        text: join_words(atom),
+                        audio_start_ms: atom.first().expect("non-empty").start_ms,
+                        audio_end_ms: atom.last().expect("non-empty").end_ms,
+                        speaker: format!("Speaker {speaker}"),
+                        speaker_source: source.clone(),
+                    });
+                }
+                if let Some(last) = results.last() {
+                    previous_badge = Some(last.speaker.clone());
+                }
+                continue;
+            }
+        }
+        for atom in &atoms {
             let (badge, badge_source) =
                 match majority_turn(atom, diarization, previous_badge.as_deref()) {
-                    Some(speaker_id) => (format!("Speaker {speaker_id}"), source),
+                    Some(mut speaker_id) => {
+                        let a_start = atom.first().expect("non-empty").start_ms;
+                        let a_end = atom.last().expect("non-empty").end_ms;
+                        if let Some(v) = voice_vote_majority(a_start, a_end, voice_votes) {
+                            speaker_id = v;
+                        }
+                        if std::env::var_os("MEETIFY_ALIGN_DEBUG").is_some() {
+                            eprintln!(
+                                "ALIGN-ATOM [{}-{}] sp{} | {}",
+                                a_start as f64 / 1000.0,
+                                a_end as f64 / 1000.0,
+                                speaker_id,
+                                join_words(atom)
+                            );
+                        }
+                        (format!("Speaker {speaker_id}"), source.clone())
+                    }
                     None => ("Unknown Speaker".to_string(), SpeakerSource::Unknown),
                 };
             results.push(AlignedSegment {
@@ -465,7 +1121,44 @@ pub fn align_transcripts_with_diarization(
             previous_badge = Some(badge);
         }
     }
+    // Exact word times can overlap ACROSS rejoin-unit boundaries (adjacent
+    // rows' DTW token sets interleave at segment borders). The rows decode
+    // one audio stream — enforce non-overlap at the output seam (clip,
+    // never drop).
+    for k in 1..results.len() {
+        if results[k].audio_start_ms < results[k - 1].audio_end_ms {
+            let clipped = results[k - 1].audio_end_ms;
+            results[k].audio_start_ms = clipped;
+            if results[k].audio_end_ms <= clipped {
+                results[k].audio_end_ms = clipped + 1;
+            }
+        }
+    }
     results
+}
+
+/// Identity override: an atom whose wall span intersects a rescue-attributed
+/// silence seam belongs to the seam's voice — the rescue heard that audio
+/// (TitaNet) where pyannote heard nothing, so proportional placement has no
+/// say. seam pins are rare (rescues are rare) and decisive. Rescue seams are
+/// disjoint by construction (one per silent gap); first match wins if that
+/// ever changes.
+fn pin_rescue_seams(
+    atoms: &[&[UnitWord]],
+    mut speakers: Vec<u32>,
+    rescue_seams: &[DiarizationSegment],
+) -> Vec<u32> {
+    for (atom, speaker) in atoms.iter().zip(speakers.iter_mut()) {
+        let start = atom.first().map(|w| w.start_ms).unwrap_or(0);
+        let end = atom.last().map(|w| w.end_ms).unwrap_or(0);
+        for seam in rescue_seams {
+            if end > seam.start_ms && start < seam.end_ms {
+                *speaker = seam.speaker_id;
+                break;
+            }
+        }
+    }
+    speakers
 }
 
 // ---------------------------------------------------------------------------
@@ -688,12 +1381,215 @@ mod tests {
     use super::*;
 
     fn seg(start: i64, end: i64, speaker: u32) -> DiarizationSegment {
-        DiarizationSegment { start_ms: start, end_ms: end, speaker_id: speaker }
+        DiarizationSegment { start_ms: start, end_ms: end, speaker_id: speaker, sustained_split: false }
     }
 
     fn token(word: &str, start: i64, end: i64) -> TokenWord {
         TokenWord { word: word.to_string(), start_ms: start, end_ms: end }
     }
+
+    #[test]
+    fn s7c_dtw_smeared_atom_reanchors_past_the_voice_boundary() {
+        // S7c (user replay 2026-09-25): whisper pinned "I don't know." at
+        // 35.51-36.51, straddling the engine's voice-change boundary at
+        // 36.08, while the words' real audio is 36.1-36.7 (pyannote puts
+        // UserA's voice at 0.43-0.9 mass exactly there). The realignment
+        // must re-anchor the atom into T2's unclaimed voiced head — using
+        // the REAL cde5c264 token walls of the source row.
+        let mut t = transcript(
+            "s7",
+            "Yeah. Gotcha. Where is UserC? I don't know. Let me ping him. Okay.",
+            32_509, 40_240,
+        );
+        t.token_words = Some(vec![
+            token("Yeah", 32_709, 33_499),
+            token(".", 33_499, 33_509),
+            token("Gotcha", 33_709, 34_499),
+            token(".", 34_499, 34_509),
+            token("Where", 34_719, 34_799),
+            token("is", 34_799, 34_909),
+            token("UserC", 34_909, 35_059),
+            token("?", 35_469, 35_509),
+            token("I", 35_509, 35_579),
+            token("don", 35_719, 35_809),
+            token("'t", 35_809, 35_939),
+            token("know", 35_939, 36_069),
+            token(".", 36_469, 36_509),
+            token("Let", 36_719, 36_909),
+            token("me", 36_909, 36_949),
+            token("ping", 37_469, 37_589),
+            token("him", 37_589, 37_869),
+            token(".", 37_869, 38_069),
+            token("Okay", 38_709, 38_939),
+            token(".", 39_059, 39_509),
+        ]);
+        let diarization = vec![
+            seg(32_650, 36_080, 1),
+            seg(36_080, 38_640, 0),
+            seg(39_000, 39_930, 1),
+        ];
+        // Production wall-atom votes on the ORIGINAL walls: the smear chunk
+        // votes UserB; Gotcha and Let-me-ping vote UserA. The realigned
+        // atom's new span must have zero overlap with the stale UserB
+        // chunk so the render falls through to turn containment (UserA).
+        let votes = vec![
+            seg(32_709, 33_509, 1),
+            seg(33_709, 34_509, 0),
+            seg(34_719, 35_509, 1),
+            seg(35_509, 36_069, 1),
+            seg(36_719, 38_259, 0),
+        ];
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &votes);
+        let by_text = |needle: &str| {
+            result
+                .iter()
+                .find(|r| r.text.to_lowercase().contains(needle))
+                .unwrap_or_else(|| panic!("no fragment containing {needle:?}; got {:?}", result.iter().map(|r| (&r.text, &r.speaker)).collect::<Vec<_>>()))
+        };
+        let idk = by_text("i don't know");
+        assert_eq!(idk.speaker, "Speaker 0", "S7c ruling: I don't know is UserA");
+        assert_eq!(
+            (idk.audio_start_ms, idk.audio_end_ms),
+            (36_080, 36_719),
+            "atom re-anchored into T2's voiced head"
+        );
+        let q = by_text("where is userC");
+        assert_eq!(q.speaker, "Speaker 1");
+        assert_eq!((q.audio_start_ms, q.audio_end_ms), (34_719, 35_509));
+        assert_eq!(by_text("gotcha").speaker, "Speaker 0");
+        assert_eq!(by_text("let me ping").speaker, "Speaker 0");
+        // Monotonic, non-overlapping output.
+        let mut sorted = result.clone();
+        sorted.sort_by_key(|r| r.audio_start_ms);
+        for pair in sorted.windows(2) {
+            assert!(pair[1].audio_start_ms >= pair[0].audio_end_ms);
+        }
+    }
+
+    #[test]
+    fn realignment_leaves_normal_turn_final_sentence_alone() {
+        // A sentence that genuinely ends at the boundary: period at the turn
+        // edge, no far-side room consumed, next atom starts immediately.
+        let mut t = transcript("n", "All good. Sure.", 5_000, 9_000);
+        t.token_words = Some(vec![
+            token("All", 5_000, 5_400),
+            token("good", 5_400, 5_900),
+            token(".", 5_900, 5_990),
+            token("Sure", 6_050, 6_400),
+            token(".", 6_400, 6_500),
+        ]);
+        let diarization = vec![seg(4_800, 6_000, 0), seg(6_000, 9_000, 1)];
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
+        let good = result.iter().find(|r| r.text.contains("All good")).expect("row");
+        assert_eq!((good.audio_start_ms, good.audio_end_ms), (5_000, 5_990));
+        assert_eq!(good.speaker, "Speaker 0");
+    }
+
+    #[test]
+    fn realignment_skips_sustained_split_boundaries() {
+        // A sustained split is one speaker's continuing speech — a straddling
+        // atom there is legitimate mid-sentence continuation, never re-anchored.
+        let mut t = transcript("s", "Word one. Word two.", 5_000, 9_000);
+        t.token_words = Some(vec![
+            token("Word", 5_000, 5_400),
+            token("one", 5_400, 5_800),
+            token(".", 5_800, 5_900),
+            token("Word", 5_950, 6_300),
+            token("two", 6_300, 6_700),
+            token(".", 7_000, 7_100),
+        ]);
+        let mut t2 = seg(6_000, 9_000, 0);
+        t2.sustained_split = true;
+        let diarization = vec![seg(4_800, 6_000, 0), t2];
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
+        assert!(result.iter().all(|r| r.speaker == "Speaker 0"), "{:?}", result.iter().map(|r| (&r.text, &r.speaker)).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn realignment_needs_head_room() {
+        // The far turn's head is claimed immediately by the next atom — no
+        // unclaimed voiced room, no re-anchor.
+        let mut t = transcript("h", "Word one. Word two.", 5_000, 9_000);
+        t.token_words = Some(vec![
+            token("Word", 5_000, 5_400),
+            token("one", 5_400, 5_800),
+            token(".", 6_200, 6_300),
+            token("Word", 6_400, 6_800),
+            token("two", 6_800, 7_200),
+            token(".", 7_200, 7_300),
+        ]);
+        let diarization = vec![seg(4_800, 6_000, 0), seg(6_000, 9_000, 1)];
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
+        let one = result.iter().find(|r| r.text.contains("one")).expect("row");
+        assert_eq!((one.audio_start_ms, one.audio_end_ms), (5_000, 6_300));
+    }
+
+    #[test]
+    fn realignment_rejects_sliver_far_turns() {
+        // Audit find (2026-09-25, live cde5c264 3382.68 / 4147.88): the far
+        // "turn" was a 0.26-0.5 s low-confidence sliver and the rule yanked
+        // a 10 s atom across it. A sliver is not a voice-homogeneous turn —
+        // no re-anchor. (Numbers from the real firing at 3382.68.)
+        let mut t = transcript(
+            "sl",
+            "We never know who to assign this to. So I think apparently we used to own it, like buyer.",
+            3_370_660, 3_384_280,
+        );
+        t.token_words = Some(vec![
+            token("We", 3_370_660, 3_370_800),
+            token("never", 3_370_800, 3_371_100),
+            token("know", 3_371_100, 3_371_400),
+            token("who", 3_371_400, 3_371_700),
+            token("to", 3_371_700, 3_371_900),
+            token("assign", 3_371_900, 3_372_400),
+            token("this", 3_372_400, 3_372_700),
+            token("to.", 3_372_700, 3_374_140),
+            token("So", 3_374_500, 3_374_800),
+            token("I", 3_374_800, 3_374_900),
+            token("think", 3_374_900, 3_375_300),
+            token("apparently", 3_375_300, 3_376_000),
+            token("we", 3_376_000, 3_376_200),
+            token("used", 3_376_200, 3_376_600),
+            token("to", 3_376_600, 3_376_800),
+            token("own", 3_376_800, 3_377_200),
+            token("it,", 3_377_200, 3_377_600),
+            token("like", 3_377_600, 3_378_000),
+            token("buyer.", 3_378_000, 3_384_280),
+        ]);
+        // T2 is the real 0.52 s sp0 sliver from the live firing.
+        let diarization = vec![
+            seg(3_370_010, 3_382_680, 1),
+            seg(3_382_680, 3_383_180, 0),
+            seg(3_392_770, 3_394_220, 2),
+        ];
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
+        let tail = result
+            .iter()
+            .find(|r| r.text.contains("So I think"))
+            .expect("row");
+        assert_eq!(tail.speaker, "Speaker 1", "sliver far turn must not steal the atom");
+        assert_eq!((tail.audio_start_ms, tail.audio_end_ms).0, 3_374_500);
+    }
+
+    #[test]
+    fn realignment_head_room_must_sit_inside_the_far_turn() {
+        // The next atom starts past T2's end — the "room" is uncovered audio,
+        // not T2's voiced head. No re-anchor.
+        let mut t = transcript("o", "Word one. Word two.", 5_000, 9_000);
+        t.token_words = Some(vec![
+            token("Word", 5_000, 5_400),
+            token("one", 5_400, 5_800),
+            token(".", 6_200, 6_300),
+            token("Word", 6_400, 6_800),
+            token("two", 6_800, 7_200),
+            token(".", 7_200, 7_300),
+        ]);
+        let diarization = vec![seg(4_800, 6_000, 0), seg(6_000, 6_500, 1), seg(7_000, 9_000, 1)];
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
+        let one = result.iter().find(|r| r.text.contains("one")).expect("row");
+        assert_eq!((one.audio_start_ms, one.audio_end_ms), (5_000, 6_300));
+    }
+
 
     fn transcript(id: &str, text: &str, start: i64, end: i64) -> TranscriptInput {
         TranscriptInput {
@@ -735,7 +1631,7 @@ mod tests {
         );
         let diarization = vec![seg(5000, 7100, 1), seg(7200, 9000, 2)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         assert_eq!(result.len(), 2, "one row per sentence");
         assert_eq!(result[0].text, "Sure I agree.");
@@ -761,7 +1657,7 @@ mod tests {
                 token("world", 1000, 1500),
             ],
         );
-        let result = align_transcripts_with_diarization(vec![t], &[seg(0, 5000, 0)]);
+        let result = align_transcripts_with_diarization(vec![t], &[seg(0, 5000, 0)], &[], &[]);
         assert_eq!(result.len(), 1, "EOT must not split the sentence atom");
         assert_eq!(result[0].text, "Hello world");
     }
@@ -775,7 +1671,7 @@ mod tests {
             500,
             vec![token("[_EOT_]", 100, 100)],
         );
-        let result = align_transcripts_with_diarization(vec![t], &[seg(0, 5000, 0)]);
+        let result = align_transcripts_with_diarization(vec![t], &[seg(0, 5000, 0)], &[], &[]);
         assert!(result.is_empty(), "EOT-only token stream must produce no rows, got {:?}", result);
     }
 
@@ -789,7 +1685,7 @@ mod tests {
         );
         let diarization = vec![seg(5000, 9000, 1)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].text, "Hello world");
@@ -803,7 +1699,7 @@ mod tests {
         let t = transcript("t1", "Hello world. Foo bar", 5000, 9000);
         let diarization = vec![seg(5000, 7200, 1), seg(7200, 9000, 2)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         assert_eq!(result.len(), 2, "one row per sentence");
         assert_eq!(result[0].text, "Hello world.");
@@ -824,7 +1720,7 @@ mod tests {
         // Two segments overlap at 5000-6000
         let diarization = vec![seg(4000, 6000, 1), seg(5000, 7000, 2)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         // speaker_at_time finds first match → Speaker 1
         assert_eq!(result.len(), 1);
@@ -841,7 +1737,7 @@ mod tests {
         );
         let diarization = vec![seg(5000, 5000, 1), seg(5000, 6000, 2)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].speaker, "Speaker 2");
@@ -858,7 +1754,7 @@ mod tests {
         // Gap: diarization covers 0-4000 and 7000-10000, but not 5000-6000
         let diarization = vec![seg(0, 4000, 1), seg(7000, 10000, 2)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].speaker, "Unknown Speaker");
@@ -869,7 +1765,7 @@ mod tests {
     #[test]
     fn empty_transcripts_returns_empty() {
         let diarization = vec![seg(0, 5000, 1)];
-        let result = align_transcripts_with_diarization(vec![], &diarization);
+        let result = align_transcripts_with_diarization(vec![], &diarization, &[], &[]);
         assert!(result.is_empty());
     }
 
@@ -878,7 +1774,7 @@ mod tests {
     #[test]
     fn empty_diarization_labels_all_unknown() {
         let t = transcript("t1", "Hello world", 5000, 9000);
-        let result = align_transcripts_with_diarization(vec![t], &[]);
+        let result = align_transcripts_with_diarization(vec![t], &[], &[], &[]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].speaker, "Unknown Speaker");
     }
@@ -890,7 +1786,7 @@ mod tests {
         let t = transcript_with_tokens("t1", "Hello world", 5000, 9000, vec![]);
         let diarization = vec![seg(5000, 7200, 1), seg(7200, 9000, 2)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         // Should use proportional split (Fallback source)
         assert!(result.iter().any(|r| r.speaker_source == SpeakerSource::Fallback));
@@ -913,7 +1809,7 @@ mod tests {
         );
         let diarization = vec![seg(5000, 7100, 1), seg(7200, 9000, 2)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         let all_text: String = result.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join(" ");
         assert_eq!(all_text, "one two three four five six");
@@ -924,7 +1820,7 @@ mod tests {
         let t = transcript("t1", "one two three four five six", 5000, 9000);
         let diarization = vec![seg(5000, 7100, 1), seg(7200, 9000, 2)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         let all_text: String = result.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join(" ");
         assert_eq!(all_text, "one two three four five six");
@@ -944,7 +1840,7 @@ mod tests {
         );
         let diarization = vec![seg(5000, 6500, 1), seg(6500, 9000, 2)];
 
-        let result = align_transcripts_with_diarization(vec![t1, t2], &diarization);
+        let result = align_transcripts_with_diarization(vec![t1, t2], &diarization, &[], &[]);
 
         assert_eq!(result.len(), 2, "closed sentences stay their own rows");
         assert_eq!(result[0].speaker, "Speaker 1");
@@ -972,7 +1868,7 @@ mod tests {
             seg(8000, 11000, 1),
         ];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].speaker, "Speaker 1");
@@ -1004,7 +1900,7 @@ mod tests {
             seg(8000, 11000, 1),
         ];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         // No sentence terminators → ONE atom (4.2 s, under the bounded-run
         // guard), assigned WHOLE to the majority-span badge. The engine's
@@ -1063,7 +1959,7 @@ mod tests {
         let t = transcript_with_tokens("t1", &all_words.join(" "), 0, 100_000, tokens);
         let diarization = vec![seg(0, 50_000, 1), seg(50_000, 100_000, 2)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         assert_eq!(result.len(), 1, "no cut: the oversized run is one atom");
         assert_eq!(
@@ -1096,7 +1992,7 @@ mod tests {
         );
         let diarization = vec![seg(0, 1000, 1), seg(1200, 2000, 2)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         // No sentence terminators → ONE atom, reattributed whole to the
         // majority-span badge; the payload is data, never instructions.
@@ -1118,7 +2014,7 @@ mod tests {
         let t = transcript("t1", "alpha beta gamma", 5000, 9000);
         let diarization = vec![seg(0, 3000, 1)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         assert_eq!(result.len(), 1, "no-overlap collapses to one tail segment");
         assert_eq!(result[0].speaker, "Unknown Speaker");
@@ -1144,7 +2040,7 @@ mod tests {
         let t = transcript("t1", "one two three four five six", 5000, 9000);
         let diarization = vec![seg(5000, 6000, 1)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].speaker, "Speaker 1");
@@ -1165,7 +2061,7 @@ mod tests {
         let t = transcript("t1", "你好世界", 0, 4000);
         let diarization = vec![seg(0, 2000, 1), seg(2000, 4000, 2)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         assert_eq!(result.len(), 1, "no internal sentence terminator → one atom");
         assert_eq!(result[0].text, "你好世界");
@@ -1177,7 +2073,7 @@ mod tests {
         let t = transcript("t1", "你好。世界再见。", 0, 4000);
         let diarization = vec![seg(0, 2000, 1), seg(2000, 4000, 2)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         assert_eq!(result.len(), 2, "full-width terminators segment the atom");
         assert_eq!(result[0].text, "你好。");
@@ -1205,7 +2101,7 @@ mod tests {
         let t4 = transcript("r4", "don't know. Let me ping in...", 40_650, 42_000);
         let diarization = vec![seg(39_000, 40_200, 1), seg(40_200, 42_000, 0)];
 
-        let result = align_transcripts_with_diarization(vec![t1, t2, t3, t4], &diarization);
+        let result = align_transcripts_with_diarization(vec![t1, t2, t3, t4], &diarization, &[], &[]);
 
         assert_eq!(
             result.iter().map(|r| r.text.as_str()).collect::<Vec<_>>(),
@@ -1247,10 +2143,331 @@ mod tests {
                 .iter()
                 .map(|(id, text, s, e)| transcript(id, text, *s, *e))
                 .collect();
-            let result = align_transcripts_with_diarization(inputs, &diarization);
+            let result = align_transcripts_with_diarization(inputs, &diarization, &[], &[]);
             let texts: Vec<&str> = result.iter().map(|r| r.text.as_str()).collect();
             assert_eq!(texts, expected, "rows {:?}", rows.iter().map(|r| r.1).collect::<Vec<_>>());
         }
+    }
+
+    #[test]
+    fn token_pieces_merge_into_whitespace_words_with_real_spans() {
+        // whisper BPE pieces ("And" + "he" + "'s") must reconstruct the row's
+        // whitespace words — one span per word, [first.start, last.end] — so
+        // 214/229 rows' real word times stop being discarded by a piece-count
+        // comparison. Divergent text falls back to proportional honestly.
+        fn tok(w: &str, s: i64, e: i64) -> TokenWord {
+            TokenWord { word: w.to_string(), start_ms: s, end_ms: e }
+        }
+        let mut t = transcript("r", "And he's here.", 1000, 5000);
+        t.token_words = Some(vec![
+            tok("And", 1000, 1400),
+            tok("he", 1500, 1700),
+            tok("'s", 1700, 1900),
+            tok("here", 2000, 2600),
+            tok(".", 2600, 2700),
+        ]);
+        let words = valid_token_words(&t, 0).expect("pieces must merge");
+        let got: Vec<(&str, i64, i64)> = words
+            .iter()
+            .map(|w| (w.text.as_str(), w.start_ms, w.end_ms))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("And", 1000, 1400),
+                ("he's", 1500, 1900),
+                ("here.", 2000, 2700)
+            ]
+        );
+
+        // Leftover pieces the text can't account for → invalid row.
+        let mut t_bad = transcript("r2", "hello", 1000, 5000);
+        t_bad.token_words = Some(vec![tok("hello", 1000, 1500), tok("???", 1500, 1600)]);
+        assert!(valid_token_words(&t_bad, 0).is_none());
+
+        // One piece per word (older format) still valid.
+        let mut t_simple = transcript("r3", "hello world", 1000, 5000);
+        t_simple.token_words = Some(vec![tok("hello", 1000, 2000), tok("world", 2100, 3000)]);
+        assert!(valid_token_words(&t_simple, 0).is_some());
+    }
+
+    #[test]
+    fn backtrack_merge_repairs_extra_piece_and_drops_ghost_sentence() {
+        // Real shape (cde5c264 1193.55 row, trimmed): the stream decoded THREE
+        // audibly-real `cool` pieces for two text words (strict merge fails →
+        // the whole row used to fall to proportional, hiding the ghost), and
+        // the tail re-emits "I am okay … plan." with zero-span pieces. The
+        // backtrack merge must skip the duplicated extra piece (real walls —
+        // duplicate within 2 positions), the row must keep real walls, and
+        // the word-level dedup must drop the weightless second sentence copy.
+        fn tok(w: &str, s: i64, e: i64) -> TokenWord {
+            TokenWord { word: w.to_string(), start_ms: s, end_ms: e }
+        }
+        let text = "Yeah, okay, cool, cool. That's what I hear. \
+                    I am okay to do it as long as they give us an actual plan. \
+                    I am okay to do it as long as they give us an actual plan.";
+        let mut t = transcript("ghost", text, 1_193_550, 1_215_610);
+        let mut pieces = vec![
+            tok("Yeah", 1_193_800, 1_194_200),
+            tok(",", 1_194_200, 1_194_300),
+            tok("okay", 1_194_400, 1_194_900),
+            tok(",", 1_194_900, 1_195_000),
+            tok("cool", 1_200_990, 1_201_380),
+            tok(",", 1_201_380, 1_201_570),
+            tok("cool", 1_201_570, 1_201_960),
+            tok(",", 1_201_960, 1_202_060),
+            tok("cool", 1_202_240, 1_202_540),
+            tok(".", 1_202_540, 1_202_770),
+            tok("That", 1_202_840, 1_203_190),
+            tok("'s", 1_203_380, 1_203_410),
+            tok("what", 1_203_500, 1_203_700),
+            tok("I", 1_203_800, 1_203_850),
+            tok("hear", 1_203_900, 1_204_100),
+            tok(".", 1_204_100, 1_204_200),
+        ];
+        // First sentence copy: real walls. Second: every piece zero-span.
+        let first = [
+            ("I", 1_205_000, 1_205_070),
+            ("am", 1_205_200, 1_205_350),
+            ("okay", 1_205_400, 1_205_900),
+            ("to", 1_206_000, 1_206_100),
+            ("do", 1_206_200, 1_206_350),
+            ("it", 1_206_400, 1_206_500),
+            ("as", 1_206_600, 1_206_700),
+            ("long", 1_206_710, 1_206_900),
+            ("as", 1_206_910, 1_207_000),
+            ("they", 1_207_100, 1_207_300),
+            ("give", 1_207_400, 1_207_600),
+            ("us", 1_207_700, 1_207_800),
+            ("an", 1_207_900, 1_207_950),
+            ("actual", 1_208_000, 1_208_300),
+            ("plan", 1_208_400, 1_208_700),
+            (".", 1_208_700, 1_208_800),
+        ];
+        for (w, s, e) in first {
+            pieces.push(tok(w, s, e));
+        }
+        for (w, _, _) in first {
+            pieces.push(tok(w, 1_215_600, 1_215_600));
+        }
+        t.token_words = Some(pieces);
+        let words = valid_token_words(&t, 0).expect("backtrack merge must repair the row");
+        let norm = |w: &UnitWord| {
+            w.text.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>()
+        };
+        let ghost_words: Vec<String> = ["i", "am", "okay", "to", "do", "it", "as", "long", "as",
+            "they", "give", "us", "an", "actual", "plan"]
+            .iter()
+            .map(|w| w.to_string())
+            .collect();
+        let copies = words
+            .windows(15)
+            .filter(|ws| {
+                let seq: Vec<String> = ws.iter().map(|w| norm(w)).collect();
+                seq == ghost_words
+            })
+            .count();
+        assert_eq!(copies, 1, "exactly one sentence copy must survive");
+        let copy_start = words
+            .windows(15)
+            .position(|ws| {
+                let seq: Vec<String> = ws.iter().map(|w| norm(w)).collect();
+                seq == ghost_words
+            })
+            .expect("sentence present");
+        assert_eq!(
+            words[copy_start].start_ms, 1_205_000,
+            "the real-walls copy survives"
+        );
+        let cool = words.iter().filter(|w| norm(w) == "cool").count();
+        assert_eq!(cool, 2, "text spelling preserved");
+        assert_eq!(
+            (words[0].start_ms, words[0].text.as_str()),
+            (1_193_800, "Yeah,"),
+            "real walls kept (no proportional fallback)"
+        );
+    }
+
+    #[test]
+    fn s7_backchannels_take_their_decided_voice_at_real_walls() {
+        // Ear verdict 2026-09-06 (clip_B, re-affirmed 2026-09-23): "Gotcha"
+        // and "I don't know" are UserA's, "Where is UserC?" is UserB's.
+        // Real token walls: "I don't know." starts ~35.5 (DTW drift left of
+        // UserA's 36.08 turn start), so raw turn overlap hands it to
+        // UserB — the single decided UserA chunk (36.15-36.49) must
+        // override. "Gotcha." (~0.4s) has no decided chunk and stays
+        // absorbed (documented S7 residual).
+        let mut t = transcript("s7", "Yeah. Gotcha. Where is UserC? I don't know.", 33_170, 36_510);
+        t.token_words = Some(vec![
+            crate::audio::speaker::alignment::TokenWord {
+                word: "Yeah.".into(), start_ms: 33_170, end_ms: 33_520,
+            },
+            crate::audio::speaker::alignment::TokenWord {
+                word: "Gotcha.".into(), start_ms: 33_620, end_ms: 34_120,
+            },
+            crate::audio::speaker::alignment::TokenWord {
+                word: "Where".into(), start_ms: 34_230, end_ms: 34_500,
+            },
+            crate::audio::speaker::alignment::TokenWord {
+                word: "is".into(), start_ms: 34_510, end_ms: 34_640,
+            },
+            crate::audio::speaker::alignment::TokenWord {
+                word: "UserC?".into(), start_ms: 34_650, end_ms: 35_200,
+            },
+            crate::audio::speaker::alignment::TokenWord {
+                word: "I".into(), start_ms: 35_500, end_ms: 35_700,
+            },
+            crate::audio::speaker::alignment::TokenWord {
+                word: "don't".into(), start_ms: 35_710, end_ms: 36_000,
+            },
+            crate::audio::speaker::alignment::TokenWord {
+                word: "know.".into(), start_ms: 36_010, end_ms: 36_510,
+            },
+        ]);
+        let diarization = vec![seg(32_650, 36_080, 1), seg(36_080, 38_640, 0)];
+        let votes = vec![seg(34_230, 36_050, 1), seg(36_150, 36_490, 0)];
+        let result = align_transcripts_with_diarization(
+            vec![t],
+            &diarization,
+            &[],
+            &votes,
+        );
+        let got: Vec<(&str, &str)> = result
+            .iter()
+            .map(|r| (r.text.as_str(), r.speaker.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                ("Yeah.", "Speaker 1"),
+                ("Gotcha.", "Speaker 1"),
+                ("Where is UserC?", "Speaker 1"),
+                ("I don't know.", "Speaker 0"),
+            ]
+        );
+    }
+
+    #[test]
+    fn splits_unpunctuated_atoms_only_at_sustained_boundaries() {
+        // One 10-word run-on atom [1000, 11000). A sustained voice change at
+        // ~5100ms splits it at the nearest word gap; the same boundary
+        // without sustained evidence leaves the atom whole (raw pyannote
+        // seams would chop "hopefully."-style sentences the ear keeps whole).
+        fn word(i: usize) -> UnitWord {
+            UnitWord {
+                text: format!("w{i}"),
+                start_ms: 1000 + (i * 1000) as i64,
+                end_ms: 1000 + ((i + 1) * 1000) as i64,
+                source_row: 0,
+            }
+        }
+        let words: Vec<UnitWord> = (0..10).map(word).collect();
+        let atoms = vec![words.as_slice()];
+
+        let split =
+            split_atoms_at_sustained_boundaries(atoms.clone(), &[(5100, 5050, 5150, true)]);
+        assert_eq!(split.len(), 2, "sustained boundary splits the run-on");
+        assert_eq!(split[0].last().unwrap().text, "w3");
+        assert_eq!(split[1].first().unwrap().text, "w4");
+
+        let unsplit =
+            split_atoms_at_sustained_boundaries(atoms.clone(), &[(5100, 5050, 5150, false)]);
+        assert_eq!(unsplit.len(), 1, "raw seam never splits");
+
+        // Boundary outside every atom is a no-op.
+        let outside =
+            split_atoms_at_sustained_boundaries(atoms, &[(99_000, 98_900, 99_100, true)]);
+        assert_eq!(outside.len(), 1);
+    }
+
+    #[test]
+    fn snap_collapses_extra_boundaries_onto_gaps_when_starved() {
+        // More voice changes than sentence gaps: the excess boundary reuses
+        // the last gap instead of aborting the whole unit to per-atom
+        // majority (which proportional drift then dominates).
+        let snapped = snap_boundaries_to_gaps(&[100, 500, 900], &[200, 600]).unwrap();
+        assert_eq!(snapped, vec![0, 1, 1]);
+    }
+
+    #[test]
+    fn snap_stays_strict_when_boundaries_fit() {
+        // Boundaries ≤ gaps: strict monotone nearest (never reuse) — the
+        // relaxation must not change any existing snapping outcome.
+        let snapped = snap_boundaries_to_gaps(&[150, 900], &[0, 200, 1000]).unwrap();
+        assert_eq!(snapped, vec![1, 2]);
+    }
+
+    #[test]
+    fn snap_none_without_gaps() {
+        assert_eq!(snap_boundaries_to_gaps(&[100], &[]), None);
+    }
+
+    #[test]
+    fn boundary_anchored_assignment_ear_pinned_oh_man_is_userbs() {
+        // Ear verdicts (user, transcript cde5c264): 2026-09-20 "Oh, man." is
+        // USERB's; 2026-09-22 "Cool, on the roadmap, hopefully." is ANOTHER
+        // VOICE responding to "I have some updates" (people don't monologue),
+        // and the recording question is not answered by its own asker —
+        // "So for search, do we want to record this?" is Speaker 0,
+        // "Yeah, sure, sure." is Speaker 1. The real rejoined unit
+        // [1.11,32.51] holds 12 sentences across eight voice changes;
+        // token-less proportional placement drifts ~1 s by mid-row. Turns
+        // are the engine's FINAL list for this unit (debug-verified
+        // 2026-09-21); the voice votes are the sub-turn pass's decided
+        // chunks (TitaNet, margin-gated) from the same region.
+        let row = "of How's it going? All good, all good. You've aged like five years. \
+Yeah, that's right. Oh, man. Okay, I have some updates. Cool, on the roadmap, hopefully. \
+Okay, let's go. So for search, do we want to record this? Yeah, sure, sure. \
+Yeah, for Paulina, right?";
+        let diarization = vec![
+            seg(1_299, 2_733, 1),
+            seg(2_733, 8_572, 0),
+            seg(9_382, 11_998, 1),
+            seg(11_998, 14_782, 0),
+            seg(15_642, 20_300, 1),
+            seg(20_806, 24_485, 0),
+            seg(25_312, 29_919, 1),
+            seg(29_919, 32_163, 0),
+        ];
+        // The real pipeline input is TWO rejoined rows ("of" never ends a
+        // sentence), each proportionally laid inside its own span.
+        let result = align_transcripts_with_diarization(
+            vec![
+                transcript("r0", "of", 1_110, 2_530),
+                transcript(
+                    "r1",
+                    &row[3..], // the unit text minus the leading "of "
+                    5_670,
+                    32_510,
+                ),
+            ],
+            &diarization,
+            &[],
+            &[
+                seg(19_980, 20_300, 0),
+                seg(20_840, 21_420, 0),
+                seg(23_550, 23_870, 0),
+                seg(24_030, 24_390, 0),
+            ],
+        );
+        let got: Vec<(&str, &str)> = result
+            .iter()
+            .map(|r| (r.text.as_str(), r.speaker.as_str()))
+            .collect();
+        let expect = vec![
+            ("of How's it going?", "Speaker 0"),
+            ("All good, all good.", "Speaker 0"),
+            ("You've aged like five years.", "Speaker 1"),
+            ("Yeah, that's right.", "Speaker 0"),
+            ("Oh, man.", "Speaker 1"),
+            ("Okay, I have some updates.", "Speaker 1"),
+            ("Cool, on the roadmap, hopefully.", "Speaker 0"),
+            ("Okay, let's go.", "Speaker 0"),
+            ("So for search, do we want to record this?", "Speaker 0"),
+            ("Yeah, sure, sure.", "Speaker 1"),
+            ("Yeah, for Paulina, right?", "Speaker 0"),
+        ];
+        assert_eq!(got, expect);
     }
 
     #[test]
@@ -1266,7 +2483,7 @@ mod tests {
         let t = transcript_with_tokens("t1", &words.join(" "), 0, 1_000, tokens);
         let diarization = vec![seg(0, 1_000, 1), seg(1_000, 2_000, 2)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         assert_eq!(result.len(), 1, "no sentence terminators → one atom");
         assert_eq!(
@@ -1289,7 +2506,7 @@ mod tests {
         );
         let diarization = vec![seg(0, 1_000, 1)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].speaker_source, SpeakerSource::Fallback);
@@ -1311,7 +2528,7 @@ mod tests {
         let t = transcript_with_tokens("t1", &text, 0, 20_900, words);
         let diarization = vec![seg(0, 10_000, 1), seg(10_000, 20_900, 2)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
 
         assert_eq!(result.len(), 1, "no cut: the run is one whole atom");
         assert_eq!(
@@ -1328,13 +2545,13 @@ mod tests {
         let t = transcript_with_tokens("t1", "word", 0, 2_000, vec![token("word", 0, 2_000)]);
         let diarization = vec![seg(0, 1_000, 7), seg(1_000, 2_000, 3)];
 
-        let result = align_transcripts_with_diarization(vec![t], &diarization);
+        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
         assert_eq!(result[0].speaker, "Speaker 7", "first turn wins the exact tie");
 
         // Reversed turn order flips the winner the same way.
         let diarization = vec![seg(1_000, 2_000, 3), seg(0, 1_000, 7)];
         let t2 = transcript_with_tokens("t1", "word", 0, 2_000, vec![token("word", 0, 2_000)]);
-        let result = align_transcripts_with_diarization(vec![t2], &diarization);
+        let result = align_transcripts_with_diarization(vec![t2], &diarization, &[], &[]);
         assert_eq!(result[0].speaker, "Speaker 3");
     }
 
@@ -1348,14 +2565,14 @@ mod tests {
         let second = transcript_with_tokens("t2", "second", 1_000, 3_000, vec![token("second", 1_000, 3_000)]);
         let diarization = vec![seg(0, 1_000, 2), seg(1_050, 3_000, 1), seg(1_000, 2_900, 2)];
 
-        let with_prev = align_transcripts_with_diarization(vec![first, second.clone()], &diarization);
+        let with_prev = align_transcripts_with_diarization(vec![first, second.clone()], &diarization, &[], &[]);
         assert_eq!(with_prev[0].speaker, "Speaker 2", "setup: first atom under Speaker 2");
         assert_eq!(
             with_prev[1].speaker, "Speaker 2",
             "near-tie keeps the previous atom's badge"
         );
 
-        let alone = align_transcripts_with_diarization(vec![second], &turns);
+        let alone = align_transcripts_with_diarization(vec![second], &turns, &[], &[]);
         assert_eq!(alone[0].speaker, "Speaker 1", "no previous atom → strict best overlap");
     }
 

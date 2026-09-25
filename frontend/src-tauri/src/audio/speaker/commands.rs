@@ -598,9 +598,10 @@ pub async fn run_diarization_for_meeting(
     let merge_threshold = match_threshold_from_fp(threshold_fp);
 
     // Enrolled references (named-speaker fingerprints): anchor ambiguous
-    // pieces during engine clustering. Empty until the user enrolls by
+    // pieces during engine clustering. One mean voiceprint per named
+    // speaker, deterministic order — empty until the user enrolls by
     // renaming badges (the rename flow relinks embeddings to named speakers).
-    let references = SpeakerRepository::list_stamped_embeddings(pool)
+    let references = SpeakerRepository::list_enrollment_refs(pool)
         .await
         .map_err(|e| e.to_string())?;
     log::info!("DIARIZATION: {} enrolled reference voice(s)", references.len());
@@ -630,9 +631,17 @@ pub async fn run_diarization_for_meeting(
     // 2 s re-chunk assigned to the post-cap centroids, design D1). All three
     // are CPU-bound; offloading keeps detection polls / IPC responsive.
     let t2 = std::time::Instant::now();
+    // Fetched before the engine block so the word-wall atom votes can be
+    // computed inside the same spawn_blocking that owns the samples and the
+    // extractor (a wall vote needs the atom's exact token walls AND the
+    // audio; see run_engine::wall_atom_voice_votes).
+    let transcripts = fetch_transcripts_for_alignment(pool, meeting_id).await
+        .map_err(|e| format!("Failed to fetch transcripts: {}", e))?;
+    let transcripts_for_engine = transcripts.clone();
     let segmentation_path_for_pya = segmentation_path.clone();
     let embedding_path_for_engine = embedding_path.clone();
-    let (segments, centroids, engine_turns) = tokio::task::spawn_blocking(move || {
+    let (segments, centroids, engine_turns, rescue_seams, voice_votes) =
+        tokio::task::spawn_blocking(move || {
         // SUCCESS PATH (design D5): the run-assembly engine derives the final
         // turns from ONE full-meeting pyannote pass. The chunk grid, temporal
         // smoothing, and refine_pass2 are NOT invoked here. Runs only when
@@ -674,7 +683,33 @@ pub async fn run_diarization_for_meeting(
                 .collect();
             let centroids = engine_out.centroids.clone();
             let turns = engine_out.turns;
-            return Ok::<_, anyhow::Error>((segments, centroids, Some(turns)));
+            let seams = engine_out.rescue_seams;
+            let mut votes = engine_out.voice_votes;
+            // Word-wall atom votes (S7 fix): energy chunks straddle word
+            // boundaries, so a decisive short utterance drowned in its
+            // neighbour's voiced mass. Atoms built from the rows' own token
+            // walls are inside the contested render atom by construction.
+            if !references.is_empty() && !transcripts_for_engine.is_empty() {
+                let cent_pairs: Vec<(u32, Vec<f32>)> = centroids
+                    .iter()
+                    .map(|(k, v)| (*k, v.clone()))
+                    .collect();
+                let wall = super::run_engine::wall_atom_voice_votes(
+                    &samples,
+                    &transcripts_for_engine,
+                    &extractor,
+                    &cent_pairs,
+                    &references,
+                );
+                if !wall.is_empty() {
+                    log::warn!(
+                        "DIARIZATION: +{} word-wall atom voice votes",
+                        wall.len()
+                    );
+                    votes.extend(wall);
+                }
+            }
+            return Ok::<_, anyhow::Error>((segments, centroids, Some(turns), seams, votes));
         }
 
         // FALLBACK (only on model-load failure): legacy grid path, unchanged.
@@ -736,7 +771,7 @@ pub async fn run_diarization_for_meeting(
             }
         }
         let turns: Option<Vec<super::run_engine::EngineTurn>> = None;
-        Ok::<_, anyhow::Error>((segments, centroids, turns))
+        Ok::<_, anyhow::Error>((segments, centroids, turns, Vec::new(), Vec::new()))
     })
     .await
     .map_err(|e| format!("Diarization blocking task failed: {}", e))?
@@ -779,9 +814,8 @@ pub async fn run_diarization_for_meeting(
     )
     .await?;
 
-    // Step 6: Fetch full transcripts for alignment.
-    let transcripts = fetch_transcripts_for_alignment(pool, meeting_id).await
-        .map_err(|e| format!("Failed to fetch transcripts: {}", e))?;
+    // Step 6: transcripts were fetched before the engine block (wall-atom
+    // votes need them inside spawn_blocking).
 
     if transcripts.is_empty() {
         return Ok(DiarizationResult { segments_labeled: cleared, speaker_count: num_speakers.len(), unmatched_manual_names: Vec::new() });
@@ -791,16 +825,52 @@ pub async fn run_diarization_for_meeting(
         align_transcripts_with_diarization, AlignedSegment, DiarizationSegment, SpeakerSource,
     };
 
-    let diarization_segs: Vec<DiarizationSegment> = segments
+    let diarization_segs: Vec<DiarizationSegment> = engine_turns
+        .as_deref()
+        .map(|turns| {
+            turns
+                .iter()
+                .map(|t| DiarizationSegment {
+                    start_ms: (t.start_seconds * 1000.0) as i64,
+                    end_ms: (t.end_seconds * 1000.0) as i64,
+                    speaker_id: t.speaker_id,
+                    sustained_split: t.starts_voice_split,
+                })
+                .collect()
+        })
+        .unwrap_or_else(|| {
+            segments
+                .iter()
+                .map(|s| DiarizationSegment {
+                    start_ms: (s.start_seconds * 1000.0) as i64,
+                    end_ms: (s.end_seconds * 1000.0) as i64,
+                    speaker_id: s.speaker_id,
+                    sustained_split: false,
+                })
+                .collect()
+        });
+    let rescue_segs: Vec<DiarizationSegment> = rescue_seams
         .iter()
-        .map(|s| DiarizationSegment {
-            start_ms: (s.start_seconds * 1000.0) as i64,
-            end_ms: (s.end_seconds * 1000.0) as i64,
-            speaker_id: s.speaker_id,
+        .map(|(s, e, c)| DiarizationSegment {
+            start_ms: (s * 1000.0) as i64,
+            end_ms: (e * 1000.0) as i64,
+            speaker_id: *c,
+            sustained_split: false,
         })
         .collect();
 
-    let mut aligned = align_transcripts_with_diarization(transcripts, &diarization_segs);
+    let vote_segs: Vec<DiarizationSegment> = voice_votes
+        .iter()
+        .map(|(s, e, c)| DiarizationSegment {
+            start_ms: (s * 1000.0) as i64,
+            end_ms: (e * 1000.0) as i64,
+            speaker_id: *c,
+            sustained_split: false,
+        })
+        .collect();
+
+    let mut aligned =
+        align_transcripts_with_diarization(transcripts, &diarization_segs, &rescue_segs, &vote_segs);
 
     // Step 7: Temporal assignment for "Unknown Speaker" labels.
     //
@@ -963,6 +1033,7 @@ pub fn assign_engine_gap_fragments(
             start_ms: (t.start_seconds * 1000.0) as i64,
             end_ms: (t.end_seconds * 1000.0) as i64,
             speaker_id: t.speaker_id,
+            sustained_split: t.starts_voice_split,
         })
         .collect();
     let mut assigned = 0usize;
@@ -1747,8 +1818,8 @@ mod tests {
     fn nearest_turn_span_containment_is_zero_distance() {
         use crate::audio::speaker::alignment::DiarizationSegment;
         let turns = vec![
-            DiarizationSegment { start_ms: 0, end_ms: 8000, speaker_id: 0 },
-            DiarizationSegment { start_ms: 12000, end_ms: 20000, speaker_id: 1 },
+            DiarizationSegment { start_ms: 0, end_ms: 8000, speaker_id: 0, sustained_split: false },
+            DiarizationSegment { start_ms: 12000, end_ms: 20000, speaker_id: 1, sustained_split: false },
         ];
         // Midpoint inside a span → that span, distance 0.
         assert_eq!(nearest_turn_span(&turns, 4000), Some((0, 0)));
@@ -2662,10 +2733,11 @@ mod tests {
                 start_ms: (s.start_seconds * 1000.0) as i64,
                 end_ms: (s.end_seconds * 1000.0) as i64,
                 speaker_id: s.speaker_id,
+                sustained_split: false,
             })
             .collect();
 
-        let aligned = align_transcripts_with_diarization(windowed, &diarization);
+        let aligned = align_transcripts_with_diarization(windowed, &diarization, &[], &[]);
 
         let count_words = |label: u32| {
             aligned

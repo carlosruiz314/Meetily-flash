@@ -10,10 +10,12 @@ use crate::audio::speaker::pyannote_segmentation::{
 };
 use crate::audio::speaker::run_assembly::{
     cluster_pieces_ahc, confusion_valleys, derive_pieces, drop_textless, embed_slice,
-    margin_to_centroids, merge_to_cap, overlap_fraction, refine_loop, resolve_turns,
-    rescue_candidates, speech_runs, cosine, PieceIn, PieceSpan, RescueGap, RescueSubWindow,
-    SpeechRun, AMBIGUITY_MARGIN, EMBED_FLOOR_SECS, MODE_FILTER_RADIUS_FRAMES, PIECE_CAP,
-    PROMOTION_FLOOR_SECS, SPEECH_GATE, TEXT_SKEW_TOLERANCE_SECS,
+    flip_geometry_ok, flip_is_decisive, margin_to_centroids, merge_to_cap, overlap_fraction,
+    refine_loop, resolve_turns, rescue_candidates, splice_flips, speech_runs, speech_gate_db,
+    subturn_segments, voiced_chunks, cosine, FlipSplit, PieceIn, PieceSpan, RescueGap,
+    RescueSubWindow, SpeechRun, TurnOut, AMBIGUITY_MARGIN, EMBED_FLOOR_SECS, FLIP_WINDOW_SECS,
+    MODE_FILTER_RADIUS_FRAMES, PIECE_CAP, PROMOTION_FLOOR_SECS, SPEECH_GATE,
+    SUBTURN_MIN_TURN_SECS, SUBTURN_VOTE_MARGIN, TEXT_SKEW_TOLERANCE_SECS,
 };
 use anyhow::Result;
 use std::collections::HashMap;
@@ -33,20 +35,12 @@ const ONSET_THRESHOLD_DB: f32 = 10.0;
 const MERGE_GAP_FRAMES: usize = 4;
 const SEG_HOP: usize = SAMPLE_RATE as usize / 50; // 20ms
 
-// Sub-run voice-flip scan (both-bars, 2026-09-09; see `confusion_valleys` in
-// run_assembly for the candidate detector and its measured pin-B evidence).
-/// Voice-check window either side of a valley start: long enough for a
-/// usable TitaNet slice, short enough that one side stays inside a short
-/// back-channel's surroundings (the 12.0s "Yeah" check must fit the
-/// [10.8,12.0) / [12.0,13.2) windows inside the 3.65s piece).
-const FLIP_WINDOW_SECS: f64 = 1.2;
+// Sub-run voice-flip scan (both-bars, 2026-09-09; see `confusion_valleys`,
+// `flip_geometry_ok`, `flip_is_decisive`, `splice_flips` and their constants
+// in run_assembly for the pure decision half and its measured pin-B evidence).
 /// Pieces shorter than this cannot host a promotable split: the check needs
 /// PROMOTION_FLOOR_SECS of material on both sides plus a full left window.
 const FLIP_SCAN_MIN_PIECE_SECS: f64 = 2.0;
-/// How far past the piece's end the right window may reach (it routinely
-/// covers the run's decay into silence — the measured 12.0s right window
-/// [12.0,13.2) spills 0.17s past the piece end at 13.03).
-const FLIP_RIGHT_SPILL_SECS: f64 = 0.5;
 /// Splice rounds: each round splits at most one accepted valley per piece;
 /// newly created pieces are re-scanned next round. Bounded, deterministic.
 const FLIP_MAX_ROUNDS: usize = 3;
@@ -60,6 +54,8 @@ pub struct EngineTurn {
     pub continues_previous: bool,
     pub low_confidence: bool,
     pub overlap_frac: f32,
+    /// Sustained (sub-turn-pass-evidenced) voice change at this turn's start.
+    pub starts_voice_split: bool,
 }
 
 pub struct EngineOutput {
@@ -67,6 +63,15 @@ pub struct EngineOutput {
     /// Final per-cluster centroids (pruned to refined membership), keyed by
     /// the cluster index used as speaker_id — the stamped-pool input.
     pub centroids: HashMap<u32, Vec<f32>>,
+    /// Voice-attributed silence seams the rescue spliced (start_secs,
+    /// end_secs, cluster). TitaNet heard this audio where pyannote heard
+    /// nothing; the render must honor it over proportional placement.
+    pub rescue_seams: Vec<(f64, f64, u32)>,
+    /// Decided sub-turn chunk votes (start_secs, end_secs, cluster) —
+    /// margin-gated TitaNet evidence the aligner uses to override contested
+    /// stretch majorities (ear law 2026-09-22: responses are not the
+    /// responder's own voice).
+    pub voice_votes: Vec<(f64, f64, u32)>,
 }
 
 /// The persisted continuation fact (spec hard invariant): true when the
@@ -166,6 +171,8 @@ pub fn derive_turns_from_masses(
 
     let mut engine_turns = Vec::new();
     let mut centroid_map: HashMap<u32, Vec<f32>> = HashMap::new();
+    let mut rescue_seams: Vec<(f64, f64, u32)> = Vec::new();
+    let mut voice_votes: Vec<(f64, f64, u32)> = Vec::new();
     if !labeled_embs.is_empty() {
         // Reference-anchored clustering (enrollment lever): enrolled voice
         // fingerprints enter as extra stable centroids, and the meeting's
@@ -372,7 +379,7 @@ pub fn derive_turns_from_masses(
         // half can no longer fit both windows).
         let flip_debug = std::env::var_os("MEETIFY_ENGINE_DEBUG").is_some();
         for _round in 0..FLIP_MAX_ROUNDS {
-            let mut flips: Vec<(usize, f64, usize, f32, usize, f32)> = Vec::new();
+            let mut flips: Vec<FlipSplit> = Vec::new();
             for (i, piece) in piece_ins.iter().enumerate() {
                 if piece.cluster.is_none() {
                     continue;
@@ -389,11 +396,7 @@ pub fn derive_turns_from_masses(
                 };
                 for (va, _vb) in confusion_valleys(&fm.frames, &piece_run) {
                     let t = va as f64 * FRAME_SHIFT;
-                    if t - FLIP_WINDOW_SECS < piece.start_secs
-                        || t - piece.start_secs < PROMOTION_FLOOR_SECS
-                        || p_end - t < PROMOTION_FLOOR_SECS
-                        || t + FLIP_WINDOW_SECS > p_end + FLIP_RIGHT_SPILL_SECS
-                    {
+                    if !flip_geometry_ok(piece.start_secs, p_end, t) {
                         continue;
                     }
                     let i0 = (((t - FLIP_WINDOW_SECS) * sr) as usize).min(samples.len());
@@ -408,10 +411,20 @@ pub fn derive_turns_from_masses(
                     ) else {
                         continue;
                     };
+                    // Unembeddable sides abstain via a negative margin — the
+                    // clusters differ only so flip_is_decisive's debug shape
+                    // stays uniform; the margin check already fails.
                     let (lc, lm) = best_centroid(&emb_l).unwrap_or((0, f32::NEG_INFINITY));
                     let (rc, rm) = best_centroid(&emb_r).unwrap_or((1, f32::NEG_INFINITY));
-                    if lm >= AMBIGUITY_MARGIN && rm >= AMBIGUITY_MARGIN && lc != rc {
-                        flips.push((i, t, lc, lm, rc, rm));
+                    if flip_is_decisive(lc, lm, rc, rm) {
+                        flips.push(FlipSplit {
+                            piece_idx: i,
+                            split_secs: t,
+                            left_cluster: lc,
+                            left_margin: lm,
+                            right_cluster: rc,
+                            right_margin: rm,
+                        });
                         if flip_debug {
                             eprintln!(
                                 "FLIP-SPLIT piece[{:.2},{:.2}] at {:.2}: sp{} -> sp{} margins {:.3}/{:.3}",
@@ -431,29 +444,7 @@ pub fn derive_turns_from_masses(
             if flips.is_empty() {
                 break;
             }
-            // Splice: replace each flipped piece with its two halves.
-            // Descending index keeps earlier positions valid (each piece
-            // flips at most once per round).
-            flips.sort_by(|a, b| b.0.cmp(&a.0));
-            for (i, t, lc, lm, rc, rm) in flips {
-                let piece = piece_ins[i];
-                let left = PieceIn {
-                    start_secs: piece.start_secs,
-                    dur_secs: t - piece.start_secs,
-                    cluster: Some(lc),
-                    margin: Some(lm),
-                    promoted_subfloor: false,
-                };
-                let right = PieceIn {
-                    start_secs: t,
-                    dur_secs: piece.start_secs + piece.dur_secs - t,
-                    cluster: Some(rc),
-                    margin: Some(rm),
-                    promoted_subfloor: false,
-                };
-                piece_ins[i] = right;
-                piece_ins.insert(i, left);
-            }
+            splice_flips(&mut piece_ins, &flips);
         }
 
         let turns_pre = resolve_turns(&piece_ins);
@@ -501,7 +492,21 @@ pub fn derive_turns_from_masses(
         let mut turns = turns_pre;
         if !candidates.is_empty() {
             turns = resolve_turns(&piece_ins);
+            rescue_seams = candidates
+                .iter()
+                .map(|c| (c.start_secs, c.end_secs, c.cluster as u32))
+                .collect();
         }
+        // Sub-turn voice attribution (change `subturn-voice-attribution`):
+        // last, additive — flips and rescue keep their snapshot semantics,
+        // and the finer turns flow to stamping and the aligner unchanged.
+        let subturn_debug = std::env::var_os("MEETIFY_ENGINE_DEBUG").is_some();
+        let (turns, votes) =
+            subturn_voice_pass(turns, samples, extractor, &used, references, subturn_debug);
+        voice_votes = votes
+            .into_iter()
+            .map(|(a, b, c)| (a, b, c as u32))
+            .collect();
         if rescue_debug {
             if let Some(pre) = &piece_ins_pre {
                 for (p, pi) in kept.iter().zip(pre.iter()) {
@@ -541,6 +546,7 @@ pub fn derive_turns_from_masses(
                 continues_previous: t.continues_previous,
                 low_confidence: t.low_confidence,
                 overlap_frac: frac,
+                starts_voice_split: t.starts_voice_split,
             });
         }
         centroid_map = used
@@ -553,7 +559,192 @@ pub fn derive_turns_from_masses(
     Ok(EngineOutput {
         turns: engine_turns,
         centroids: centroid_map,
+        rescue_seams,
+        voice_votes,
     })
+}
+
+/// Sub-turn voice attribution: split a turn where a sustained run of chunk
+/// votes (per `run_assembly::subturn_segments`) proves another voice; each
+/// segment carries the qualifying run's cluster. Cluster space is untouched
+/// (split/re-badge only, no renumbering), so registry matching, stamping and
+/// the aligner consume the finer turns unchanged. Abstaining chunks (margin
+/// below `SUBTURN_VOTE_MARGIN`) simply don't vote.
+///
+/// Votes are cast against per-cluster ANCHORS — the enrollment ref mapped to
+/// each cluster when one is nearest, else the cluster centroid. Centroids
+/// alone are contaminated by the very mislabeling this pass fixes (a cluster
+/// that absorbed another voice's sentences drifts toward that voice), while
+/// enrollment refs are the independent measurement the ear-truth gate trusts.
+fn subturn_voice_pass(
+    turns: Vec<TurnOut>,
+    samples: &[f32],
+    extractor: &NemoEmbeddingExtractor,
+    centroids: &[Vec<f32>],
+    references: &[(String, Vec<f32>)],
+    debug: bool,
+) -> (Vec<TurnOut>, Vec<(f64, f64, usize)>) {
+    if centroids.is_empty() {
+        return (turns, Vec::new());
+    }
+    let mut anchors: Vec<Vec<f32>> = centroids.to_vec();
+    for (_, r) in references {
+        if let Some((best, _)) = centroids
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i, cosine(c, r)))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+        {
+            anchors[best] = r.clone();
+        }
+    }
+    let gate_db = speech_gate_db(samples, SAMPLE_RATE as usize);
+    let mut out = Vec::new();
+    let mut all_votes: Vec<(f64, f64, usize)> = Vec::new();
+    for t in turns {
+        if t.end_secs - t.start_secs < SUBTURN_MIN_TURN_SECS {
+            out.push(t);
+            continue;
+        }
+        let mut votes: Vec<(f64, f64, usize)> = Vec::new();
+        for (a, b) in
+            voiced_chunks(samples, t.start_secs, t.end_secs, SAMPLE_RATE as usize, gate_db)
+        {
+            let i0 = (a * SAMPLE_RATE as f64) as usize;
+            let i1 = ((b * SAMPLE_RATE as f64) as usize).min(samples.len());
+            let Some(emb) = extractor.extract_embedding(&samples[i0..i1], SAMPLE_RATE) else {
+                continue;
+            };
+            let mut scored: Vec<(f32, usize)> = anchors
+                .iter()
+                .enumerate()
+                .map(|(c, anc)| (cosine(anc, &emb), c))
+                .collect();
+            scored.sort_by(|x, y| y.0.total_cmp(&x.0));
+            if scored.len() >= 2 && scored[0].0 - scored[1].0 >= SUBTURN_VOTE_MARGIN {
+                votes.push((a, b, scored[0].1));
+                all_votes.push((a, b, scored[0].1));
+            }
+        }
+        let segs = subturn_segments(&votes, t.start_secs, t.end_secs, t.cluster);
+        if debug && !votes.is_empty() {
+            let mut per: std::collections::BTreeMap<usize, f64> = Default::default();
+            for (a, b, c) in &votes {
+                *per.entry(*c).or_default() += b - a;
+            }
+            eprintln!(
+                "SUBTURN votes [{:.2},{:.2}] sp{} decided: {}",
+                t.start_secs,
+                t.end_secs,
+                t.cluster,
+                per.iter()
+                    .map(|(c, d)| format!("sp{}={:.2}s", c, d))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+        if segs.len() == 1 {
+            // Whole-turn verdict: sustained evidence unanimously contradicting
+            // the AHC cluster re-badges the turn (the DISAGREE census class);
+            // agreement keeps the original turn untouched.
+            if segs[0].2 != t.cluster {
+                if debug {
+                    eprintln!(
+                        "SUBTURN re-badge [{:.2},{:.2}] sp{} -> sp{}",
+                        t.start_secs, t.end_secs, t.cluster, segs[0].2
+                    );
+                }
+                out.push(TurnOut { cluster: segs[0].2, ..t });
+            } else {
+                out.push(t);
+            }
+            continue;
+        }
+        if debug {
+            eprintln!(
+                "SUBTURN [{:.2},{:.2}] sp{} -> {} segment(s): {}",
+                t.start_secs,
+                t.end_secs,
+                t.cluster,
+                segs.len(),
+                segs.iter()
+                    .map(|(s, e, c)| format!("[{:.2},{:.2}]sp{}", s, e, c))
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            );
+        }
+        for (idx, (s, e, c)) in segs.into_iter().enumerate() {
+            out.push(TurnOut {
+                start_secs: s,
+                end_secs: e,
+                cluster: c,
+                low_confidence: t.low_confidence,
+                continues_previous: if idx == 0 { t.continues_previous } else { false },
+                dur_secs: e - s,
+                attached_secs: if idx == 0 { t.attached_secs } else { 0.0 },
+                starts_voice_split: idx > 0,
+            });
+        }
+    }
+    (out, all_votes)
+}
+
+/// Word-wall atom votes: token timestamps give exact word spans, so a
+/// contested render atom can be voted on by an embedding of its OWN audio
+/// instead of energy chunks that straddle word boundaries (see
+/// [`run_assembly::token_wall_atoms`] for the geometry lesson). Atoms are
+/// voted against ref-anchored centroids — the same anchoring as
+/// [`subturn_voice_pass`] — under the same margin bar, and land in the same
+/// `voice_votes` channel so the aligner's contained-chunk-first rule sees
+/// evidence that is fully inside the atom by construction.
+pub fn wall_atom_voice_votes(
+    samples: &[f32],
+    transcripts: &[crate::audio::speaker::alignment::TranscriptInput],
+    extractor: &NemoEmbeddingExtractor,
+    centroids: &[(u32, Vec<f32>)],
+    references: &[(String, Vec<f32>)],
+) -> Vec<(f64, f64, u32)> {
+    if centroids.is_empty() {
+        return Vec::new();
+    }
+    let mut anchors: Vec<(u32, Vec<f32>)> = centroids.to_vec();
+    for (_, r) in references {
+        if let Some((best, _)) = centroids
+            .iter()
+            .enumerate()
+            .map(|(i, (_, c))| (i, cosine(c, r)))
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+        {
+            anchors[best].1 = r.clone();
+        }
+    }
+    let sr = SAMPLE_RATE as f64;
+    let mut votes = Vec::new();
+    for t in transcripts {
+        let Some(tokens) = t.token_words.as_ref() else {
+            continue;
+        };
+        for (a_ms, b_ms) in crate::audio::speaker::run_assembly::token_wall_atoms(tokens) {
+            let i0 = (a_ms as f64 / 1000.0 * sr) as usize;
+            let i1 = ((b_ms as f64 / 1000.0 * sr) as usize).min(samples.len());
+            if i1 <= i0 {
+                continue;
+            }
+            let Some(emb) = extractor.extract_embedding(&samples[i0..i1], SAMPLE_RATE) else {
+                continue;
+            };
+            let mut scored: Vec<(f32, usize)> = anchors
+                .iter()
+                .enumerate()
+                .map(|(i, (_, anc))| (cosine(anc, &emb), i))
+                .collect();
+            scored.sort_by(|x, y| y.0.total_cmp(&x.0));
+            if scored.len() >= 2 && scored[0].0 - scored[1].0 >= SUBTURN_VOTE_MARGIN {
+                votes.push((a_ms as f64 / 1000.0, b_ms as f64 / 1000.0, anchors[scored[0].1].0));
+            }
+        }
+    }
+    votes
 }
 
 /// Union of all transcript-row spans clipped to [a, b) (None = no overlap).
@@ -660,6 +851,7 @@ fn build_rescue_gaps(
             samples.len() as f64 / SAMPLE_RATE as f64,
         ));
     }
+    let rescue_gap_debug = std::env::var_os("MEETIFY_ENGINE_DEBUG").is_some();
     for (ga, gb) in bounds {
         if gb <= ga {
             continue;
@@ -681,7 +873,7 @@ fn build_rescue_gaps(
         if sb - sa < PROMOTION_FLOOR_SECS {
             continue;
         }
-        let debug = std::env::var_os("MEETIFY_ENGINE_DEBUG").is_some();
+        let debug = rescue_gap_debug;
         if debug {
             eprintln!(
                 "RESCUE-GAP [{ga:.2},{gb:.2}] sp{lc}->sp{rc} raw [{sa:.2},{sb:.2}] dur {:.2}",
