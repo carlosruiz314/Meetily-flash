@@ -62,8 +62,11 @@ chunk out-rank the realigned atom's turn containment. Structural fix (review
 round 1): `realign_straddling_atoms` returns the old wall spans it moved, and
 `align_transcripts_with_diarization` filters out vote chunks overlapping any
 of them — a chunk straddling the old boundary is a mixture of both voices and
-is inadmissible evidence for the realigned atom. Pinned by the S7c unit test,
-which derives its vote list via `token_wall_atoms` (production geometry,
+is inadmissible evidence for the realigned atom (deliberately
+over-suppressing: any chunk touching the old span drops, even a clean
+T2-head chunk — the realigned walls are the only geometry this atom
+trusts). Pinned by the S7c unit test, which derives its vote list through
+`wall_vote_token_streams` + `token_wall_atoms` (production geometry,
 including the stale UserB chunk) and asserts the label survives.
 
 ## Adversarial tests (RED before GREEN)
@@ -80,6 +83,15 @@ including the stale UserB chunk) and asserts the label survives.
 5. Different-voice guard: same-speaker adjacent turns → unchanged.
 6. Property: realignment never makes spans overlap or invert (covered by the
    output-seam clip + explicit monotonicity assertions in test 1).
+
+Review round 2 reworked tests 3/4/5 and added a side-min test
+(`realignment_rejects_straddlers_with_tiny_far_side`): each now calls
+`realign_straddling_atoms` directly with a negative fixture whose OTHER
+guards all pass by construction (the named guard is the sole rejector) plus
+a positive control (guard trigger removed → the old span is returned), and
+the head-room pin was mutation-verified (disabling
+`STRADDLE_HEAD_ROOM_MIN_MS` fails its test). End-to-end coverage stays with
+test 1 (S7c) and test 2 (the no-straddler normal case).
 
 ## Gate
 

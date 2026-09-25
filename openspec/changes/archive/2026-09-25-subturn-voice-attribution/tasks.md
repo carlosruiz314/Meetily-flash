@@ -69,6 +69,13 @@
       the same call. Gate 16/16 pins (new: Gotcha → Speaker 0), 0
       fractures; live persisted 2026-09-24: "Yeah."/"Gotcha."/"Where is
       UserC? …" are separate rows, Gotcha under UserA.
+- [x] 4.8 Review-loop hardening (rounds 1-3, converged 2026-09-25):
+      `wall_vote_token_streams` gates every voting row through
+      `valid_token_words` (same trust boundary as the render; RED→GREEN
+      test `wall_votes_flow_only_through_rows_the_render_trusts`), ref-
+      collision warnings in both vote passes, wall-vote count logged at
+      info. Live gate after the gate: 19 pins + 1 known-limitation (S16
+      waiver) + 0 FAILED, 0 fractures. Full suite 726/0.
 - [x] 4.4 RESOLVED (ear ruling 2026-09-24): "Oh, you're wearing the
       t-shirt" is USERA's — TitaNet's sustained-split vote there was
       wrong; the unsplit render under Speaker 0 conforms. Pinned twice:

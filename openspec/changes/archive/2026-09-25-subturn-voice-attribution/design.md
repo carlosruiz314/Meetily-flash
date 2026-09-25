@@ -77,6 +77,19 @@ first segment only (attachment already happened at piece level).
    pin.
 4. Live re-run + full text dump for ear check.
 
+## Word-wall atom votes (task 4.6, the S7 fix)
+
+`run_assembly::token_wall_atoms` builds sentence pseudo-atoms from a row's
+token walls (gap ≤ 450 ms, sentence terminators always close, 3 s cap,
+<250 ms drops); `run_engine::wall_atom_voice_votes` embeds each atom's audio
+ref-anchored and votes at the production margin bar. Trust boundary (review
+round 2): votes flow only through `wall_vote_token_streams` — the same
+`valid_token_words` gate the render uses. A row whose raw stream fails the
+gate renders on proportional spans, so its raw walls must not vote: the
+vote's geometry would describe audio the vote's text doesn't cover (the
+misvote class the mechanism was built to retire). Both production
+(commands.rs) and the ear gate replay call the same function — no bypass.
+
 ## Residuals accepted
 
 - Sub-second back-channels remain absorbed (pre-existing documented
