@@ -56,7 +56,11 @@ Named-speaker enrollment embeddings (the stamped pool) SHALL enter
 clustering as stable extra centroid anchors — at most `max_speakers - 1`
 references, leaving at least one cluster slot for unknown voices — and the
 refine loop SHALL resolve ambiguous pieces against the full centroid set
-(references included).
+(references included). References SHALL be one mean-normalized voiceprint
+per named speaker, selected in deterministic speaker-id order
+(`list_enrollment_refs`): per-row, unordered refs would let one voice's
+extra enrolled embeddings crowd other voices out of the anchor budget and
+make badge numbering unstable across runs.
 
 Rationale (measured 2026-09-09): the greedy pass seeded centroids in
 processing order and converged to two centroids for a three-voice meeting —
@@ -75,3 +79,29 @@ long-stretch similarity ~0.28).
   cluster and the other voices keep distinct badges
 - **AND** the ear-truth gate's single-voice and voice-change entries all
   pass asserted
+
+## ADDED Requirement: Proportional sentence placement honors engine boundaries
+
+When a transcript row's words carry proportional (token-less) spans, its
+sentences SHALL be assigned by the engine's turn boundaries: each interior
+voice change SHALL fall on a sentence gap — never inside a sentence — by
+snapping boundaries to the nearest sentence gap in reading order, and
+sentences between two snapped boundaries SHALL share the voice owning their
+stretch. Where a voice change crosses a pyannote-silent gap, the sentence
+whose wall-clock share ends at the incoming voice's turn start SHALL join
+the incoming voice, and — within a boundary-anchored unit — a sentence
+whose span reaches a rescue-attributed seam SHALL take the seam's voice.
+Token-aligned rows keep per-sentence
+overlap majority (their word times are exact).
+
+#### Scenario: A back-channel drifting left of its true boundary still renders under its own voice
+
+- **GIVEN** a 26.84s token-less source row holding 11 sentences across six
+  voice changes, where proportional placement puts the "Oh, man." atom
+  [14.42,15.59) although UserB's voice starts at 15.64 (pyannote-silent
+  gap, rescue-attributed)
+- **WHEN** the render assigns the row's sentences to engine turns
+- **THEN** "Oh, man." renders under UserB's badge, not the preceding
+  speaker's
+- **AND** the row's other sentences keep their ear-attested badges
+- **AND** no sentence renders under a badge that changes mid-sentence

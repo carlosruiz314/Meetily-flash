@@ -62,9 +62,15 @@ pre-join 42.2–50.0s; UserB: S1 9.75–11.8s + 35.0–36.0s): all three
 voices resolve — centroids 0=UserA (0.35–0.52 anchor similarity),
 1=UserB (0.72), 2=UserC (0.76). UserC's stretch renders under his
 own badge; UserA' rows are consistent. The engine takes references from
-the stamped pool (named speakers only) — in production these come from the
-rename/enrollment flow; gate + persist runs read the same pool, so test
-and production agree.
+the stamped pool (named speakers only, one mean-normalized voiceprint per
+speaker in deterministic speaker_id order via `list_enrollment_refs`) — in
+production these come from the rename/enrollment flow; gate + persist runs
+read the same pool, so test and production agree. Consequence, accepted by
+design: the gate's identity resolution is pinned only as firmly as the
+enrollment pool state at run time — a green identity run is a statement
+about that pool, and a later wipe/regression of the pool changes what the
+gate anchors against (this is exactly how the 2026-09-14 re-diarization
+regressed to two badges until the UserA fingerprint was restored).
 
 ## D4: Offline iteration infrastructure (how this is developed)
 
@@ -76,9 +82,44 @@ pure-boundary probes need no model at all
 full-cost authority: 16/16 asserted entries, 0 cross-badge fractures, no
 waivers.
 
+## D5: The render honors the engine's boundaries (ear verdict 2026-09-20)
+
+The user failed the persisted output on `[12.67] Speaker 0: "Yeah, that's
+right. Oh, man."` — "Oh, man." is UserB's. Root cause chain: the source
+row is one 26.84s block holding 11 sentences across six voice changes;
+token-less proportional placement drifts ~1s by mid-row, so the "Oh, man."
+atom landed [14.42,15.59) — fully left of the true 15.64 UserB onset
+(pyannote decodes that phrase as silence; the gap rescue attributed
+[15.64,15.86] to her at margin 0.057) — and per-atom overlap majority then
+overrode the engine's boundary. The engine was right; the render re-decided
+with worse information.
+
+Fix (alignment.rs, proportional rows only — token-aligned rows keep exact
+per-atom majority): boundary-anchored assignment. The ear decree — a voice
+never changes mid-sentence — makes boundaries fall BETWEEN atoms by
+construction: snap every interior turn boundary to its nearest atom gap
+(monotone, one gap per boundary) and assign atoms from boundary-delimited
+stretch(es), whose voice is constant; stretch-majority dilutes the skew
+that broke single atoms. Silent-seam absorption: when a boundary's flanking
+turns leave a pyannote-silent gap, the atom whose wall END hugs the incoming
+voice's turn start joins the incoming voice (the seam's true text sits at
+the seam; proportional drift put it left). Engine plumbing: accepted rescue
+sub-windows ride `EngineOutput.rescue_seams` into the align, where atoms
+intersecting a seam take the seam's voice — identity evidence beats
+geometric skew whenever they conflict. Failure mode, accepted: a truly
+outgoing-voice atom whose wall END hugs a silent seam flips; the gate's 16
+ear pins and fracture scan adjudicate meeting-wide.
+
 ## Known residual (out of scope here)
 
-Token-less source rows assign word times proportionally, so atoms
-straddling a true boundary ("I don't know." / "I can't." in the
-32.51–40.24s row) can take the neighboring badge. Fix needs word-level
-timestamps or skew-tolerant atom assignment — tracked separately.
+Token-less proportional placement is bounded by wall-clock shares; atoms
+whose true audio sits farther than the silent-seam rule reaches ("I don't
+know." / "I can't." in the 32.51–40.24s row) can still take the neighboring
+badge. Full fix needs word-level timestamps — tracked separately. The
+silent-seam rule above shrinks the class to non-silent seams. Two softenings
+keep the rule honest meanwhile: an atom's word-share (its absorption reach)
+is inflated when the unit's word range bridges two rejoined source rows
+(the inter-row wall gap rides along), and the rule disengages entirely for
+units where any stretch has no diarization overlap or boundaries don't snap
+— those fall back to per-atom majority, where the rescue-seam pin does not
+apply either.
