@@ -399,12 +399,18 @@ const STRADDLE_MIN_SCALE: f64 = 0.5;
 /// rescaled to fit between the seam and the next atom's start. Pure — spans
 /// and turn labels only; all constants pinned by the S7c measurements and
 /// enforced from below by the negative tests.
+/// Returns the old wall spans of the atoms it re-anchored (caller: filters
+/// voice-vote chunks computed over those pre-realignment spans — a chunk
+/// straddling the old boundary is a mixture of both voices and must not
+/// out-rank the realigned atom's turn containment; see the design's
+/// interaction section).
 fn realign_straddling_atoms(
     units: &mut [(Vec<UnitWord>, bool)],
     diarization: &[DiarizationSegment],
-) {
+) -> Vec<(i64, i64)> {
+    let mut realigned: Vec<(i64, i64)> = Vec::new();
     if diarization.len() < 2 {
-        return;
+        return realigned;
     }
     for pair in diarization.windows(2) {
         let (t1, t2) = (&pair[0], &pair[1]);
@@ -422,7 +428,9 @@ fn realign_straddling_atoms(
         }
         // Meeting-ordered atom list over real-span units only (proportional
         // rows have their own boundary-anchored path). Tuples: (unit, word
-        // range [a, bnd), span).
+        // range [a, bnd), span). Rebuilt per boundary ON PURPOSE: earlier
+        // boundaries' realignments mutate word walls, and a later boundary's
+        // straddle scan must see the post-mutation spans.
         let mut atoms: Vec<(usize, usize, usize, i64, i64)> = Vec::new();
         for (ui, (words, real)) in units.iter().enumerate() {
             if !real {
@@ -482,7 +490,9 @@ fn realign_straddling_atoms(
             w.start_ms = b + (rs as i64);
             w.end_ms = (b + (re as i64)).max(w.start_ms + 1);
         }
+        realigned.push((s, e));
     }
+    realigned
 }
 
 /// Rejoin adjacent rows whose predecessor lacks sentence-terminal punctuation
@@ -827,6 +837,16 @@ fn boundary_anchored_speakers(
             .map(|w| w.start_ms)
             .unwrap_or(stretch_end);
     }
+    // Tail stretch first: atoms after the final snapped boundary share the
+    // voice that owns [last gap, row end]. Pushing before the override loop
+    // means every atom (review: tail atoms were silently immune to decided
+    // vote evidence) is then eligible for the voice-vote override below.
+    if next_atom < atoms.len() {
+        let speaker = speaker_for_span(stretch_start, last, diarization, prev.as_deref())?;
+        for _ in next_atom..atoms.len() {
+            speakers.push(speaker);
+        }
+    }
     // Voice-vote override: an atom with DECIDED, sustained chunk evidence
     // (>= 2 margin-gated chunks, >= 500 ms) takes that voice even when the
     // turn stretch majority disagrees — pyannote holds labels through fast
@@ -843,15 +863,6 @@ fn boundary_anchored_speakers(
             if i < speakers.len() {
                 speakers[i] = v;
             }
-        }
-    }
-
-    // Tail stretch: atoms after the final snapped boundary share the voice
-    // that owns [last gap, row end].
-    if next_atom < atoms.len() {
-        let speaker = speaker_for_span(stretch_start, last, diarization, prev.as_deref())?;
-        for _ in next_atom..atoms.len() {
-            speakers.push(speaker);
         }
     }
     Some((speakers, absorbed))
@@ -1032,7 +1043,26 @@ pub fn align_transcripts_with_diarization(
     }
 
     let mut units = build_logical_units(&transcripts);
-    realign_straddling_atoms(&mut units, diarization);
+    let realigned_old_spans = realign_straddling_atoms(&mut units, diarization);
+    // Vote-chunk filter (realignment interaction): a chunk computed over a
+    // realigned atom's PRE-realignment walls straddles the voice boundary —
+    // a mixture of both voices — and must not out-rank the realigned atom's
+    // turn containment under the overlap tiers.
+    let voice_votes_owned: Vec<DiarizationSegment>;
+    let voice_votes = if realigned_old_spans.is_empty() {
+        voice_votes
+    } else {
+        voice_votes_owned = voice_votes
+            .iter()
+            .filter(|v| {
+                !realigned_old_spans
+                    .iter()
+                    .any(|&(os, oe)| v.end_ms > os && v.start_ms < oe)
+            })
+            .cloned()
+            .collect();
+        &voice_votes_owned
+    };
     let mut results = Vec::new();
     let mut previous_badge: Option<String> = None;
     for (unit_words, spans_real) in &units {
@@ -1428,17 +1458,34 @@ mod tests {
             seg(36_080, 38_640, 0),
             seg(39_000, 39_930, 1),
         ];
-        // Production wall-atom votes on the ORIGINAL walls: the smear chunk
-        // votes UserB; Gotcha and Let-me-ping vote UserA. The realigned
-        // atom's new span must have zero overlap with the stale UserB
-        // chunk so the render falls through to turn containment (UserA).
-        let votes = vec![
-            seg(32_709, 33_509, 1),
-            seg(33_709, 34_509, 0),
-            seg(34_719, 35_509, 1),
-            seg(35_509, 36_069, 1),
-            seg(36_719, 38_259, 0),
-        ];
+        // Production vote chunks, derived the way commands.rs derives them:
+        // token_wall_atoms over this row's own token walls (the trailing
+        // period merges across the 400 ms gap — review finding), voices from
+        // the measured embeddings. "I don't know ." voted USERB (the stale
+        // pre-realignment chunk) — the aligner's vote filter must drop it so
+        // the realigned atom's turn containment (UserA) stands.
+        let atom_spans = crate::audio::speaker::run_assembly::token_wall_atoms(
+            t.token_words.as_deref().expect("tokens"),
+        );
+        let voice_for = |s: i64| -> u32 {
+            match s {
+                // stale chunk: measured UserB 0.32 margin on the mixture
+                35_509 => 1,
+                // Gotcha / Let me / ping him: measured UserA (token_wall_atoms
+                // splits "Let me ping him." at its 520 ms internal gap)
+                33_709 | 36_719 | 37_469 => 0,
+                _ => 1, // Yeah / Where is UserC: UserB
+            }
+        };
+        let votes: Vec<DiarizationSegment> = atom_spans
+            .iter()
+            .map(|&(s, e)| DiarizationSegment {
+                start_ms: s,
+                end_ms: e,
+                speaker_id: voice_for(s),
+                sustained_split: false,
+            })
+            .collect();
         let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &votes);
         let by_text = |needle: &str| {
             result

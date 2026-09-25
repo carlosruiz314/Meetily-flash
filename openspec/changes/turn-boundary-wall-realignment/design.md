@@ -16,6 +16,17 @@ For each adjacent turn pair (T1, T2) in meeting order:
    seam, not a loose gap).
 3. Collect all atoms (sentence_atom_ranges over every real-span unit), sorted
    by start; find the first straddler `A` (`A.start < B < A.end`).
+3b. Audit guards (added 2026-09-25 after the explore-cycle diff audit found
+   two false label flips and one 12 s same-label shift on real firings):
+   - far turn `T2.end − T2.start ≥ 1000 ms` (`STRADDLE_MIN_FAR_TURN_MS`) —
+     a 0.26–0.5 s low-confidence sliver is noise, not a voice-homogeneous
+     turn to re-anchor into (measured firings at 3382.68 / 4147.88);
+   - head room must END INSIDE T2 (`next_start ≤ T2.end`) — past T2's end
+     lies uncovered audio, not T2's voiced head;
+   - compression-only fit (`scale` capped at 1.0) — stretching would
+     fabricate wall time;
+   - a word's only consumed piece is never droppable (backtrack merge).
+
 4. Qualification (all must hold, else the boundary is left alone):
    - `A`'s last word ends a sentence (a complete sentence moves as a unit;
      no punct-position check is possible — the piece→word merger fuses the
@@ -43,11 +54,17 @@ seam) and enforced from below by the negative tests.
 
 ## Interaction with voice votes
 
-Wall-atom votes are computed on the ORIGINAL token walls (commands.rs). After
-realignment, the S7c atom's span `[B, B+room]` has zero overlap with its old
-smear vote chunk (old end 36069 < B 36080), so the stale UserB vote cannot
-override; the atom falls through to turn containment → UserA. Verified
-explicitly in the unit test (vote list included, mirroring production).
+Wall-atom votes are computed on the ORIGINAL token walls (commands.rs), so a
+vote chunk CAN overlap a realigned atom's new span (measured: the 1193.55-row
+period merges across a 400 ms gap, putting the chunk end past the 36.08
+boundary). The overlap-tier fallback would then let a stale mixture-derived
+chunk out-rank the realigned atom's turn containment. Structural fix (review
+round 1): `realign_straddling_atoms` returns the old wall spans it moved, and
+`align_transcripts_with_diarization` filters out vote chunks overlapping any
+of them — a chunk straddling the old boundary is a mixture of both voices and
+is inadmissible evidence for the realigned atom. Pinned by the S7c unit test,
+which derives its vote list via `token_wall_atoms` (production geometry,
+including the stale UserB chunk) and asserts the label survives.
 
 ## Adversarial tests (RED before GREEN)
 

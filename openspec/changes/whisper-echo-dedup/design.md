@@ -44,7 +44,7 @@ Two composed repairs, both evidence-gated:
    weightless OR its normalized text duplicates a piece within 2 stream
    positions (the measured case: `cool` at −2). The word must then merge
    EXACTLY (text spelling is never relaxed). Caps: ≤2 backtracks per word,
-   ≤ pieces/8 per row; beyond caps → honest proportional fallback.
+   ≤ max(pieces/8, 2) per row (the floor lets tiny rows use the repair at all); beyond caps → honest proportional fallback.
 2. **Word-level ghost dedup** (as designed): after a successful merge, the
    weightless copy of a repeated sentence drops (the 1215.6-point tail).
 

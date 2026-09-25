@@ -2,36 +2,36 @@
 
 ## 1. Pure split logic (adversarial TDD)
 
-- [ ] 1.1 RED: `subturn_segments` tests — lone contrary vote never splits;
+- [x] 1.1 RED: `subturn_segments` tests — lone contrary vote never splits;
       sustained run splits + re-badges; unanimous-contrary turn rebadges
       with head sliver on the original cluster; alternating sub-second
       back-channels never split; multi-change turn → 3 segments; empty
       votes keep the turn; long single chunk (≥2s) splits; abstain gaps
       don't break a run.
-- [ ] 1.2 GREEN: `subturn_segments` + `voiced_chunks` + consts in
+- [x] 1.2 GREEN: `subturn_segments` + `voiced_chunks` + consts in
       `run_assembly.rs`.
-- [ ] 1.3 Smoke-spec decision: engine-internal change, no new UI surface —
+- [x] 1.3 Smoke-spec decision: engine-internal change, no new UI surface —
       covered by the ear gate + existing smoke corpus (recorded here per §3).
 
 ## 2. Engine wiring
 
-- [ ] 2.1 `subturn_voice_pass` in `run_engine.rs` after the rescue splice;
+- [x] 2.1 `subturn_voice_pass` in `run_engine.rs` after the rescue splice;
       TurnOut mapping per design; `MEETIFY_ENGINE_DEBUG` prints
       split/re-badge decisions.
-- [ ] 2.2 Full `cargo test` green.
+- [x] 2.2 Full `cargo test` green.
 
 ## 3. Gate + census verification
 
-- [ ] 3.1 Ear gate green: 16/16 pins, 0 fractures, RENDER-TEXT
+- [x] 3.1 Ear gate green: 16/16 pins, 0 fractures, RENDER-TEXT
       "Oh, man" → Speaker 1.
-- [ ] 3.2 Live re-run persists the finer turns; DB row spot-check at the
+- [x] 3.2 Live re-run persists the finer turns; DB row spot-check at the
       74s UserC/UserB exchange and the DISAGREE rows.
 - [x] 3.3 Census re-runs saved to `openspec/exploration/`
       (row-voice-census-{after-subturn,final,final2}-20260922.log). Final:
       DISAGREE 6→2, MIXED 45→42; remainder is sub-second back-channels
       (TitaNet misvotes on the "Oh, man." class — kept absorbed by design)
       plus a few token-less rows.
-- [ ] 3.4 Full transcript text dump delivered in chat for the user's ear
+- [x] 3.4 Full transcript text dump delivered in chat for the user's ear
       check (live-final-20260922-rows.txt; dumped 2026-09-22).
 
 ## 4. Token-word reconstruction (root cause found by this census)
