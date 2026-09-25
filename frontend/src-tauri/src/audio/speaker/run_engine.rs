@@ -705,6 +705,34 @@ fn subturn_voice_pass(
 /// [`subturn_voice_pass`] — under the same margin bar, and land in the same
 /// `voice_votes` channel so the aligner's contained-chunk-first rule sees
 /// evidence that is fully inside the atom by construction.
+/// The rows allowed to cast wall-atom votes: exactly those whose token
+/// streams pass the same validity gate the render path uses
+/// ([`crate::audio::speaker::alignment::valid_token_words`]). A row whose
+/// raw stream fails renders on proportional spans — voting with its raw
+/// walls would score audio the vote's text doesn't cover, reopening the
+/// misvote class the wall votes were built to retire.
+fn wall_vote_token_streams(
+    transcripts: &[crate::audio::speaker::alignment::TranscriptInput],
+) -> Vec<Vec<crate::audio::speaker::alignment::TokenWord>> {
+    transcripts
+        .iter()
+        .enumerate()
+        .filter_map(|(row_idx, t)| {
+            let valid = crate::audio::speaker::alignment::valid_token_words(t, row_idx)?;
+            Some(
+                valid
+                    .into_iter()
+                    .map(|w| crate::audio::speaker::alignment::TokenWord {
+                        word: w.text,
+                        start_ms: w.start_ms,
+                        end_ms: w.end_ms,
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect()
+}
+
 pub fn wall_atom_voice_votes(
     samples: &[f32],
     transcripts: &[crate::audio::speaker::alignment::TranscriptInput],
@@ -736,10 +764,7 @@ pub fn wall_atom_voice_votes(
     }
     let sr = SAMPLE_RATE as f64;
     let mut votes = Vec::new();
-    for t in transcripts {
-        let Some(tokens) = t.token_words.as_ref() else {
-            continue;
-        };
+    for tokens in &wall_vote_token_streams(transcripts) {
         for (a_ms, b_ms) in crate::audio::speaker::run_assembly::token_wall_atoms(tokens) {
             let i0 = (a_ms as f64 / 1000.0 * sr) as usize;
             let i1 = ((b_ms as f64 / 1000.0 * sr) as usize).min(samples.len());
@@ -985,5 +1010,63 @@ mod tests {
         // quiet-only audio yields nothing
         let subs3 = segment_voiced_sub_windows(&s, 2.5, 3.0);
         assert!(subs3.is_empty());
+    }
+
+    fn token_word(word: &str, start: i64, end: i64) -> crate::audio::speaker::alignment::TokenWord {
+        crate::audio::speaker::alignment::TokenWord {
+            word: word.to_string(),
+            start_ms: start,
+            end_ms: end,
+        }
+    }
+
+    fn transcript_input(
+        id: &str,
+        text: &str,
+        start: i64,
+        end: i64,
+        tokens: Vec<crate::audio::speaker::alignment::TokenWord>,
+    ) -> crate::audio::speaker::alignment::TranscriptInput {
+        crate::audio::speaker::alignment::TranscriptInput {
+            id: id.to_string(),
+            text: text.to_string(),
+            audio_start_ms: start,
+            audio_end_ms: end,
+            token_words: Some(tokens),
+        }
+    }
+
+    #[test]
+    fn wall_votes_flow_only_through_rows_the_render_trusts() {
+        // A row whose raw token stream cannot merge into its own words
+        // renders on proportional spans. Letting its RAW walls vote would
+        // score audio the vote's text doesn't cover — the retired misvote
+        // class reopened through the vote path. Only rows passing the
+        // render's own validity gate may cast wall-atom votes.
+        let good = transcript_input(
+            "g",
+            "And he's gone",
+            1_000,
+            3_000,
+            vec![
+                token_word("And", 1_000, 1_200),
+                token_word("he", 1_200, 1_500),
+                token_word("'s", 1_500, 1_800),
+                token_word("gone", 1_900, 2_400),
+            ],
+        );
+        let broken = transcript_input(
+            "b",
+            "hello world",
+            5_000,
+            7_000,
+            vec![token_word("hello", 5_000, 5_500), token_word("xyz", 5_600, 6_000)],
+        );
+        let streams = wall_vote_token_streams(&[good, broken]);
+        assert_eq!(streams.len(), 1, "broken row must not vote: {streams:?}");
+        // The surviving stream is the merged word walls, not raw pieces.
+        assert_eq!(streams[0].len(), 3);
+        assert_eq!(streams[0][1].word, "he's");
+        assert_eq!((streams[0][1].start_ms, streams[0][1].end_ms), (1_200, 1_800));
     }
 }
