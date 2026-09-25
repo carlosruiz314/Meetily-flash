@@ -91,3 +91,7 @@ fixture_clips/
 /mf/
 frontend/src-tauri/mf/
 .tools/espnet/
+
+# Full-transcript row dumps carry third-party names + dialogue (PII) — kept local only,
+# scrubbed from git before the 2026-09-26 push. Regenerate via the census/probe scripts.
+openspec/exploration/*-rows.txt
