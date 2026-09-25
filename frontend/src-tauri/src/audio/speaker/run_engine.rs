@@ -711,7 +711,7 @@ fn subturn_voice_pass(
 /// raw stream fails renders on proportional spans — voting with its raw
 /// walls would score audio the vote's text doesn't cover, reopening the
 /// misvote class the wall votes were built to retire.
-fn wall_vote_token_streams(
+pub(crate) fn wall_vote_token_streams(
     transcripts: &[crate::audio::speaker::alignment::TranscriptInput],
 ) -> Vec<Vec<crate::audio::speaker::alignment::TokenWord>> {
     transcripts
