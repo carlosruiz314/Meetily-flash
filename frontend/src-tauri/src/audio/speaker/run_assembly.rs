@@ -1316,7 +1316,7 @@ pub fn speech_gate_db(samples: &[f32], sample_rate: usize) -> f32 {
         return -10.0; // silence-only recording: gate everything in
     }
     let mut sorted = dbs.clone();
-    sorted.sort_by(|x, y| x.partial_cmp(y).unwrap());
+    sorted.sort_by(|x, y| x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal));
     sorted[sorted.len() / 4] + 10.0
 }
 

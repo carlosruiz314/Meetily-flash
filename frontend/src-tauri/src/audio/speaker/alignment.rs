@@ -1047,7 +1047,9 @@ pub fn align_transcripts_with_diarization(
     // Vote-chunk filter (realignment interaction): a chunk computed over a
     // realigned atom's PRE-realignment walls straddles the voice boundary —
     // a mixture of both voices — and must not out-rank the realigned atom's
-    // turn containment under the overlap tiers.
+    // turn containment under the overlap tiers. Deliberately over-suppresses
+    // (any chunk touching the old span drops, including a clean T2-head
+    // chunk): the realigned walls are the only geometry this atom trusts.
     let voice_votes_owned: Vec<DiarizationSegment>;
     let voice_votes = if realigned_old_spans.is_empty() {
         voice_votes
@@ -1535,40 +1537,65 @@ mod tests {
     #[test]
     fn realignment_skips_sustained_split_boundaries() {
         // A sustained split is one speaker's continuing speech — a straddling
-        // atom there is legitimate mid-sentence continuation, never re-anchored.
-        let mut t = transcript("s", "Word one. Word two.", 5_000, 9_000);
-        t.token_words = Some(vec![
-            token("Word", 5_000, 5_400),
-            token("one", 5_400, 5_800),
-            token(".", 5_800, 5_900),
-            token("Word", 5_950, 6_300),
-            token("two", 6_300, 6_700),
-            token(".", 7_000, 7_100),
-        ]);
-        let mut t2 = seg(6_000, 9_000, 0);
-        t2.sustained_split = true;
-        let diarization = vec![seg(4_800, 6_000, 0), t2];
-        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
-        assert!(result.iter().all(|r| r.speaker == "Speaker 0"), "{:?}", result.iter().map(|r| (&r.text, &r.speaker)).collect::<Vec<_>>());
+        // atom there is legitimate mid-sentence continuation, never
+        // re-anchored. Every OTHER guard passes (different speakers, adjacent
+        // walls, a real far turn, a complete-sentence straddler with head
+        // room and scale ≥ 0.5), so the flag alone holds the boundary — and
+        // the control without the flag realigns, proving the scan reaches it.
+        // Called directly: end-to-end, the sustained boundary would also
+        // split the straddling atom, entangling two mechanisms' assertions.
+        let words = || {
+            unit_words(&[
+                ("Word", 5_650, 5_850),
+                ("one", 5_850, 6_050),
+                (".", 6_050, 6_350),
+                ("Word", 6_850, 7_050),
+                ("two", 7_050, 7_250),
+                (".", 7_250, 7_350),
+            ])
+        };
+        let mut sustained = vec![(words(), true)];
+        let diar = vec![
+            seg(4_800, 6_000, 0),
+            {
+                let mut t2 = seg(6_000, 8_000, 1);
+                t2.sustained_split = true;
+                t2
+            },
+        ];
+        assert!(realign_straddling_atoms(&mut sustained, &diar).is_empty());
+
+        let mut plain = vec![(words(), true)];
+        assert_eq!(
+            realign_straddling_atoms(&mut plain, &[seg(4_800, 6_000, 0), seg(6_000, 8_000, 1)]),
+            vec![(5_650, 6_350)]
+        );
     }
 
     #[test]
     fn realignment_needs_head_room() {
-        // The far turn's head is claimed immediately by the next atom — no
-        // unclaimed voiced room, no re-anchor.
-        let mut t = transcript("h", "Word one. Word two.", 5_000, 9_000);
-        t.token_words = Some(vec![
-            token("Word", 5_000, 5_400),
-            token("one", 5_400, 5_800),
-            token(".", 6_200, 6_300),
-            token("Word", 6_400, 6_800),
-            token("two", 6_800, 7_200),
-            token(".", 7_200, 7_300),
-        ]);
-        let diarization = vec![seg(4_800, 6_000, 0), seg(6_000, 9_000, 1)];
-        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
-        let one = result.iter().find(|r| r.text.contains("one")).expect("row");
-        assert_eq!((one.audio_start_ms, one.audio_end_ms), (5_000, 6_300));
+        // The far turn's head is claimed 280ms after the seam — under the
+        // 300ms minimum. Side (300ms) and scale (0.5) pass exactly, so the
+        // head-room guard is the sole rejector; 300ms of room realigns.
+        let words = |next_start: i64| {
+            unit_words(&[
+                ("Word", 5_740, 5_940),
+                ("one", 5_940, 6_140),
+                (".", 6_140, 6_300),
+                ("Word", next_start, next_start + 300),
+                ("two", next_start + 300, next_start + 600),
+                (".", next_start + 600, next_start + 700),
+            ])
+        };
+        let diar = [seg(4_800, 6_000, 0), seg(6_000, 9_000, 1)];
+        let mut short = vec![(words(6_280), true)];
+        assert!(realign_straddling_atoms(&mut short, &diar).is_empty());
+
+        let mut enough = vec![(words(6_300), true)];
+        assert_eq!(
+            realign_straddling_atoms(&mut enough, &diar),
+            vec![(5_740, 6_300)]
+        );
     }
 
     #[test]
@@ -1576,65 +1603,110 @@ mod tests {
         // Audit find (2026-09-25, live cde5c264 3382.68 / 4147.88): the far
         // "turn" was a 0.26-0.5 s low-confidence sliver and the rule yanked
         // a 10 s atom across it. A sliver is not a voice-homogeneous turn —
-        // no re-anchor. (Numbers from the real firing at 3382.68.)
-        let mut t = transcript(
-            "sl",
-            "We never know who to assign this to. So I think apparently we used to own it, like buyer.",
-            3_370_660, 3_384_280,
-        );
-        t.token_words = Some(vec![
-            token("We", 3_370_660, 3_370_800),
-            token("never", 3_370_800, 3_371_100),
-            token("know", 3_371_100, 3_371_400),
-            token("who", 3_371_400, 3_371_700),
-            token("to", 3_371_700, 3_371_900),
-            token("assign", 3_371_900, 3_372_400),
-            token("this", 3_372_400, 3_372_700),
-            token("to.", 3_372_700, 3_374_140),
-            token("So", 3_374_500, 3_374_800),
-            token("I", 3_374_800, 3_374_900),
-            token("think", 3_374_900, 3_375_300),
-            token("apparently", 3_375_300, 3_376_000),
-            token("we", 3_376_000, 3_376_200),
-            token("used", 3_376_200, 3_376_600),
-            token("to", 3_376_600, 3_376_800),
-            token("own", 3_376_800, 3_377_200),
-            token("it,", 3_377_200, 3_377_600),
-            token("like", 3_377_600, 3_378_000),
-            token("buyer.", 3_378_000, 3_384_280),
-        ]);
-        // T2 is the real 0.52 s sp0 sliver from the live firing.
-        let diarization = vec![
+        // no re-anchor. t1/t2 are the real firing's spans; the straddler is
+        // shortened so every OTHER guard passes (side 320, room 320, scale
+        // 0.52, next atom inside the sliver) — the sliver check alone holds.
+        let words = || {
+            unit_words(&[
+                ("We", 3_370_660, 3_370_800),
+                ("never", 3_370_800, 3_371_100),
+                ("know", 3_371_100, 3_371_400),
+                ("who", 3_371_400, 3_371_700),
+                ("to", 3_371_700, 3_371_900),
+                ("assign", 3_371_900, 3_372_400),
+                ("this", 3_372_400, 3_372_700),
+                ("to.", 3_372_700, 3_374_140),
+                ("Wait,", 3_382_380, 3_382_580),
+                ("like", 3_382_580, 3_382_800),
+                ("buyer.", 3_382_800, 3_383_000),
+                ("Hmm", 3_383_000, 3_383_100),
+                ("okay.", 3_383_100, 3_383_180),
+            ])
+        };
+        let mut sliver = vec![(words(), true)];
+        let diar = vec![
             seg(3_370_010, 3_382_680, 1),
             seg(3_382_680, 3_383_180, 0),
-            seg(3_392_770, 3_394_220, 2),
         ];
-        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
-        let tail = result
-            .iter()
-            .find(|r| r.text.contains("So I think"))
-            .expect("row");
-        assert_eq!(tail.speaker, "Speaker 1", "sliver far turn must not steal the atom");
-        assert_eq!((tail.audio_start_ms, tail.audio_end_ms).0, 3_374_500);
+        assert!(realign_straddling_atoms(&mut sliver, &diar).is_empty());
+
+        // Same geometry with a real (1.5s) far turn realigns.
+        let mut real_turn = vec![(words(), true)];
+        let diar_real = vec![
+            seg(3_370_010, 3_382_680, 1),
+            seg(3_382_680, 3_384_180, 0),
+        ];
+        assert_eq!(
+            realign_straddling_atoms(&mut real_turn, &diar_real),
+            vec![(3_382_380, 3_383_000)]
+        );
     }
 
     #[test]
     fn realignment_head_room_must_sit_inside_the_far_turn() {
         // The next atom starts past T2's end — the "room" is uncovered audio,
-        // not T2's voiced head. No re-anchor.
-        let mut t = transcript("o", "Word one. Word two.", 5_000, 9_000);
-        t.token_words = Some(vec![
-            token("Word", 5_000, 5_400),
-            token("one", 5_400, 5_800),
-            token(".", 6_200, 6_300),
-            token("Word", 6_400, 6_800),
-            token("two", 6_800, 7_200),
-            token(".", 7_200, 7_300),
-        ]);
-        let diarization = vec![seg(4_800, 6_000, 0), seg(6_000, 6_500, 1), seg(7_000, 9_000, 1)];
-        let result = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
-        let one = result.iter().find(|r| r.text.contains("one")).expect("row");
-        assert_eq!((one.audio_start_ms, one.audio_end_ms), (5_000, 6_300));
+        // not T2's voiced head. Far turn (1.2s), room (1.3s) and scale (0.96)
+        // all pass, so the inside-T2 check is the sole rejector; a next atom
+        // inside T2 realigns.
+        let words = |next_start: i64| {
+            unit_words(&[
+                ("Word", 5_000, 5_400),
+                ("one", 5_400, 5_800),
+                (".", 6_200, 6_350),
+                ("Word", next_start, next_start + 400),
+                ("two", next_start + 400, next_start + 800),
+                (".", next_start + 800, next_start + 900),
+            ])
+        };
+        let diar = [seg(4_800, 6_000, 0), seg(6_000, 7_200, 1)];
+        let mut outside = vec![(words(7_300), true)];
+        assert!(realign_straddling_atoms(&mut outside, &diar).is_empty());
+
+        let mut inside = vec![(words(6_900), true)];
+        assert_eq!(
+            realign_straddling_atoms(&mut inside, &diar),
+            vec![(5_000, 6_350)]
+        );
+    }
+
+    #[test]
+    fn realignment_rejects_straddlers_with_tiny_far_side() {
+        // Design adversarial #2: only 299ms of the straddler sits in the far
+        // turn — under the 300ms side minimum. Room (300ms) and scale (0.50)
+        // pass exactly, so the side guard is the sole rejector; 300ms of far
+        // side realigns.
+        let words = |dot_end: i64| {
+            unit_words(&[
+                ("Word", 5_700, 5_900),
+                ("one", 5_900, 6_100),
+                (".", 6_100, dot_end),
+                ("Word", 6_300, 6_500),
+                ("two", 6_500, 6_700),
+                (".", 6_700, 6_800),
+            ])
+        };
+        let diar = [seg(4_800, 6_000, 0), seg(6_000, 9_000, 1)];
+        let mut tiny = vec![(words(6_299), true)];
+        assert!(realign_straddling_atoms(&mut tiny, &diar).is_empty());
+
+        let mut full = vec![(words(6_300), true)];
+        assert_eq!(
+            realign_straddling_atoms(&mut full, &diar),
+            vec![(5_700, 6_300)]
+        );
+    }
+
+    fn unit_words(words: &[(&str, i64, i64)]) -> Vec<UnitWord> {
+        words
+            .iter()
+            .enumerate()
+            .map(|(i, (text, s, e))| UnitWord {
+                text: text.to_string(),
+                start_ms: *s,
+                end_ms: *e,
+                source_row: i,
+            })
+            .collect()
     }
 
 

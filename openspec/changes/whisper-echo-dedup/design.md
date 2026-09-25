@@ -10,8 +10,9 @@ Detection per index i: let run R = the maximal normalized-equal rerun of the
 preceding pieces (compare normalized concatenation — lowercase, strip
 non-alphanumerics — of the k pieces ending at i−1 against the k pieces starting
 at i, k ≤ 32). R qualifies as a ghost when every piece in it is acoustically
-weightless: `end_ms − start_ms ≤ 1` for all pieces, or `max(end) − min(start) <
-50` ms. Ghost pieces are skipped. The first copy (real walls) is untouched.
+weightless: `end_ms − start_ms ≤ 1` for all pieces AND `max(end) − min(start) <
+50` ms (both — the window check alone would let one long piece with fat spans
+pass). Ghost pieces are skipped. The first copy (real walls) is untouched.
 
 Honest-evidence guards:
 - Only equality + weightlessness drops. Real repeats have real walls → kept.
