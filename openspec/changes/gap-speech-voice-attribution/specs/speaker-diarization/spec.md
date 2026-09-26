@@ -250,13 +250,15 @@ Where this requirement and the chunk-grid labeling requirements conflict on the 
 
 ### Requirement: Ear-truth fixture gate validates attribution
 
-The repository SHALL contain a pinned ear-truth fixture (`frontend/src-tauri/tests/fixtures/ear_truth_cde5c264.json`) holding attribution facts as data — the fixture file is the single source of truth for the entry set (16 entries as of 2026-09-07; this requirement does not enumerate them) — each entry `{id, start_s, end_s, kind, params}` with kinds: `single_voice` (all turns overlapping the span carry one label, where an overlap is a turn-span intersection exceeding 0.25s, matching the gate implementation — silence-delimited same-speaker boundaries inside the span are not violations, since the ear attests voices, not turn units), `voice_change_at` (exactly one label change inside the span, one within the pinned tolerance; the pinned text tail belongs to the earlier turn), `multi_voice` (at least one label change inside the span — for attested trading with an unattested count), `distinct_speaker` (the span's turn label differs from the surrounding turns'). Entries change only with explicit user confirmation, recorded in the fixture itself: an entry resolved by user attestation to a new pin carries the attestation date and basis in its `note`, and an entry that a landed engine change deliberately no longer satisfies carries a fixture-level `amendments` record `{user_confirmed: <date>, reason: <basis>}` alongside the gate's KNOWN-LIMITATION list — so every non-passing outcome is machine-visible and auditable. Two entries (`S3_updates_run`, `S13_userC_to_userB`) SHALL be designated hold-out (not used for any calibration decision).
+A pinned ear-truth fixture (`ear_truth_cde5c264.json`) SHALL hold attribution facts as data — the fixture file is the single source of truth for the entry set (16 entries as of 2026-09-07; this requirement does not enumerate them) — each entry `{id, start_s, end_s, kind, params}` with kinds: `single_voice` (all turns overlapping the span carry one label, where an overlap is a turn-span intersection exceeding 0.25s, matching the gate implementation — silence-delimited same-speaker boundaries inside the span are not violations, since the ear attests voices, not turn units), `voice_change_at` (exactly one label change inside the span, one within the pinned tolerance; the pinned text tail belongs to the earlier turn), `multi_voice` (at least one label change inside the span — for attested trading with an unattested count), `distinct_speaker` (the span's turn label differs from the surrounding turns'). Entries change only with explicit user confirmation, recorded in the fixture itself: an entry resolved by user attestation to a new pin carries the attestation date and basis in its `note`, and an entry that a landed engine change deliberately no longer satisfies carries a fixture-level `amendments` record `{user_confirmed: <date>, reason: <basis>}` alongside the gate's KNOWN-LIMITATION list — so every non-passing outcome is machine-visible and auditable. Two entries (`S3_updates_run`, `S13_userC_to_userB`) SHALL be designated hold-out (not used for any calibration decision).
 
-A gate test SHALL run the turn-derivation engine on the real meeting audio and assert every entry, failing with the entry name on mismatch. Because it requires the meeting audio and local models, the gate SHALL be env-gated like the existing live diagnostics, AND a named runner script SHALL record the gate output to a file under `openspec/exploration/` at every verification point, so the acceptance evidence is inspectable without re-running. Per-entry outcomes SHALL be exactly: PASS; KNOWN-LIMITATION (documented with explicit user sign-off via the fixture's amendment/limitation records); or FAIL (blocks the change). A synthetic subset of the gate (the frame/split/attachment rules on recorded fixture arrays) SHALL run in plain `cargo test` without audio or models, and a fixture-lint subset SHALL run in plain `cargo test` asserting every KNOWN-LIMITATION/amendment record carries a user-confirmation date and reason.
+The fixture SHALL NOT be committed to the public repository: it is local-only golden evidence, under the bright line adopted 2026-09-26 that NOTHING meeting-derived — real, sanitized, or synthetic — enters the repo. Its home resolves through one shared helper: `$MEETILY_LOCAL_EVIDENCE_DIR`, then the default repository sibling `../meetily-flash-local-evidence/` (outside `git clean` reach); a missing fixture means the gate and fixture-lint SKIP LOUDLY, printing the setup instructions — never a silent pass, never a clone-breaking failure. No synthetic or meeting-derived stand-in SHALL be committed in its place: the synthetic subset of the gate is removed outright (a fake golden is no oracle).
+
+A gate test SHALL run the turn-derivation engine on the real meeting audio and assert every entry, failing with the entry name on mismatch. Because it requires the meeting audio and local models, the gate SHALL be env-gated like the existing live diagnostics, AND a named runner script SHALL record the gate output to a file under `openspec/exploration/` (itself local-only) at every verification point, so the acceptance evidence is inspectable without re-running. Per-entry outcomes SHALL be exactly: PASS; KNOWN-LIMITATION (documented with explicit user sign-off via the fixture's amendment/limitation records); or FAIL (blocks the change). A fixture-lint subset SHALL run in plain `cargo test` wherever the fixture resolves, asserting every KNOWN-LIMITATION/amendment record carries a user-confirmation date and reason.
 
 #### Scenario: Fixture gate validates the engine before review
 
-- **GIVEN** the meeting audio, local models, and the gate env set
+- **GIVEN** the meeting audio, local models, the local fixture home, and the gate env set
 - **WHEN** the gate test runs
 - **THEN** every ear-truth entry passes against the derived turns, or each non-passing entry carries a recorded KNOWN-LIMITATION with user sign-off
 - **AND** the recorded output file under `openspec/exploration/` reflects the latest run
@@ -268,11 +270,12 @@ A gate test SHALL run the turn-derivation engine on the real meeting audio and a
 - **THEN** it fails, naming the violated entry
 - **AND** the entry may only be resolved by passing the engine or by user-confirmed KNOWN-LIMITATION
 
-#### Scenario: Synthetic gate subset runs in CI
+#### Scenario: Missing local fixture skips loudly
 
-- **GIVEN** a plain `cargo test` without meeting audio or models
-- **WHEN** the gate's synthetic subset runs
-- **THEN** the run/split/attachment rules are asserted against recorded fixture arrays without env gates
+- **GIVEN** a checkout (fresh clone, CI, or new machine) without `MEETILY_LOCAL_EVIDENCE_DIR` or the sibling default
+- **WHEN** the gate or fixture-lint tests run
+- **THEN** they skip with a message naming the fixture home convention and setup instructions
+- **AND** no synthetic or meeting-derived stand-in runs in their place
 
 #### Scenario: Waivers are auditable
 

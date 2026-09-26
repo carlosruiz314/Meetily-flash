@@ -1,10 +1,90 @@
 #!/usr/bin/env sh
-# Pre-push smoke gate — cross-platform-automated-smoke-tests.
-# Runs Vitest plus Playwright before a push reaches the remote:
-#   fix/<change> | enhance/<change> branch  -> the branch-scoped smoke spec
-#   any other branch (main direct pushes)   -> the FULL Playwright suite
-# Bypass for WIP/emergency pushes: SKIP_SMOKE=1 git push
+# Pre-push gate 1: PII / local-evidence guard (un-leak 2026-09-26).
+# Pre-push gate 2: smoke tests — cross-platform-automated-smoke-tests.
 
+# ---------------------------------------------------------------------------
+# Gate 1 runs UNCONDITIONALLY — SKIP_SMOKE must never bypass it. Fail-closed:
+# a git error while inspecting the outgoing range blocks the push rather than
+# waving it through. Blocks outgoing commits that carry meeting-derived
+# evidence paths (gitignored, local-only by the bright-line rule in
+# .gitignore) or any identity marker from .local/pii-markers.txt (that list
+# itself is gitignored, never pushed).
+#
+# "Outgoing" = commits the pushed sha reaches that NO remote-tracking ref
+# already has (`--not --remotes`). This is shape-independent — update pushes,
+# new branches, and force-pushes all scan exactly the commits that would
+# first reach a server, so marker-bearing PRE-GUARD history (messages, the
+# sanitized evidence adds still in rewritten history until the 6.3 strip)
+# never blocks branch creation, yet re-added evidence always blocks.
+# Trust boundary: tracking refs are trusted as the record of what servers
+# already hold — after any server-side rewrite + purge, `git fetch --prune`
+# BEFORE trusting this gate again (see gap-speech 6.3). Known blind spot:
+# content that exists only inside a merge commit's conflict resolution is
+# invisible (git log skips merge patches); accepted for a solo repo.
+#
+# Per-commit inspection (git log), not a net tree-to-tree diff: a blob added
+# and deleted within one push range still uploads, and GitHub retains objects
+# after branch deletion — only per-commit filtering sees it. Deletions pass
+# (--diff-filter=d): removing evidence is the remediation direction, and d
+# also covers adds/modifies/renames/copies/typechanges, which =AM misses.
+# ---------------------------------------------------------------------------
+ZERO=0000000000000000000000000000000000000000
+GUARD_ROOT=$(git rev-parse --show-toplevel) || exit 1
+MARKERS="$GUARD_ROOT/.local/pii-markers.txt"
+MTEMP=$(mktemp) || exit 1
+trap 'rm -f "$MTEMP"' EXIT
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [ "$local_sha" = "$ZERO" ] && continue    # ref deletion: nothing new leaves
+  # Heads only, exact-case by convention; tag contents still hit the gates.
+  case "$remote_ref" in
+    refs/heads/private-*|refs/heads/local-*)
+      echo "[pii] BLOCKED: $remote_ref is a local-only branch." >&2
+      exit 1 ;;
+  esac
+
+  out=$(git log "$local_sha" --not --remotes --diff-filter=d --name-only --format= -- \
+      ':(icase)frontend/src-tauri/tests/fixtures/ear_truth_*' \
+      ':(icase)frontend/src-tauri/tests/fixtures/check_clips_*' \
+      ':(icase)frontend/src-tauri/tests/fixtures/engine_synthetic_*' \
+      ':(icase)frontend/src-tauri/tests/fixtures/nemo_c5_*' \
+      ':(icase)frontend/src-tauri/tests/fixtures/cde5c264_transcripts*' \
+      ':(icase)embed-probe-clips*' \
+      ':(icase)openspec/exploration/*.log') || exit 1
+  if [ -n "$out" ]; then
+    echo "[pii] BLOCKED: outgoing commits add or modify local-only evidence paths:" >&2
+    printf '%s\n' "$out" | head -10 >&2
+    echo "[pii] Move them to MEETILY_LOCAL_EVIDENCE_DIR (default ../meetily-flash-local-evidence/)." >&2
+    exit 1
+  fi
+
+  if [ -f "$MARKERS" ]; then
+    grep -vE '^[[:space:]]*(#|$)' "$MARKERS" > "$MTEMP"
+    if [ -s "$MTEMP" ]; then
+      out=$(git log "$local_sha" --not --remotes --format='%h|%an <%ae>|%cn <%ce>|%B') || exit 1
+      if printf '%s\n' "$out" | grep -Fqf "$MTEMP"; then
+        echo "[pii] BLOCKED: outgoing commit messages or identities contain a marker:" >&2
+        git log "$local_sha" --not --remotes --format='%h %B' | grep -Ff "$MTEMP" | head -5 >&2
+        exit 1
+      fi
+      out=$(git log -p "$local_sha" --not --remotes --no-color --diff-filter=d) || exit 1
+      chits=$(printf '%s\n' "$out" | grep '^+' | grep -Ff "$MTEMP")
+      if [ -n "$chits" ]; then
+        echo "[pii] BLOCKED: outgoing diff adds content containing a marker:" >&2
+        printf '%s\n' "$chits" | head -5 >&2
+        exit 1
+      fi
+    else
+      echo "[pii] WARNING: $MARKERS has no active entries — marker content layer disabled." >&2
+    fi
+  else
+    echo "[pii] WARNING: $MARKERS missing — marker content layer disabled." >&2
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# Gate 2: smoke tests. Bypass for WIP/emergency pushes: SKIP_SMOKE=1 git push
+# ---------------------------------------------------------------------------
 if [ -n "$SKIP_SMOKE" ]; then
   echo "[smoke] SKIP_SMOKE set — pre-push gate skipped."
   exit 0
