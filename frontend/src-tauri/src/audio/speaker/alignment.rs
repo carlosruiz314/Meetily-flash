@@ -1503,7 +1503,7 @@ mod tests {
             (36_080, 36_719),
             "atom re-anchored into T2's voiced head"
         );
-        let q = by_text("where is userC");
+        let q = by_text("where is userc");
         assert_eq!(q.speaker, "Speaker 1");
         assert_eq!((q.audio_start_ms, q.audio_end_ms), (34_719, 35_509));
         assert_eq!(by_text("gotcha").speaker, "Speaker 0");
