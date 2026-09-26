@@ -50,7 +50,10 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       ':(icase)frontend/src-tauri/tests/fixtures/nemo_c5_*' \
       ':(icase)frontend/src-tauri/tests/fixtures/cde5c264_transcripts*' \
       ':(icase)embed-probe-clips*' \
-      ':(icase)openspec/exploration/*.log') || exit 1
+      ':(icase,glob)openspec/exploration/**' \
+      ':(icase,glob)openspec/changes/**/fixture-answers.md' \
+      ':(icase,glob)openspec/changes/**/fixture-offsets.json' \
+      ':(icase,glob)openspec/changes/**/design-notes-banter.md') || exit 1
   if [ -n "$out" ]; then
     echo "[pii] BLOCKED: outgoing commits add or modify local-only evidence paths:" >&2
     printf '%s\n' "$out" | head -10 >&2
