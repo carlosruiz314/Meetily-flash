@@ -66,8 +66,9 @@ files untracked + gitignored, unconditional pre-push PII guard, and
       `USERC`/`USERB` comments — the 2026-09-26 replace-text caught only
       exact-case words) AND the marker-bearing commit messages
       (`--replace-message` alongside `--replace-text`; the subjects already
-      name two colleagues), then the GitHub support cache-purge request goes
-      out with the fresh SHAs. After the purge lands: `git fetch --prune`
-      and confirm `git log <branch> --not --remotes` covers the old history
-      before any further push — the pre-push gate trusts tracking refs as
-      the record of what servers already hold
+      name two colleagues), then force-push; the old refs become
+      GitHub-dangling and are left to GitHub's eventual GC — no support
+      request (user decision 2026-09-26). After the strip lands:
+      `git fetch --prune` and confirm `git log <branch> --not --remotes`
+      covers the old history before any further push — the pre-push gate
+      trusts tracking refs as the record of what servers already hold
