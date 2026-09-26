@@ -68,7 +68,7 @@ The de-risk probe (`openspec/exploration/gap-rescue-probe-20260907-full.log`, ta
 
 ## Migration Plan
 
-No data migration. Task 0 lands the uncommitted set + user-confirmed re-pins as ONE commit (S2 as KNOWN-LIMITATION, gate green); this change lands on top; the user performs ONE Speakers re-run covering everything. The 2026-09-26 fold-in adds §6: the fixtures leave the repo after 5.2's re-run, and the later-archiving of the two local-only migrations (this change and engine-boundary §6) carries the final filter-repo strip plus the GitHub support cache-purge request (task 6.3).
+No data migration. Task 0 lands the uncommitted set + user-confirmed re-pins as ONE commit (S2 as KNOWN-LIMITATION, gate green); this change lands on top; the user performs ONE Speakers re-run covering everything. The 2026-09-26 fold-in adds §6: the fixtures leave the repo after 5.2's re-run, and the later-archiving of the two local-only migrations (this change and engine-boundary §6) carries the final filter-repo strip (task 6.3); the stale refs are left to GitHub's eventual GC per the user's 2026-09-26 decision — no support request.
 
 ## Open Questions
 
