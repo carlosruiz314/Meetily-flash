@@ -145,3 +145,33 @@ is landed (AGENTS.md §3 record-why).
       vacuously on the new decode): every fragment containing "Oh, man"
       must carry UserB's cluster. Gate green: 16/16, 0 fractures,
       'Oh, man' → Speaker 1 (`identity-ohman-fix-gate-green-20260920.log`).
+
+## 6. Local-only evidence — voiceprints never public (2026-09-26 un-leak fold-in)
+
+Sequence AFTER 3.4 (the ear check may regenerate caches). Shared infra
+already landed with the un-leak: evidence files untracked + gitignored,
+unconditional pre-push PII guard, `.local/pii-markers.txt` (never
+committed). Bright line: nothing meeting-derived — real, sanitized, or
+synthetic — is committed to the public repository.
+
+- [ ] 6.1 Evidence home: `nemo_c5_reference_embeddings.json` (voiceprints),
+      `nemo_c5_port_embeddings.json`, and `embed-probe-clips*.json` move to
+      `MEETILY_LOCAL_EVIDENCE_DIR` (default
+      `../meetily-flash-local-evidence/`); loaders in
+      `nemo_extractor_gate.rs` and the `sherpa_adapter.rs` test module
+      resolve via the shared helper (env var → sibling default → loud skip
+      printing the setup instructions); the machine-specific default path is
+      dropped from `embed-probe-sherpa/gen_clips_manifest.py`
+- [ ] 6.2 Synthetic twin removed outright: `engine_synthetic_cde5c264.json`
+      + `engine_synthetic_gate.rs` deleted from the repo; `.tools/run_*`
+      chains drop the synthetic step (a fake golden is no oracle — the
+      ear-truth gate is the only authority)
+- [ ] 6.3 Adversarial sweep: `git ls-files` shows zero meeting-derived
+      files; all case-variant name residuals in src/tests renamed to the
+      synthetic map (`USERC`/`USERB`/`userC`/`userB` — the
+      2026-09-26 rewrite caught only exact-case words: `alignment.rs`
+      comments, `by_text("where is userC")`,
+      `boundary_anchored_assignment_ear_pinned_oh_man_is_userbs`);
+      staging a protected path or an identity marker aborts the push
+      (guard verified — the 11-scenario direct-invocation matrix from the
+      un-leak review is the script seed); D4 paths match the landed layout

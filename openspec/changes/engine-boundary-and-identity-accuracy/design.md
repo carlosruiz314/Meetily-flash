@@ -82,6 +82,23 @@ pure-boundary probes need no model at all
 full-cost authority: 16/16 asserted entries, 0 cross-badge fractures, no
 waivers.
 
+### Local-only evidence (2026-09-26 un-leak amendment)
+
+The identity artifacts this change iterates on are meeting-derived
+identity data: `nemo_c5_reference_embeddings.json` /
+`nemo_c5_port_embeddings.json` are voiceprints; `embed-probe-clips*.json`
+pin windows of the real meeting; `engine_synthetic_cde5c264.json` mirrors
+real attested regions with the names bleached. Bright line adopted with
+the un-leak: NOTHING meeting-derived — real, sanitized, or synthetic —
+is committed to the public repository. The evidence home is
+`$MEETILY_LOCAL_EVIDENCE_DIR` (default `../meetily-flash-local-evidence/`,
+a repository sibling outside `git clean` reach); loaders resolve env var
+→ sibling default → loud skip with setup instructions. D4's caches
+(`gate_frame_masses.json`, the raw-sample cache) were already untracked
+and join the same home. The gate machinery stays public; only the truth
+content is local. A fake golden is no oracle, so the synthetic twin is
+removed outright (§6.2) rather than migrated.
+
 ## D5: The render honors the engine's boundaries (ear verdict 2026-09-20)
 
 The user failed the persisted output on `[12.67] Speaker 0: "Yeah, that's

@@ -95,3 +95,18 @@ frontend/src-tauri/mf/
 # Full-transcript row dumps carry third-party names + dialogue (PII) — kept local only,
 # scrubbed from git before the 2026-09-26 push. Regenerate via the census/probe scripts.
 openspec/exploration/*-rows.txt
+
+# Local-only golden evidence (un-leak 2026-09-26). Bright line: NOTHING meeting-derived
+# — real, sanitized, or synthetic — enters the repo. Ear-truth fixtures, voiceprint
+# embeddings, synthetic twins, probe manifests, exploration logs all count. Files live
+# in MEETILY_LOCAL_EVIDENCE_DIR (default ../meetily-flash-local-evidence/) once the
+# in-flight changes' §6 migrations land; until then they sit untracked at these legacy
+# paths. The pre-push guard (.githooks/pre-push) blocks outgoing commits touching them.
+frontend/src-tauri/tests/fixtures/ear_truth_*.json
+frontend/src-tauri/tests/fixtures/check_clips_*.json
+frontend/src-tauri/tests/fixtures/engine_synthetic_*.json
+frontend/src-tauri/tests/fixtures/nemo_c5_*.json
+frontend/src-tauri/tests/fixtures/cde5c264_transcripts*
+embed-probe-clips*.json
+openspec/exploration/*.log
+.local/

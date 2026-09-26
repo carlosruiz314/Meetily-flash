@@ -37,3 +37,37 @@
 
 - [x] 5.1 Adversarial review pass on the diff to convergence (verify-before-implement on findings)
 - [ ] 5.2 User performs the single Speakers re-run covering base + rescue; "Oh, man" renders under UserB; the "Yeah" region stays as-is (known miss, follow-up change)
+
+## 6. Local-only ear-truth fixtures (2026-09-26 un-leak fold-in)
+
+Sequence AFTER 5.2 (the re-run may re-pin; the fixture moves once, after its
+last re-attestation). Shared infra already landed with the un-leak: evidence
+files untracked + gitignored, unconditional pre-push PII guard, and
+`.local/pii-markers.txt` (never committed).
+
+- [ ] 6.1 Fixture home: `ear_truth_cde5c264.json` + `check_clips_2026-09-06.json`
+      move to `MEETILY_LOCAL_EVIDENCE_DIR` (default
+      `../meetily-flash-local-evidence/`); loaders in `ear_truth_gate.rs`,
+      `gap_rescue_probe.rs`, `gap_rescue_v3_probe.rs`, `closure_gap_probe.rs`
+      resolve via one shared helper (env var → sibling default → loud skip
+      printing the setup instructions); gate + fixture-lint keep full
+      authority locally and skip loudly on clones
+- [ ] 6.2 Adversarial sweep: `git ls-files` shows zero meeting-derived files
+      (ear-truth, check-clips, synthetic, voiceprints, manifests, logs);
+      staging a protected path or an identity marker aborts the push (guard
+      verified — the 11-scenario direct-invocation matrix from the un-leak
+      review is the script seed); the fixtureless-tree loud skip is verified
+      in a clean worktree
+- [ ] 6.3 After BOTH §6 migrations land (this change and
+      engine-boundary-and-identity-accuracy §6): one final filter-repo pass
+      strips every meeting-derived path from public history AND every
+      case-variant name residual in identifiers/prose
+      (`S13_userC_to_userB`, `by_text("where is userC")`,
+      `USERC`/`USERB` comments — the 2026-09-26 replace-text caught only
+      exact-case words) AND the marker-bearing commit messages
+      (`--replace-message` alongside `--replace-text`; the subjects already
+      name two colleagues), then the GitHub support cache-purge request goes
+      out with the fresh SHAs. After the purge lands: `git fetch --prune`
+      and confirm `git log <branch> --not --remotes` covers the old history
+      before any further push — the pre-push gate trusts tracking refs as
+      the record of what servers already hold

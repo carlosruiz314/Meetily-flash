@@ -1,3 +1,5 @@
 frontend/src-tauri/migrations/*.sql text eol=lf
 frontend/src-tauri/tests/fixtures/*.json text eol=lf
 openspec/**/*.md text eol=lf
+.gitignore text eol=lf
+.githooks/* text eol=lf
