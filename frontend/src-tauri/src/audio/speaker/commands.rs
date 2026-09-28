@@ -1,5 +1,6 @@
 use crate::audio::speaker::alignment::TranscriptInput;
 use crate::audio::speaker::diarization::DiarizationPort;
+use crate::audio::speaker::ports::VoiceSeparationPort;
 use crate::audio::speaker::registry::SpeakerIdentificationPort;
 use crate::audio::speaker::sherpa_adapter::CosineRegistryAdapter;
 use crate::audio::speaker::types::{EmbeddingVector, SpeakerSegment};
@@ -706,8 +707,27 @@ pub async fn run_diarization_for_meeting(
                         "DIARIZATION: +{} word-wall atom voice votes",
                         wall.len()
                     );
-                    votes.extend(wall);
                 }
+                // Separation pre-pass (overlap-separation-prepass): per-stream
+                // votes over the engine's attested overlap spans, with the
+                // wall votes for separation-covered atoms dropped. The port
+                // arrives with the Phase 2 adapter; None keeps this channel
+                // byte-identical to the mixture-only path.
+                let separation_port: Option<&dyn VoiceSeparationPort> = None;
+                let embed = |audio: &[f32]| extractor.extract_embedding(audio, super::run_engine::SAMPLE_RATE);
+                let separated = separation_port.map(|p| {
+                    super::run_engine::separated_stream_voice_votes(
+                        &samples,
+                        &transcripts_for_engine,
+                        &embed,
+                        &cent_pairs,
+                        &references,
+                        p,
+                        &engine_out.overlap_spans,
+                    )
+                });
+                let wall = super::run_engine::merge_wall_and_separated(wall, separated);
+                votes.extend(wall);
             }
             return Ok::<_, anyhow::Error>((segments, centroids, Some(turns), seams, votes));
         }
