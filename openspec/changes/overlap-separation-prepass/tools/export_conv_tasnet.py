@@ -1,5 +1,9 @@
 """Export the Conv-TasNet 2-source separation checkpoint to ONNX.
 
+Redistribution terms: the checkpoint is Asteroid's (MIT) trained on
+Libri2Mix / LibriSpeech (CC-BY-4.0) — redistribution with attribution; the
+exported artifact ships in the repo under frontend/models/.
+
 overlap-separation-prepass task 2.1. Downloads the Asteroid pretrained
 checkpoint (Hugging Face hub), exports it with a DYNAMIC time axis (the
 architecture is pure 1-D convolution, so any span length is valid), prints

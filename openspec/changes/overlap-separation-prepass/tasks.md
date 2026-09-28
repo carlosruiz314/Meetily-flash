@@ -58,9 +58,14 @@ overrides anywhere — the render only ever changes through evidence channels.
       (1.3 s), carves the span, RMS-normalizes to the input clip; missing
       model → from_models_dir() None (warned) → mixture-only channel
       (byte-identical, pinned by merge_without_separation test). The
-      download-URL hosting of the exported artifact is pending (outward-
-      facing upload needs the user's word); until then the adapter degrades
-      and the manual export script is the provisioning path.
+      exported artifact is HOSTED IN-REPO (user's call, 2026-09-28): a
+      public model (Asteroid MIT / LibriSpeech CC-BY-4.0) committed at
+      frontend/models/conv_tasnet_libri2mix_sepnoisy_16k.onnx — no release
+      asset, no download URL, fresh clones provision with zero manual steps.
+      separation_model_path() prefers the runtime models dir (newer manual
+      export wins) and falls back to the committed copy; the suite enforces
+      the sha256 pin on the committed copy
+      (committed_separation_model_resolves_and_matches_pin).
 
 ## Phase 3 — prove it on the ear
 
