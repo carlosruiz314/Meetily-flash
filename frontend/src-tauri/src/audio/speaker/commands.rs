@@ -710,10 +710,11 @@ pub async fn run_diarization_for_meeting(
                 }
                 // Separation pre-pass (overlap-separation-prepass): per-stream
                 // votes over the engine's attested overlap spans, with the
-                // wall votes for separation-covered atoms dropped. The port
-                // arrives with the Phase 2 adapter; None keeps this channel
-                // byte-identical to the mixture-only path.
-                let separation_port: Option<&dyn VoiceSeparationPort> = None;
+                // wall votes for separation-covered atoms dropped. A missing
+                // or unloadable model degrades to the mixture-only channel.
+                let separator = super::separation::ConvTasNetSeparator::from_models_dir();
+                let separation_port: Option<&dyn VoiceSeparationPort> =
+                    separator.as_ref().map(|s| s as &dyn VoiceSeparationPort);
                 let embed = |audio: &[f32]| extractor.extract_embedding(audio, super::run_engine::SAMPLE_RATE);
                 let separated = separation_port.map(|p| {
                     super::run_engine::separated_stream_voice_votes(

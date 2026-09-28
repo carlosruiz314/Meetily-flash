@@ -10,9 +10,23 @@ const NEMO_TITANET_EMBEDDING_MODEL_URL: &str =
 
 const SEGMENTATION_FILENAME: &str = "pyannote-segmentation.onnx";
 const NEMO_TITANET_EMBEDDING_FILENAME: &str = "nemo-titanet-embedding.onnx";
+/// Conv-TasNet 2-source separation (overlap-separation-prepass 2.1):
+/// exported from the JorisCos/ConvTasNet_Libri2Mix_sepnoisy_16k checkpoint
+/// via tools/export_conv_tasnet.py; the sha256 pin is the exported
+/// artifact's, not the upstream pytorch checkpoint's.
+const SEPARATION_FILENAME: &str = "conv_tasnet_libri2mix_sepnoisy_16k.onnx";
+pub const SEPARATION_MODEL_SHA256: &str =
+    "ed1f7aeeb6c90b20ea78178468393aa7502c406d6fde893ce27145fec1cb2d29";
 
 pub fn embedding_filename() -> &'static str {
     NEMO_TITANET_EMBEDDING_FILENAME
+}
+
+/// Local path of the separation model — the separation pre-pass degrades to
+/// mixture-only when this file is absent (it is NOT part of
+/// `speaker_models_exist`, which gates the whole diarization path).
+pub fn separation_model_path() -> PathBuf {
+    models_dir().join(SEPARATION_FILENAME)
 }
 
 fn models_dir() -> PathBuf {
