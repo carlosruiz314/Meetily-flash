@@ -68,7 +68,7 @@ The de-risk probe (`openspec/exploration/gap-rescue-probe-20260907-full.log`, ta
 
 ## Migration Plan
 
-No data migration. Task 0 lands the uncommitted set + user-confirmed re-pins as ONE commit (S2 as KNOWN-LIMITATION, gate green); this change lands on top; the user performs ONE Speakers re-run covering everything. The 2026-09-26 fold-in adds §6: the fixtures leave the repo after 5.2's re-run, and the later-archiving of the two local-only migrations (this change and engine-boundary §6) carries the final filter-repo strip (task 6.3); the stale refs are left to GitHub's eventual GC per the user's 2026-09-26 decision — no support request.
+No data migration. Task 0 lands the uncommitted set + user-confirmed re-pins as ONE commit (S2 as KNOWN-LIMITATION, gate green); this change lands on top; the user performs ONE Speakers re-run covering everything. The 2026-09-26 fold-in adds §6: the fixtures leave the repo after 5.2's re-run. Task 6.3's filter-repo strip was EXECUTED 2026-09-28, ahead of §6, at the user's escalation ("completely scrub this … never be exposed to GH"): all meeting-derived paths, case-variant residuals, and marker-bearing messages are gone from all reachable history; stale refs are left to GitHub's eventual GC — no support request (user decision). Branch protection on `main` (no force-push/deletion, enforced for admins) pins the result server-side.
 
 ## Open Questions
 
