@@ -22,20 +22,45 @@ overrides anywhere — the render only ever changes through evidence channels.
 
 ## Phase 2 — model (stop here if the quality gate fails)
 
-- [ ] 2.1 Research + pick the ONNX checkpoint: Asteroid Conv-TasNet 16 kHz
+- [x] 2.1 Research + pick the ONNX checkpoint: Asteroid Conv-TasNet 16 kHz
       2-speaker family exported via torch.onnx (SepFormer rejected: CPU cost).
       Deliverable: exported artifact + sha256 + export script in
       `openspec/changes/overlap-separation-prepass/tools/`.
-- [ ] 2.2 RED: in-domain quality probe (offline, cde5c264 real audio) —
-      over the measured overlap spans (incl. 34.5–34.9 @ 0.83 mass and the
-      S7c atom neighborhood): the separated stream closest to UserA's
-      reference must beat the mixture cosine, and the S7c atom must rescore
-      decisive (margin ≥ 0.05). Record numbers in this file. If no candidate
-      clears: STOP, record, keep S7c amended.
-- [ ] 2.3 Adapter `separation/conv_tasnet.rs` implementing the port over the
+      DONE 2026-09-28: checkpoint `JorisCos/ConvTasNet_Libri2Mix_sepnoisy_16k`
+      (noisy-mixture variant, closest to meeting conditions) exported with a
+      DYNAMIC time axis via tools/export_conv_tasnet.py; artifact
+      conv_tasnet_libri2mix_sepnoisy_16k.onnx (20.2 MB) in ~/.meetily-models/,
+      sha256 ed1f7aeeb6c90b20ea78178468393aa7502c406d6fde893ce27145fec1cb2d29,
+      graph I/O mix → est_source (1,2,T); ORT CPU round-trip verified at 2 s
+      and 5 s (output preserves input length).
+- [x] 2.2 STOP-GATE PASSED (2026-09-28, probe
+      tests/overlap_separation_quality_probe.rs, MEETIFY_LIVE_DIAG-gated;
+      audio from the local recording folder, resolved at runtime — nothing
+      meeting-derived in the repo). Measured, after two probe-geometry
+      corrections (RMS normalization — the export's stream gain is
+      thousands × input; atom carving from context streams):
+      c1: the stream carved from the 3 s neighborhood beats the mixture on
+      the userA reference — cosine 0.342 vs 0.205 (bare 0.4 s span FAILS at
+      0.172 → the adapter infers over span ± 1.3 s context and carves);
+      c2: the S7c atom rescores in the userA-identified stream at
+      userA=0.378 vs 0.087 next — margin 0.29 (bar 0.05); span-level stream
+      identities are crisp (userB 0.49 / userA 0.44);
+      c3: the S16 crosstalk resolves into exactly two distinct voices —
+      userC margin 0.135, userA margin 0.147.
+      Two probe iterations were needed; the first run failed c1 (raw
+      geometry: no normalization, no context, whole-stream embedding for
+      c2).
+- [x] 2.3 Adapter `separation/conv_tasnet.rs` implementing the port over the
       artifact (windowed inference, 16 kHz in/out), `model_download`
       registration (hash-pinned), commands.rs wiring with graceful
       degradation. RED: model-missing test (gate output byte-identical).
+      DONE 2026-09-28: adapter infers over span ± SEPARATION_CONTEXT_SECS
+      (1.3 s), carves the span, RMS-normalizes to the input clip; missing
+      model → from_models_dir() None (warned) → mixture-only channel
+      (byte-identical, pinned by merge_without_separation test). The
+      download-URL hosting of the exported artifact is pending (outward-
+      facing upload needs the user's word); until then the adapter degrades
+      and the manual export script is the provisioning path.
 
 ## Phase 3 — prove it on the ear
 

@@ -8,6 +8,7 @@ pub mod nemo_extractor;
 pub mod pyannote_segmentation;
 pub mod run_assembly;
 pub mod run_engine;
+pub mod separation;
 pub mod token_timestamps;
 pub mod turns;
 pub mod commands;
