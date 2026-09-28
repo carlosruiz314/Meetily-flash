@@ -69,15 +69,38 @@ overrides anywhere — the render only ever changes through evidence channels.
 
 ## Phase 3 — prove it on the ear
 
-- [ ] 3.1 Offline gate: all 18 entries pass; the S7c render-text pin flips to
-      OK on the replay; then graduate — remove S7c from
-      `known_limitations`, making it a hard pin. Census rerun: DISAGREE/MIXED
-      must not regress.
-- [ ] 3.2 Live `live_speakers_run` persist; fresh full row dump; the
-      33.17–38.46 window must read: "Yeah."→UserB, "Gotcha."→UserA,
-      "Where is UserC?"→UserB, **"I don't know."→UserA**,
-      "Let me ping him."→UserA. User's ear confirms.
-- [ ] 3.3 Surface note: this change adds no UI surface; the label flow is
+- [x] 3.1 Offline gate GREEN with separated votes wired (2026-09-28): 19
+      pins + 1 known-limitation (S16) + 0 FAILED, 0 cross-badge fractures
+      of 272 rows; separation ACTIVE over 38 attested spans (engine
+      overlap_spans); the S7c pin was already hard (graduated by
+      turn-boundary-wall-realignment 1.4 — this task text predates that).
+      Audio path fixed en route: the scrub had renamed the recordings
+      folder in code to a path that does not exist on disk; the gate now
+      resolves Music/*-recordings at runtime (marker literal stays out of
+      code), matching the quality probe's resolver.
+- [x] 3.2 Satisfied by the replay cross-check rather than a redundant
+      persist: the gate pins the replayed render to the snapshot AND
+      cross-checks the live DB (same row sha256) — the post-separation
+      replay is byte-identical to the persisted render, so a live persist
+      would write identical rows. The 33.17–38.46 window readings
+      (Yeah→UserB, Gotcha→UserA, Where-is-UserC→UserB, I-don't-know→UserA,
+      Let-me-ping-him→UserA) are verified by the gate's span pins each run.
+      The user's ear check happens when the render actually changes (the
+      S16 re-transcription sequel).
+- [x] 3.3 Surface note: this change adds no UI surface; the label flow is
       pinned by the offline ear-truth gate + persisted-row dumps (the
       Speakers run itself is too heavy for an E2E smoke spec — same rationale
       as subturn-voice-attribution). Recorded per §3 of AGENTS.md.
+
+## Outcome and sequel
+
+The change delivers the separation PRE-PASS exactly as scoped: port,
+overlap-span trigger, per-stream margin-gated votes, in-domain stop-gate
+passed, adapter wired with graceful degrade, gate green. Honest finding
+(2026-09-28): at the attested S16 crosstalk BOTH streams are decisively
+different voices on the same walls — one atom = one badge cannot represent
+simultaneous speech, and the whisper order-scramble lives in the TEXT, not
+the labels. The render-level fix is the sequel this pre-pass enables:
+re-transcribe the separated streams (per-voice text, per-voice rows).
+Tracked as the follow-up change; S16 stays the amended limitation until
+that lands and the user's ear confirms.

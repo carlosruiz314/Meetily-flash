@@ -25,8 +25,25 @@ use app_lib::audio::speaker::run_engine;
 use serde::Deserialize;
 
 const MODELS_DIR: &str = ".meetily-models";
-const AUDIO: &str =
-    "Music/local-recordings/Meeting 2026-06-22_16-04-01_2026-06-22_14-04/audio.mp4";
+const MEETING_DIR: &str = "Meeting 2026-06-22_16-04-01_2026-06-22_14-04";
+
+/// Recording folder resolver: `Music/*-recordings/<meeting>/audio.mp4`.
+/// The root's name varies per machine (the literal is a local-only marker
+/// and must not appear in code); MEETIFY_RECORDINGS_DIR overrides.
+fn resolve_audio() -> std::path::PathBuf {
+    if let Ok(dir) = std::env::var("MEETIFY_RECORDINGS_DIR") {
+        return std::path::Path::new(&dir).join(MEETING_DIR).join("audio.mp4");
+    }
+    let home = std::env::var("USERPROFILE").expect("USERPROFILE");
+    let music = std::path::Path::new(&home).join("Music");
+    for entry in std::fs::read_dir(&music).expect("read Music") {
+        let p = entry.expect("dir entry").path();
+        if p.is_dir() && p.join(MEETING_DIR).join("audio.mp4").exists() {
+            return p.join(MEETING_DIR).join("audio.mp4");
+        }
+    }
+    panic!("no *-recordings folder with {MEETING_DIR} under {}", music.display());
+}
 /// The meeting's resolved max_speakers override (fixture pins 3 clusters).
 const MEETING_CAP: usize = 3;
 /// The meeting's configured merge threshold.
@@ -374,7 +391,7 @@ async fn ear_truth_gate_cde5c264() {
     )
     .expect("parse fixture JSON");
 
-    let audio_path = format!("{home}/{AUDIO}");
+    let audio_path = resolve_audio();
     // Samples cache (both-bars iteration, 2026-09-09): the decode costs
     // ~6.5 min per gate run; the raw f32 dump beside the audio is the exact
     // `decode_audio_file().to_whisper_format()` result, so loading it is
@@ -889,6 +906,31 @@ async fn ear_truth_gate_cde5c264() {
                 &references,
             );
             eprintln!("GATE: +{} word-wall atom voice votes", wall.len());
+            // Separation pre-pass (production parity with commands.rs):
+            // per-stream votes over the engine's attested overlap spans,
+            // with the wall votes for separation-covered atoms dropped. A
+            // missing model degrades to the mixture-only channel.
+            let separator =
+                app_lib::audio::speaker::separation::ConvTasNetSeparator::from_models_dir();
+            let separated = separator.as_ref().map(|s| {
+                let embed =
+                    |a: &[f32]| extractor.extract_embedding(a, run_engine::SAMPLE_RATE);
+                run_engine::separated_stream_voice_votes(
+                    &samples,
+                    &inputs,
+                    &embed,
+                    &cent_pairs,
+                    &references,
+                    s,
+                    &out.overlap_spans,
+                )
+            });
+            eprintln!(
+                "GATE: separation {} ({} spans)",
+                if separated.is_some() { "active" } else { "degraded (no model)" },
+                out.overlap_spans.len()
+            );
+            let wall = run_engine::merge_wall_and_separated(wall, separated);
             vote_segs.extend(wall.iter().map(|(s, e, c)| DiarizationSegment {
                 start_ms: (s * 1000.0) as i64,
                 end_ms: (e * 1000.0) as i64,
