@@ -5,8 +5,9 @@
 //! glue. The chunk-grid/adapter path is NOT invoked here (design D5).
 
 use crate::audio::speaker::nemo_extractor::NemoEmbeddingExtractor;
+use crate::audio::speaker::ports::VoiceSeparationPort;
 use crate::audio::speaker::pyannote_segmentation::{
-    local_labels, FrameMassesOutput, PyannoteSegmentation, FRAME_SHIFT,
+    local_labels, FrameMasses, FrameMassesOutput, PyannoteSegmentation, FRAME_SHIFT,
 };
 use crate::audio::speaker::run_assembly::{
     cluster_pieces_ahc, confusion_valleys, derive_pieces, drop_textless, embed_slice,
@@ -72,6 +73,9 @@ pub struct EngineOutput {
     /// stretch majorities (ear law 2026-09-22: responses are not the
     /// responder's own voice).
     pub voice_votes: Vec<(f64, f64, u32)>,
+    /// Attested crosstalk spans (start_secs, end_secs) from the powerset
+    /// overlap classes — the separation pre-pass's trigger and budget.
+    pub overlap_spans: Vec<(f64, f64)>,
 }
 
 /// The persisted continuation fact (spec hard invariant): true when the
@@ -557,6 +561,7 @@ pub fn derive_turns_from_masses(
     }
 
     Ok(EngineOutput {
+        overlap_spans: overlap_spans(&fm.frames, FRAME_SHIFT),
         turns: engine_turns,
         centroids: centroid_map,
         rescue_seams,
@@ -733,16 +738,15 @@ pub(crate) fn wall_vote_token_streams(
         .collect()
 }
 
-pub fn wall_atom_voice_votes(
-    samples: &[f32],
-    transcripts: &[crate::audio::speaker::alignment::TranscriptInput],
-    extractor: &NemoEmbeddingExtractor,
+/// Centroids with enrolled references overriding their cluster's anchor
+/// where a reference maps 1:1 (the shared anchoring rule of both vote
+/// channels). A centroid claimed by two references keeps its cluster mean —
+/// the later reference wins and the collision is logged (enrollment refs
+/// too similar).
+fn ref_anchored_anchors(
     centroids: &[(u32, Vec<f32>)],
     references: &[(String, Vec<f32>)],
-) -> Vec<(f64, f64, u32)> {
-    if centroids.is_empty() {
-        return Vec::new();
-    }
+) -> Vec<(u32, Vec<f32>)> {
     let mut anchors: Vec<(u32, Vec<f32>)> = centroids.to_vec();
     let mut claimed: Vec<usize> = Vec::new();
     for (_, r) in references {
@@ -754,7 +758,7 @@ pub fn wall_atom_voice_votes(
         {
             if claimed.contains(&best) {
                 log::warn!(
-                    "wall-atom votes: two enrolled references anchor the same centroid {} — the later one wins; enrollment refs may be too similar",
+                    "voice votes: two enrolled references anchor the same centroid {} — the later one wins; enrollment refs may be too similar",
                     best
                 );
             }
@@ -762,6 +766,20 @@ pub fn wall_atom_voice_votes(
             anchors[best].1 = r.clone();
         }
     }
+    anchors
+}
+
+pub fn wall_atom_voice_votes(
+    samples: &[f32],
+    transcripts: &[crate::audio::speaker::alignment::TranscriptInput],
+    extractor: &NemoEmbeddingExtractor,
+    centroids: &[(u32, Vec<f32>)],
+    references: &[(String, Vec<f32>)],
+) -> Vec<(f64, f64, u32)> {
+    if centroids.is_empty() {
+        return Vec::new();
+    }
+    let anchors = ref_anchored_anchors(centroids, references);
     let sr = SAMPLE_RATE as f64;
     let mut votes = Vec::new();
     for tokens in &wall_vote_token_streams(transcripts) {
@@ -786,6 +804,147 @@ pub fn wall_atom_voice_votes(
         }
     }
     votes
+}
+
+// ── Separation pre-pass (overlap-separation-prepass Phase 1) ────────────
+
+/// Overlap class mass a frame must carry to count as crosstalk.
+pub const OVERLAP_TRIGGER_MASS: f32 = 0.5;
+/// Sustained duration a run of triggered frames needs to qualify as an
+/// overlap span worth separating (short blips are noise, not exchanges).
+pub const OVERLAP_MIN_SPAN_SECS: f64 = 0.4;
+/// Fraction of an atom's duration that must sit inside the span for the
+/// atom to be separation-covered (mixture evidence there is unreliable).
+pub const SEPARATION_ATOM_COVERAGE: f64 = 0.5;
+/// Window RMS floor for a separated-stream slice to embed at all — silence
+/// and near-silence carry no voice and must not vote.
+pub const SEPARATION_MIN_WINDOW_RMS: f32 = 1e-3;
+
+/// Contiguous frame runs whose overlap mass stays at or above
+/// [`OVERLAP_TRIGGER_MASS`] and lasts at least [`OVERLAP_MIN_SPAN_SECS`],
+/// as (start_secs, end_secs).
+pub fn overlap_spans(frames: &[FrameMasses], frame_shift: f64) -> Vec<(f64, f64)> {
+    let mut spans = Vec::new();
+    let mut run_start: Option<usize> = None;
+    for (i, f) in frames.iter().enumerate() {
+        if f.overlap >= OVERLAP_TRIGGER_MASS {
+            if run_start.is_none() {
+                run_start = Some(i);
+            }
+        } else if let Some(s) = run_start {
+            if (i - s) as f64 * frame_shift >= OVERLAP_MIN_SPAN_SECS {
+                spans.push((s as f64 * frame_shift, i as f64 * frame_shift));
+            }
+            run_start = None;
+        }
+    }
+    if let Some(s) = run_start {
+        if (frames.len() - s) as f64 * frame_shift >= OVERLAP_MIN_SPAN_SECS {
+            spans.push((s as f64 * frame_shift, frames.len() as f64 * frame_shift));
+        }
+    }
+    spans
+}
+
+/// Per-stream wall-atom votes over the separation port's spans. For each
+/// span the port recovers one stream per voice; every validated row's wall
+/// atoms substantially inside the span are embedded in EACH stream's audio
+/// and vote ref-anchored at the production margin bar. A stream abstains
+/// where it carries no speech (RMS floor) or where the margin is not
+/// decisive — garbage can at worst stay silent, never mislabel. Returns
+/// the votes plus the separation-covered atoms, so the caller can drop
+/// mixture votes there (their geometry is the crosstalk the port exists
+/// to resolve).
+pub fn separated_stream_voice_votes(
+    samples: &[f32],
+    transcripts: &[crate::audio::speaker::alignment::TranscriptInput],
+    embed: &dyn Fn(&[f32]) -> Option<Vec<f32>>,
+    centroids: &[(u32, Vec<f32>)],
+    references: &[(String, Vec<f32>)],
+    port: &dyn VoiceSeparationPort,
+    spans: &[(f64, f64)],
+) -> (Vec<(f64, f64, u32)>, Vec<(i64, i64)>) {
+    let mut votes = Vec::new();
+    let mut covered = Vec::new();
+    if centroids.is_empty() || spans.is_empty() {
+        return (votes, covered);
+    }
+    let anchors = ref_anchored_anchors(centroids, references);
+    let rows = wall_vote_token_streams(transcripts);
+    let sr = SAMPLE_RATE as f64;
+    for &(s0, s1) in spans {
+        let streams = match port.separate(samples, (s0, s1)) {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("separation port failed on span [{s0:.2}, {s1:.2}]: {e}");
+                continue;
+            }
+        };
+        for tokens in &rows {
+            for (a_ms, b_ms) in crate::audio::speaker::run_assembly::token_wall_atoms(tokens) {
+                let a_s = a_ms as f64 / 1000.0;
+                let b_s = b_ms as f64 / 1000.0;
+                let dur = b_s - a_s;
+                if dur <= 0.0 {
+                    continue;
+                }
+                let inter = b_s.min(s1) - a_s.max(s0);
+                if inter / dur < SEPARATION_ATOM_COVERAGE {
+                    continue;
+                }
+                covered.push((a_ms, b_ms));
+                for stream in &streams {
+                    let i0 = ((a_s - s0) * sr).max(0.0) as usize;
+                    let i1 = ((b_s - s0) * sr).min(stream.samples.len() as f64) as usize;
+                    if i1 <= i0 {
+                        continue;
+                    }
+                    let window = &stream.samples[i0..i1];
+                    let rms = (window.iter().map(|v| v * v).sum::<f32>() / window.len() as f32)
+                        .sqrt();
+                    if rms < SEPARATION_MIN_WINDOW_RMS {
+                        continue;
+                    }
+                    let Some(emb) = embed(window) else {
+                        continue;
+                    };
+                    let mut scored: Vec<(f32, usize)> = anchors
+                        .iter()
+                        .enumerate()
+                        .map(|(i, (_, anc))| (cosine(anc, &emb), i))
+                        .collect();
+                    scored.sort_by(|x, y| y.0.total_cmp(&x.0));
+                    if scored.len() >= 2 && scored[0].0 - scored[1].0 >= SUBTURN_VOTE_MARGIN {
+                        votes.push((a_s, b_s, anchors[scored[0].1].0));
+                    }
+                }
+            }
+        }
+    }
+    (votes, covered)
+}
+
+/// Merge mixture-channel wall votes with the separated-stream channel:
+/// mixture votes for separation-covered atoms drop (the port's per-stream
+/// votes replace them); everything else passes through unchanged. `None`
+/// (port missing / no spans) is the byte-identical mixture-only path.
+pub fn merge_wall_and_separated(
+    wall_votes: Vec<(f64, f64, u32)>,
+    separated: Option<(Vec<(f64, f64, u32)>, Vec<(i64, i64)>)>,
+) -> Vec<(f64, f64, u32)> {
+    let Some((sep_votes, covered)) = separated else {
+        return wall_votes;
+    };
+    let mut out: Vec<(f64, f64, u32)> = wall_votes
+        .into_iter()
+        .filter(|v| {
+            !covered
+                .iter()
+                .any(|&(a, b)| v.1 > a as f64 / 1000.0 && v.0 < b as f64 / 1000.0)
+        })
+        .collect();
+    out.extend(sep_votes);
+    out
 }
 
 /// Union of all transcript-row spans clipped to [a, b) (None = no overlap).
@@ -1068,5 +1227,224 @@ mod tests {
         assert_eq!(streams[0].len(), 3);
         assert_eq!(streams[0][1].word, "he's");
         assert_eq!((streams[0][1].start_ms, streams[0][1].end_ms), (1_200, 1_800));
+    }
+
+    // ── Separation pre-pass (overlap-separation-prepass Phase 1) ────────
+
+    use crate::audio::speaker::embedding::SpeakerEmbeddingPort;
+    use crate::audio::speaker::ports::{SeparatedStream, VoiceSeparationPort};
+
+    /// Sine at a per-sample radian frequency — deterministic tone, sample
+    /// rate independent (the fake voiceprint keys on zero-crossing rate).
+    fn tone(freq_rad: f32, n: usize, amp: f32) -> Vec<f32> {
+        (0..n)
+            .map(|i| amp * ((i as f32) * freq_rad).sin())
+            .collect()
+    }
+
+    /// Content-keyed fake voiceprint: zero-crossing rate → one-hot bucket.
+    /// Two voices at different tones land in orthogonal buckets, so cosine
+    /// discriminates exactly; silence/orthogonal content abstains via the
+    /// margin bar.
+    struct FakeVoiceprint;
+
+    impl crate::audio::speaker::embedding::SpeakerEmbeddingPort for FakeVoiceprint {
+        fn extract(
+            &self,
+            audio: &[f32],
+            _sample_rate: u32,
+        ) -> anyhow::Result<crate::audio::speaker::types::EmbeddingVector> {
+            let crossings = audio.windows(2).filter(|w| w[0] * w[1] < 0.0).count();
+            let zcr = crossings as f32 / audio.len().max(1) as f32;
+            let bucket = if zcr < 0.02 {
+                0
+            } else if zcr < 0.15 {
+                1
+            } else {
+                2
+            };
+            let mut v = vec![0.0f32; 3];
+            v[bucket] = 1.0;
+            Ok(crate::audio::speaker::types::EmbeddingVector(v))
+        }
+        fn dim(&self) -> usize {
+            3
+        }
+    }
+
+    /// Returns preset streams regardless of span — the unit test pins the
+    /// vote assembly's behavior, not the adapter's inference.
+    struct FakeSeparator {
+        streams: Vec<Vec<f32>>,
+    }
+
+    impl VoiceSeparationPort for FakeSeparator {
+        fn separate(
+            &self,
+            _samples: &[f32],
+            _span_secs: (f64, f64),
+        ) -> anyhow::Result<Vec<SeparatedStream>> {
+            Ok(self
+                .streams
+                .iter()
+                .map(|s| SeparatedStream { samples: s.clone() })
+                .collect())
+        }
+    }
+
+    fn onehot(bucket: usize) -> Vec<f32> {
+        let mut v = vec![0.0f32; 3];
+        v[bucket] = 1.0;
+        v
+    }
+
+    #[test]
+    fn separated_streams_vote_their_own_atoms_and_mixture_votes_drop() {
+        // S7c/S16 defect shape: two voices overlapping, the mixture buries
+        // the quieter one. Per-stream atoms must attribute to their own
+        // voice: stream userA speaks only during row userA's atom, stream
+        // userB only during row userB's — each stream must vote its own
+        // wall and ABSTAIN at the other voice's wall (silence → energy
+        // floor). Stale mixture votes for covered atoms drop.
+        let sr = SAMPLE_RATE as usize;
+        let voice_a = 0.005f32; // zcr ≈ 0.0016 → bucket 0
+        let voice_b = 0.1f32; // zcr ≈ 0.032 → bucket 1
+        let mut stream_a = vec![0.0f32; 3 * sr];
+        stream_a[sr / 5..sr / 5 + (0.6 * sr as f32) as usize].copy_from_slice(&tone(
+            voice_a,
+            (0.6 * sr as f32) as usize,
+            0.2,
+        ));
+        let mut stream_b = vec![0.0f32; 3 * sr];
+        stream_b[sr + sr / 10..sr + sr / 10 + (0.6 * sr as f32) as usize].copy_from_slice(&tone(
+            voice_b,
+            (0.6 * sr as f32) as usize,
+            0.2,
+        ));
+        let mixture: Vec<f32> = stream_a
+            .iter()
+            .zip(stream_b.iter())
+            .map(|(a, b)| a + 0.25 * b)
+            .collect();
+
+        let rows = vec![
+            transcript_input(
+                "a",
+                "fee fi",
+                1_200,
+                1_800,
+                vec![token_word("fee", 1_200, 1_500), token_word("fi", 1_500, 1_800)],
+            ),
+            transcript_input(
+                "b",
+                "fo fum",
+                2_000,
+                2_600,
+                vec![token_word("fo", 2_000, 2_300), token_word("fum", 2_300, 2_600)],
+            ),
+        ];
+        let centroids = vec![(7u32, onehot(0)), (9u32, onehot(1))];
+        let references = vec![
+            ("refa".to_string(), onehot(0)),
+            ("refb".to_string(), onehot(1)),
+        ];
+
+        let embed = |a: &[f32]| FakeVoiceprint.extract(a, SAMPLE_RATE).ok().map(|e| e.0);
+        let (votes, covered) = separated_stream_voice_votes(
+            &mixture,
+            &rows,
+            &embed,
+            &centroids,
+            &references,
+            &FakeSeparator {
+                streams: vec![stream_a, stream_b],
+            },
+            &[(1.0, 3.0)],
+        );
+
+        let mut v = votes.clone();
+        v.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+        assert!(
+            v.contains(&(1.2, 1.8, 7)),
+            "stream A must vote its own atom: {votes:?}"
+        );
+        assert!(
+            v.contains(&(2.0, 2.6, 9)),
+            "stream B must vote its own atom: {votes:?}"
+        );
+        assert_eq!(v.len(), 2, "silence at the other voice's wall abstains: {votes:?}");
+        assert_eq!(
+            covered,
+            vec![(1_200, 1_800), (2_000, 2_600)],
+            "atoms substantially inside the span are separation-covered"
+        );
+
+        // Stale mixture votes for covered atoms drop; separated votes append.
+        let wall = vec![(1.2, 1.8, 9u32), (5.0, 5.5, 7u32)];
+        let merged = merge_wall_and_separated(wall, Some((votes, covered)));
+        assert_eq!(
+            merged,
+            vec![(5.0, 5.5, 7), (1.2, 1.8, 7), (2.0, 2.6, 9)],
+            "covered-atom mixture vote drops, uncovered survives, separated appended"
+        );
+    }
+
+    #[test]
+    fn merge_without_separation_is_byte_identical() {
+        let wall = vec![(1.2, 1.8, 9u32), (5.0, 5.5, 7u32)];
+        assert_eq!(
+            merge_wall_and_separated(wall.clone(), None),
+            wall,
+            "missing port must degrade to the exact mixture-only channel"
+        );
+    }
+
+    #[test]
+    fn garbage_and_empty_streams_abstain() {
+        let sr = SAMPLE_RATE as usize;
+        // Near-silence stream (below the RMS floor) and a loud orthogonal
+        // tone (bucket 2 — cosine 0 against both anchors): neither may vote.
+        let quiet: Vec<f32> = vec![1e-5; 3 * sr];
+        let orthogonal = tone(0.6, 3 * sr, 0.2); // zcr ≈ 0.19 → bucket 2 (orthogonal to both anchors)
+        let rows = vec![transcript_input(
+            "a",
+            "fee fi",
+            1_200,
+            1_800,
+            vec![token_word("fee", 1_200, 1_500), token_word("fi", 1_500, 1_800)],
+        )];
+        let embed = |a: &[f32]| FakeVoiceprint.extract(a, SAMPLE_RATE).ok().map(|e| e.0);
+        let (votes, covered) = separated_stream_voice_votes(
+            &vec![0.0f32; 4 * sr],
+            &rows,
+            &embed,
+            &[(7u32, onehot(0)), (9u32, onehot(1))],
+            &[("refa".to_string(), onehot(0)), ("refb".to_string(), onehot(1))],
+            &FakeSeparator {
+                streams: vec![quiet, orthogonal],
+            },
+            &[(1.0, 3.0)],
+        );
+        assert!(votes.is_empty(), "no stream may vote: {votes:?}");
+        assert_eq!(covered, vec![(1_200, 1_800)]);
+    }
+
+    #[test]
+    fn overlap_spans_need_trigger_mass_and_sustained_duration() {
+        let f = |overlap: f32| crate::audio::speaker::pyannote_segmentation::FrameMasses {
+            speaker: [0.0; 3],
+            overlap,
+            silence: 1.0 - overlap,
+        };
+        // 0.6 sustained for 25 frames @ 0.02s = 0.5s ≥ min → one span;
+        // a 5-frame blip (0.1s) below min → dropped; mass below trigger
+        // never opens a run.
+        let mut frames: Vec<_> = std::iter::repeat(f(0.1)).take(10).collect();
+        frames.extend(std::iter::repeat(f(0.2)).take(5)); // blip: below min span
+        frames.extend(std::iter::repeat(f(0.6)).take(25)); // real span
+        frames.extend(std::iter::repeat(f(0.1)).take(10));
+        frames.extend(std::iter::repeat(f(0.7)).take(3)); // trigger but too short
+        let spans = overlap_spans(&frames, 0.02);
+        assert_eq!(spans, vec![(0.3, 0.8)], "{spans:?}");
     }
 }

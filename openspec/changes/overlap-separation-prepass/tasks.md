@@ -5,17 +5,17 @@ overrides anywhere — the render only ever changes through evidence channels.
 
 ## Phase 1 — port + assembly (no real model)
 
-- [ ] 1.1 RED: `ports/voice_separation.rs` trait + fake separator unit test —
+- [x] 1.1 RED: `ports/voice_separation.rs` trait + fake separator unit test —
       synthetic two-voice mixture (two fixture speaker spans summed with an
       offset) must attribute each stream's atoms to the correct voice through
       the vote assembly. Today's mixture-only path buries the quieter voice
       (this is the S7c defect shape).
-- [ ] 1.2 GREEN: vote assembly consumes separated-stream votes: per-stream
+- [x] 1.2 GREEN: vote assembly consumes separated-stream votes: per-stream
       wall-atom votes (reuse `token_wall_atoms`) into the existing
       `voice_votes` channel; mixture votes dropped for atoms substantially
       inside a separation span. Unit tests: garbage streams abstain
       (margin bar), empty streams no-op, single-voice spans untouched.
-- [ ] 1.3 `run_engine` overlap-span detection from `FrameMasses.overlap`
+- [x] 1.3 `run_engine` overlap-span detection from `FrameMasses.overlap`
       (const thresholds `OVERLAP_TRIGGER_MASS`, `OVERLAP_MIN_SPAN_SECS`),
       port invoked only there; missing port / failed call degrades silently
       (logged) — unit test asserts byte-identical output without the port.

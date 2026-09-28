@@ -12,6 +12,7 @@ pub mod token_timestamps;
 pub mod turns;
 pub mod commands;
 pub mod model_download;
+pub mod ports;
 
 #[cfg(test)]
 pub mod mocks;
