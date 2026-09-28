@@ -58,17 +58,19 @@ files untracked + gitignored, unconditional pre-push PII guard, and
       verified — the 11-scenario direct-invocation matrix from the un-leak
       review is the script seed); the fixtureless-tree loud skip is verified
       in a clean worktree
-- [ ] 6.3 After BOTH §6 migrations land (this change and
-      engine-boundary-and-identity-accuracy §6): one final filter-repo pass
-      strips every meeting-derived path from public history AND every
-      case-variant name residual in identifiers/prose
-      (`S13_userC_to_userB`, `by_text("where is userC")`,
-      `USERC`/`USERB` comments — the 2026-09-26 replace-text caught only
-      exact-case words) AND the marker-bearing commit messages
-      (`--replace-message` alongside `--replace-text`; the subjects already
-      name two colleagues), then force-push; the old refs become
-      GitHub-dangling and are left to GitHub's eventual GC — no support
-      request (user decision 2026-09-26). After the strip lands:
-      `git fetch --prune` and confirm `git log <branch> --not --remotes`
-      covers the old history before any further push — the pre-push gate
-      trusts tracking refs as the record of what servers already hold
+- [x] 6.3 EXECUTED 2026-09-28, ahead of the §6 migrations (user escalation:
+      "completely scrub this … never be exposed to GH"). One filter-repo pass
+      stripped every meeting-derived path from all reachable history — the
+      evidence file families, `openspec/exploration/` in its entirety, and
+      the archived + changes/ attestation copies (fixture answers, clip
+      offsets, banter notes) — plus every case-variant name residual
+      (`--replace-text`, mapped to the userA/userB/userC scheme) and the
+      marker-bearing commit messages (`--replace-message`); force-pushed,
+      old refs left to GitHub's eventual GC — no support request (user
+      decision). Branch protection on `main` (no force-push, no deletion,
+      enforced for admins) now makes the result append-only server-side;
+      any future deliberate rewrite requires removing protection first.
+      Standing duty after any future server-side rewrite: `git fetch
+      --prune` and confirm `git log <branch> --not --remotes` covers the
+      old history before further pushes — the pre-push gate trusts tracking
+      refs as the record of what servers already hold
