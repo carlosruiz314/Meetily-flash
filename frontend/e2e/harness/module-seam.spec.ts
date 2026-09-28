@@ -40,26 +40,23 @@ test.describe('module-seam interception (2.3)', () => {
   });
 
   test('the mock never accesses window.__TAURI_INTERNALS__ during an invoke call', async ({ page }) => {
-    await page.evaluate(() => {
-      (window as unknown as {
+    // Register, reset, invoke and read all run inside ONE evaluate: the
+    // assertion window is exactly the invoke itself. The original four
+    // separate evaluates left gaps where the still-hydrating app's timers
+    // could touch internals between reset and read — a false positive that
+    // only fired under full-suite CPU load.
+    const count = await page.evaluate(async () => {
+      const w = window as unknown as {
         __tauriMockDispatcher: { register: (cmd: string, fn: (a: unknown) => unknown) => void };
-      }).__tauriMockDispatcher.register('ping', () => 'pong');
+        __resetTauriInternalsSpy: () => void;
+        __tauriMockInvoke: (cmd: string) => Promise<unknown>;
+        __tauriInternalsAccessCount: () => number;
+      };
+      w.__tauriMockDispatcher.register('ping', () => 'pong');
+      w.__resetTauriInternalsSpy();
+      await w.__tauriMockInvoke('ping');
+      return w.__tauriInternalsAccessCount();
     });
-
-    // Plugins may have touched internals during page load; reset so the count
-    // isolates the upcoming invoke call.
-    await page.evaluate(() =>
-      (window as unknown as { __resetTauriInternalsSpy: () => void }).__resetTauriInternalsSpy(),
-    );
-
-    await page.evaluate(() =>
-      (window as unknown as { __tauriMockInvoke: (cmd: string) => Promise<unknown> })
-        .__tauriMockInvoke('ping'),
-    );
-
-    const spyCount = await page.evaluate(() =>
-      (window as unknown as { __tauriInternalsAccessCount: () => number }).__tauriInternalsAccessCount(),
-    );
-    expect(spyCount).toBe(0);
+    expect(count).toBe(0);
   });
 });
