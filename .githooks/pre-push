@@ -61,9 +61,18 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     exit 1
   fi
 
-  if [ -f "$MARKERS" ]; then
-    grep -vE '^[[:space:]]*(#|$)' "$MARKERS" > "$MTEMP"
-    if [ -s "$MTEMP" ]; then
+  # Marker sources, unioned: the synced evidence home carries the canonical
+  # list (it travels with MEETILY_LOCAL_EVIDENCE_DIR setups to every machine),
+  # .local/pii-markers.txt adds machine-local entries. Comment/blank lines
+  # ignored. Warn only when NEITHER source exists.
+  EVDIR="${MEETILY_LOCAL_EVIDENCE_DIR:-$GUARD_ROOT/../meetily-flash-local-evidence}"
+  : > "$MTEMP"
+  for src in "$EVDIR/pii-markers.txt" "$GUARD_ROOT/.local/pii-markers.txt"; do
+    if [ -f "$src" ]; then
+      grep -vE '^[[:space:]]*(#|$)' "$src" >> "$MTEMP" || true
+    fi
+  done
+  if [ -s "$MTEMP" ]; then
       out=$(git log "$local_sha" --not --remotes --format='%h|%an <%ae>|%cn <%ce>|%B') || exit 1
       if printf '%s\n' "$out" | grep -Fqf "$MTEMP"; then
         echo "[pii] BLOCKED: outgoing commit messages or identities contain a marker:" >&2
@@ -77,11 +86,8 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         printf '%s\n' "$chits" | head -5 >&2
         exit 1
       fi
-    else
-      echo "[pii] WARNING: $MARKERS has no active entries — marker content layer disabled." >&2
-    fi
   else
-    echo "[pii] WARNING: $MARKERS missing — marker content layer disabled." >&2
+    echo "[pii] WARNING: no marker sources found ($EVDIR/pii-markers.txt, $GUARD_ROOT/.local/pii-markers.txt) — marker content layer disabled." >&2
   fi
 done
 
