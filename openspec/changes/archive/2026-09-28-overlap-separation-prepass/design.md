@@ -94,3 +94,21 @@ the interleaved text with per-voice text in true order. Honest-evidence guard:
 only spans where pyannote's overlap mass fires AND the mixture text shows the
 degenerate signature (zero-wall duplicates, order inversions) are re-decoded;
 the in-domain quality gate (task 2.2) still decides whether any of this ships.
+
+
+## As-built amendments (2026-09-28, measured by the quality probe)
+
+- **Context padding is load-bearing**: a bare span (0.4 s) separates weakly;
+  the adapter infers over span ± `SEPARATION_CONTEXT_SECS` (1.3 s) and carves
+  the span from the streams (probe c1: 0.342 with context vs 0.172 without).
+- **RMS normalization is load-bearing**: the export's stream gain is
+  thousands × the input and TitaNet is log-compressed; each carved stream is
+  normalized to the input clip's RMS before any embedding.
+- **Hosting**: the exported artifact ships IN-REPO at `frontend/models/`
+  (public model, Asteroid MIT / LibriSpeech CC-BY-4.0); the suite enforces
+  the sha256 pin on the committed copy.
+- **Sequel**: at the S16 crosstalk both streams are decisively different
+  voices on the same walls — one atom = one badge cannot carry simultaneous
+  speech, and the order-scramble lives in the TEXT. The render-level fix is
+  separated-stream re-transcription (the follow-up change this pre-pass
+  enables); S16 stays the amended limitation until then.
