@@ -4,7 +4,11 @@
 
 # dependencies
 /node_modules
-**/models
+# model binaries are ignored, except the hash-pinned Conv-TasNet export the
+# separation pre-pass provisions from the repo itself (public artifact,
+# redistributed under Asteroid MIT / LibriSpeech CC-BY-4.0)
+**/models/*
+!frontend/models/conv_tasnet_libri2mix_sepnoisy_16k.onnx
 /.pnp
 .pnp.*
 .yarn/*

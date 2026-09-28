@@ -25,8 +25,19 @@ pub fn embedding_filename() -> &'static str {
 /// Local path of the separation model — the separation pre-pass degrades to
 /// mixture-only when this file is absent (it is NOT part of
 /// `speaker_models_exist`, which gates the whole diarization path).
+///
+/// Resolution order: the runtime models dir first (a newer manual export or
+/// future download wins), then the copy committed under `frontend/models/`
+/// — the artifact is a public model (Asteroid MIT / LibriSpeech CC-BY-4.0),
+/// so it ships with the repo and a fresh clone needs no hosting or manual
+/// export. Dev/cargo resolution only: production bundling would go through
+/// Tauri resources.
 pub fn separation_model_path() -> PathBuf {
-    models_dir().join(SEPARATION_FILENAME)
+    let runtime = models_dir().join(SEPARATION_FILENAME);
+    if runtime.exists() {
+        return runtime;
+    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../models").join(SEPARATION_FILENAME)
 }
 
 fn models_dir() -> PathBuf {
@@ -206,5 +217,27 @@ mod tests {
     fn filenames_match_convention() {
         assert!(SEGMENTATION_FILENAME.ends_with(".onnx"));
         assert!(NEMO_TITANET_EMBEDDING_FILENAME.ends_with(".onnx"));
+    }
+
+    #[test]
+    fn committed_separation_model_resolves_and_matches_pin() {
+        // The committed copy under frontend/models/ is the provisioning
+        // source for a fresh clone; the suite enforces the sha256 pin on it
+        // directly (not via separation_model_path, whose runtime copy may be
+        // newer) so the repo can never drift from the hash the adapter
+        // trusts.
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../models")
+            .join("conv_tasnet_libri2mix_sepnoisy_16k.onnx");
+        assert!(path.exists(), "committed separation model missing: {}", path.display());
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        let mut file = std::fs::File::open(&path).expect("open separation model");
+        std::io::copy(&mut file, &mut h).expect("hash separation model");
+        let got = format!("{:x}", h.finalize());
+        assert_eq!(
+            got, SEPARATION_MODEL_SHA256,
+            "committed separation model drifted from the pinned sha256"
+        );
     }
 }

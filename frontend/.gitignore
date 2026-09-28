@@ -17,7 +17,8 @@ package-lock.json
 
 transcripts/
 chroma/
-models/
+models/*
+!models/conv_tasnet_libri2mix_sepnoisy_16k.onnx
 whisper.cpp/
 whisper-server*
 whisper-server-package/
