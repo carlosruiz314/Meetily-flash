@@ -7,20 +7,23 @@ committed tests.
 
 ## Phase 1 — synthesis core (pure, fakes only)
 
-- [ ] 1.1 RED: `synthesize_overlap_rows` — covered span + both-stream
+- [x] 1.1 RED: `synthesize_overlap_rows` — covered span + both-stream
       decisive votes + per-stream texts → per-voice rows replacing the
       span's mixture rows, traced to source row ids. Adversarial: silent
       stream → no synthesis; hallucinated echo text → guard drops it;
       margin miss on either stream → no synthesis; edge-clamped span → no
-      panic.
+      panic; stream row with an original_id absent from the source set →
+      rejected (persist would silently drop it — explore finding 2).
 - [ ] 1.2 GREEN: pure function + text guards (reuse degenerate-repeat dedup
       and language pin on stream text); adversarial suite green.
 
 ## Phase 2 — transcription seam
 
-- [ ] 2.1 `commands.rs` passes the loaded whisper handle as a `&dyn
-      Fn(&[f32]) -> Option<String>` into the synthesis pass (composition
-      root only; record the hexagonal-port-traits linkage in design.md).
+- [ ] 2.1 `commands.rs` builds the closure over the EXISTING
+      `whisper_engine::commands::WHISPER_ENGINE` static (explore finding 1 —
+      no new handle) and passes it as `&dyn Fn(&[f32]) -> Option<String>`
+      into the synthesis pass (composition root only; hexagonal-port-traits
+      linkage recorded in design.md).
 - [ ] 2.2 RED: whisper unavailable / separation model missing → render
       byte-identical to today's (degrade channel, existing pin).
 
@@ -37,6 +40,8 @@ committed tests.
 - [ ] 3.4 Live `live_speakers_run`-equivalent persist; DB-layer verification
       (terminal-only rule): S16 rows per-voice, transcript_sources
       untouched.
+- [ ] 3.5 Re-pin the gate's render snapshot AFTER 3.4 (explore finding 4:
+      the snapshot and the live-DB cross-check must see the same render).
 
 ## Phase 4 — the ear
 
