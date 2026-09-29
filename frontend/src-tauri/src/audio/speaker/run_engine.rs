@@ -811,8 +811,12 @@ pub fn wall_atom_voice_votes(
 /// Overlap class mass a frame must carry to count as crosstalk.
 pub const OVERLAP_TRIGGER_MASS: f32 = 0.5;
 /// Sustained duration a run of triggered frames needs to qualify as an
-/// overlap span worth separating (short blips are noise, not exchanges).
-pub const OVERLAP_MIN_SPAN_SECS: f64 = 0.4;
+/// overlap span worth separating. Ruled 0.25s (overlap-stream-
+/// retranscription task 0.1 census sweep): the attested S16 exchange
+/// sustains the mass bar for only 0.270s, and (mass 0.5, 0.25s) is the
+/// smallest-change setting that catches it (38 → 75 fired spans
+/// meeting-wide).
+pub const OVERLAP_MIN_SPAN_SECS: f64 = 0.25;
 /// Fraction of an atom's duration that must sit inside the span for the
 /// atom to be separation-covered (mixture evidence there is unreliable).
 pub const SEPARATION_ATOM_COVERAGE: f64 = 0.5;
@@ -1436,15 +1440,19 @@ mod tests {
             overlap,
             silence: 1.0 - overlap,
         };
-        // 0.6 sustained for 25 frames @ 0.02s = 0.5s ≥ min → one span;
-        // a 5-frame blip (0.1s) below min → dropped; mass below trigger
-        // never opens a run.
+        // Minimum pinned at the ruled 0.25s (task 0.1 census sweep: the
+        // attested S16 exchange sustains the 0.5 bar for only 0.270s).
+        // frame_shift 0.01: 25 frames = 0.25s exactly, 24 frames = 0.24s —
+        // one frame under. Mass below the trigger never opens a run; runs
+        // under the minimum are dropped.
         let mut frames: Vec<_> = std::iter::repeat(f(0.1)).take(10).collect();
-        frames.extend(std::iter::repeat(f(0.2)).take(5)); // blip: below min span
-        frames.extend(std::iter::repeat(f(0.6)).take(25)); // real span
+        frames.extend(std::iter::repeat(f(0.2)).take(5)); // 0.05s blip below min
+        frames.extend(std::iter::repeat(f(0.6)).take(24)); // 0.24s: one frame under
+        frames.extend(std::iter::repeat(f(0.1)).take(4));
+        frames.extend(std::iter::repeat(f(0.6)).take(25)); // 0.25s: fires
         frames.extend(std::iter::repeat(f(0.1)).take(10));
-        frames.extend(std::iter::repeat(f(0.7)).take(3)); // trigger but too short
-        let spans = overlap_spans(&frames, 0.02);
-        assert_eq!(spans, vec![(0.3, 0.8)], "{spans:?}");
+        frames.extend(std::iter::repeat(f(0.7)).take(3)); // trigger but 0.03s
+        let spans = overlap_spans(&frames, 0.01);
+        assert_eq!(spans, vec![(0.43, 0.68)], "{spans:?}");
     }
 }

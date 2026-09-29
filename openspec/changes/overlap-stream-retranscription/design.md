@@ -209,9 +209,11 @@ findings, folded as follows. Blocking measurement first:
   38 fired spans: 22 both-decisive-distinct (span-level proxy for
   synthesis — production atom votes may reject more), 13 margin rejects,
   10 same-badge collapses (the distinctness gate is load-bearing), 2
-  collapsed-stream energy splits. Dial decision goes to the user with
-  this table; the probe reuses the gate's frame-mass cache so re-runs
-  are cheap.
+  collapsed-stream energy splits. **USER RULED (2026-09-30)**:
+  `OVERLAP_MIN_SPAN_SECS` 0.4 → 0.25 (mass bar stays 0.5) — the smallest
+  change that catches S16; the mass bar keeps its crosstalk-discriminator
+  role; the calibration clip set will show what the shorter window admits.
+  Dial probe reuses the gate's frame-mass cache so re-runs are cheap.
 
 Design decisions pinned by the panel:
 
