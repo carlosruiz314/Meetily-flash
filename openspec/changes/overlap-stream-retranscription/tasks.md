@@ -34,9 +34,12 @@ committed tests.
 - [ ] 3.2 GREEN: stream rows carry `speaker_source` from the stream vote;
       persistence round-trip (persist → refetch → badges and text intact).
 - [ ] 3.3 Gate extension: ear-truth gate asserts the S16 window renders two
-      distinct-badge in-order rows (needles from the local fixture); all
-      existing pins stay green (33.2–38.5 regression window proves no
-      synthesis outside overlap spans).
+      distinct-badge in-order rows (needles from the local fixture); the
+      duplicate scan's exemption is provenance-scoped (same `original_id`
+      stream pair passes, different-source overlap still fails — design
+      thread A, adversarial test 9); all existing pins stay green
+      (33.2–38.5 regression window proves no synthesis outside overlap
+      spans).
 - [ ] 3.4 Live `live_speakers_run`-equivalent persist; DB-layer verification
       (terminal-only rule): S16 rows per-voice, transcript_sources
       untouched.

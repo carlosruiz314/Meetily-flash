@@ -54,7 +54,9 @@
 - **Ear truth gate**: gains one new assertion class — the S16 window must
   contain two distinct-badge rows whose per-voice text reads in order; the
   gate reads expected needles from the local fixture (real text never
-  enters code).
+  enters code). It also needs the provenance-scoped duplicate-scan
+  exemption (thread A below) or its own overlap scan will fail the render
+  this change creates.
 
 ## Explore-cycle findings (2026-09-29, pre-apply audit)
 
@@ -76,6 +78,60 @@
 4. **Gate snapshot ordering**: the gate pins the replay to a row snapshot
    AND cross-checks the live DB hash — after the render changes, the
    snapshot must be re-pinned AFTER the live persist (task 3.5), not before.
+
+## Explore-cycle thread resolutions (2026-09-29, second session)
+
+Resolved in dependency order A → B → C: A unblocks task 1.1, B settles the
+quality channel C's scoping stance leans on.
+
+### Thread A (must-resolve before 1.1) — duplicate-scan exemption is provenance, not geometry
+
+The ear gate's duplicate scan (`ear_truth_gate.rs`, overlap_pairs) pushes a
+render failure for ANY pair of rows at overlapping span walls —
+"same-audio double-decode suspects (never dropped)". Two stream rows at
+the same overlap span have identical walls BY DESIGN and will trip it.
+
+**Resolution**: exempt on provenance, never on wall-offsetting. Stream
+rows inherit the span's source row id as `original_id` (explore finding
+2); two rows sharing one `original_id` are attested simultaneous speech —
+the both-streams-decisive gate IS the attestation, so no ear ruling is
+needed per span. The scan keeps failing any overlapping-wall pair whose
+rows trace to DIFFERENT sources (a true double-decode suspect). We do not
+"lie about time" (offset walls to dodge the scan); the scan learns what a
+legitimate same-wall pair looks like. Lands in task 3.3; adversarial test
+9 below pins both sides of the exemption.
+
+### Thread B — confidence channel at the seam, probe before commitment
+
+`whisper_engine::transcribe_audio_with_confidence(Vec<f32>, lang,
+offset_ms) -> Result<(String, f32, bool, Option<String>)>` exists and is
+the quality channel. Open question: does its confidence discriminate good
+stream text from hallucinated/echo text on SEPARATED streams (cleaner
+input may score uniformly high, or separation artifacts may score low)?
+
+**Resolution**: run a cheap live probe on the cached separated streams
+(env-gated, same pattern as the stop-gate probe) BEFORE finalizing the
+seam. If confidence discriminates, the composition-root closure applies a
+confidence floor (plus the bool hallucination flag) and returns `None`
+below it — the closure stays `&dyn Fn(&[f32]) -> Option<String>`, the pure
+function signature is untouched, and "None from the seam" is just the
+existing no-synthesis degrade. If it does not discriminate, the
+hallucination guards alone carry the weight and the closure stays plain.
+Probe folds into task 2.1.
+
+### Thread C (scoping stance) — uniform rule + gate census
+
+Synthesize ALL spans meeting the both-streams-decisive gate
+meeting-wide (uniform), vs only ear-attested spans (S16 only).
+
+**Resolution**: uniform + gate census. Selecting spans by hand would be a
+hardcoded override in disguise; the uniform rule is driven entirely by the
+evidence channels (votes + margin + text guards). The ear gate logs a
+census of every synthesized span (walls, both voices, per-stream text from
+the local fixture) so Phase 4 ear sampling draws from the complete
+inventory — the user hears a representative sample, not a curated one.
+S16 stays special only in the fixture's expected needles (task 3.3), not
+in the rule.
 
 ## Security / trust boundaries
 
@@ -100,6 +156,9 @@ No LLM in this path. The separator's output never reaches persistence
    and survive a refetch (DB-layer verification, terminal-only rule).
 8. Gate: S16 window renders two distinct-badge in-order rows; the 33.2–38.5
    regression pins stay green (no synthesis outside overlap spans).
+9. Duplicate-scan exemption is provenance-scoped (thread A): a same-wall
+   stream pair sharing one `original_id` passes the scan; an
+   overlapping-wall pair tracing to different sources still fails it.
 
 ## §3 smoke-spec decision
 
