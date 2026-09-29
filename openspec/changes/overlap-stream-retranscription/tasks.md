@@ -21,6 +21,11 @@ evidence home, never repo-committed).
 
 ## Phase 1 — synthesis core (pure, fakes only)
 
+- [x] 1.0 Trigger dial (user-ruled 2026-09-30, task 0.1 sweep):
+      `OVERLAP_MIN_SPAN_SECS` 0.4 → 0.25 (mass bar 0.5 unchanged). RED:
+      the boundary unit test pins 0.25 exactly — a run sustaining ≥0.5
+      mass for 0.24 s does NOT fire, 0.25 s does; the attested S16 window
+      (longest 0.5-bar run 0.270 s) therefore fires.
 - [ ] 1.1 RED: `synthesize_overlap_rows` — covered span + both-stream
       decisive votes (per-span record carrying stream identity, margins,
       and texts) + per-stream texts → per-voice rows replacing the span's
