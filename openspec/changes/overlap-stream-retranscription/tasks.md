@@ -21,9 +21,14 @@ committed tests.
 
 - [ ] 2.1 `commands.rs` builds the closure over the EXISTING
       `whisper_engine::commands::WHISPER_ENGINE` static (explore finding 1 —
-      no new handle) and passes it as `&dyn Fn(&[f32]) -> Option<String>`
-      into the synthesis pass (composition root only; hexagonal-port-traits
-      linkage recorded in design.md).
+      no new handle; no confidence floor — design thread B: the returned
+      confidence is a text-length proxy, anti-correlated with
+      hallucination) and passes it as `&dyn Fn(&[f32]) -> Option<String>`
+      into the synthesis pass (composition root only;
+      hexagonal-port-traits linkage recorded in design.md). RED: the
+      synthesis pass inserts AFTER `resolve_duplicate_clusters` — a
+      same-span stream pair with token-similar text survives the D4
+      resolver (design thread A hazard, adversarial test 10).
 - [ ] 2.2 RED: whisper unavailable / separation model missing → render
       byte-identical to today's (degrade channel, existing pin).
 
@@ -35,11 +40,14 @@ committed tests.
       persistence round-trip (persist → refetch → badges and text intact).
 - [ ] 3.3 Gate extension: ear-truth gate asserts the S16 window renders two
       distinct-badge in-order rows (needles from the local fixture); the
-      duplicate scan's exemption is provenance-scoped (same `original_id`
-      stream pair passes, different-source overlap still fails — design
-      thread A, adversarial test 9); all existing pins stay green
-      (33.2–38.5 regression window proves no synthesis outside overlap
-      spans).
+      duplicate scan's exemption is provenance-scoped at GROUP level
+      (overlapping-wall groups with intersecting absorbed-row id sets pass;
+      disjoint-id overlaps still fail — design thread A, adversarial test
+      9); the gate logs a census of every synthesized span (walls, both
+      voices, per-stream text) as the Phase 4 sampling inventory — the
+      both-decisive span count is measured, never assumed; all existing
+      pins stay green (33.2–38.5 regression window proves no synthesis
+      outside overlap spans).
 - [ ] 3.4 Live `live_speakers_run`-equivalent persist; DB-layer verification
       (terminal-only rule): S16 rows per-voice, transcript_sources
       untouched.

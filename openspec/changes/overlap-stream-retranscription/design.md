@@ -86,38 +86,54 @@ quality channel C's scoping stance leans on.
 
 ### Thread A (must-resolve before 1.1) — duplicate-scan exemption is provenance, not geometry
 
-The ear gate's duplicate scan (`ear_truth_gate.rs`, overlap_pairs) pushes a
-render failure for ANY pair of rows at overlapping span walls —
-"same-audio double-decode suspects (never dropped)". Two stream rows at
-the same overlap span have identical walls BY DESIGN and will trip it.
+The ear gate's duplicate scan (`ear_truth_gate.rs`, overlap_pairs) fails ANY
+pair of GROUPS at overlapping walls — and groups are merged turns, not raw
+rows, so a stream row can also end up glued to an adjacent same-speaker
+neighbor (gap ≤ 3 s). Two stream rows at the same overlap span trip it
+either way.
 
-**Resolution**: exempt on provenance, never on wall-offsetting. Stream
-rows inherit the span's source row id as `original_id` (explore finding
-2); two rows sharing one `original_id` are attested simultaneous speech —
-the both-streams-decisive gate IS the attestation, so no ear ruling is
-needed per span. The scan keeps failing any overlapping-wall pair whose
-rows trace to DIFFERENT sources (a true double-decode suspect). We do not
-"lie about time" (offset walls to dodge the scan); the scan learns what a
-legitimate same-wall pair looks like. Lands in task 3.3; adversarial test
-9 below pins both sides of the exemption.
+**Resolution**: exempt on provenance, never on wall-offsetting. Verified
+mechanics: rows flow through the pipeline as `AlignedSegment`, which
+ALREADY carries `original_id` end-to-end (`merge_same_label_fragments`
+compares it; there is a `never_crosses_source_rows` test). The exemption
+therefore needs NO change to `turns.rs` and no new plumbing in the
+pipeline — the gate's `RowRef` projection is what drops the id. The gate
+keeps a parallel `original_id` list aligned with its `RowRef` slice;
+`TurnGroup.row_indexes` already indexes that slice, so a group's
+provenance is the id set of its absorbed rows. Exemption rule at GROUP
+level: overlapping-wall groups whose id sets INTERSECT are attested
+simultaneous (the stream pair shares the span's source row id — the
+both-streams-decisive gate IS the attestation); disjoint id sets at
+overlapping walls remain true double-decode suspects and still fail. We
+do not "lie about time" (offset walls to dodge the scan). Lands in task
+3.3; adversarial test 9 pins both sides.
 
-### Thread B — confidence channel at the seam, probe before commitment
+**New hazard found while pulling (test 10)**: the replay chain runs
+`resolve_duplicate_clusters` (production D4) between merge and persist.
+The two stream rows share walls and MAY share token-similar text (an echo
+or a genuine repeat) — the resolver could classify them as a
+re-transcription cluster and DROP a voice. The synthesis pass MUST insert
+AFTER that resolver (stream rows are replacements, not a re-decode to
+dedup), pinned by a test: the stream pair survives the resolver.
 
-`whisper_engine::transcribe_audio_with_confidence(Vec<f32>, lang,
-offset_ms) -> Result<(String, f32, bool, Option<String>)>` exists and is
-the quality channel. Open question: does its confidence discriminate good
-stream text from hallucinated/echo text on SEPARATED streams (cleaner
-input may score uniformly high, or separation artifacts may score low)?
+### Thread B — confidence channel is DEAD on arrival; guards carry the weight alone
 
-**Resolution**: run a cheap live probe on the cached separated streams
-(env-gated, same pattern as the stop-gate probe) BEFORE finalizing the
-seam. If confidence discriminates, the composition-root closure applies a
-confidence floor (plus the bool hallucination flag) and returns `None`
-below it — the closure stays `&dyn Fn(&[f32]) -> Option<String>`, the pure
-function signature is untouched, and "None from the seam" is just the
-existing no-synthesis degrade. If it does not discriminate, the
-hallucination guards alone carry the weight and the closure stays plain.
-Probe folds into task 2.1.
+The planned live probe is cancelled — no probe can rescue this value.
+`decode_with_params` (whisper_engine.rs ~:872) computes the returned
+"confidence" as `(segment_text.len() / 100.0).min(0.9) + 0.1`: a
+TEXT-LENGTH proxy, not whisper.cpp's avg_logprob. Hallucinated fluent
+fictions are long, so the proxy is anti-correlated with the exact failure
+mode this change must reject. The tuple's `bool` is `is_partial`
+(duration < 15 s), not a hallucination flag. The engine's own params
+comment already records the real design: gates inside whisper.cpp are
+advisory (last decode is still emitted) and "the lane audits text after
+decode (audio::hallucination)".
+
+**Resolution**: the composition-root closure stays plain
+`&dyn Fn(&[f32]) -> Option<String>` with NO confidence floor; quality is
+enforced by the hallucination lane (degenerate-repeat guard, quarantine,
+echo dedup) exactly as the both-streams gate already assumed. The pure
+function signature is untouched.
 
 ### Thread C (scoping stance) — uniform rule + gate census
 
@@ -126,12 +142,15 @@ meeting-wide (uniform), vs only ear-attested spans (S16 only).
 
 **Resolution**: uniform + gate census. Selecting spans by hand would be a
 hardcoded override in disguise; the uniform rule is driven entirely by the
-evidence channels (votes + margin + text guards). The ear gate logs a
-census of every synthesized span (walls, both voices, per-stream text from
-the local fixture) so Phase 4 ear sampling draws from the complete
-inventory — the user hears a representative sample, not a curated one.
-S16 stays special only in the fixture's expected needles (task 3.3), not
-in the rule.
+evidence channels (votes + margin + text guards). The meeting-wide count
+of both-streams-decisive spans is genuinely UNKNOWN until the gate runs —
+the prepass probes verified individual spans (S7c, S16), not coverage —
+so the census IS the measurement: the gate logs every synthesized span
+(walls, both voices, per-stream text from the local fixture), and Phase 4
+ear sampling draws from that complete inventory, not a curated list. S16
+stays special only in the fixture's expected needles (task 3.3), not in
+the rule. Cost bound: worst case 2 inferences × 38 spans ≈ 76 short
+inferences on an already-loaded model.
 
 ## Security / trust boundaries
 
@@ -156,9 +175,14 @@ No LLM in this path. The separator's output never reaches persistence
    and survive a refetch (DB-layer verification, terminal-only rule).
 8. Gate: S16 window renders two distinct-badge in-order rows; the 33.2–38.5
    regression pins stay green (no synthesis outside overlap spans).
-9. Duplicate-scan exemption is provenance-scoped (thread A): a same-wall
-   stream pair sharing one `original_id` passes the scan; an
-   overlapping-wall pair tracing to different sources still fails it.
+9. Duplicate-scan exemption is provenance-scoped (thread A): two
+   overlapping-wall groups whose absorbed-row id sets intersect (stream
+   pair sharing the span's source id) pass the scan; a disjoint-id
+   overlapping-wall pair still fails it.
+10. Stream pair survives `resolve_duplicate_clusters`: synthesis inserts
+    after the D4 resolver, and a same-span stream pair with token-similar
+    text is never classified as a re-transcription cluster (no voice
+    vanishes).
 
 ## §3 smoke-spec decision
 
