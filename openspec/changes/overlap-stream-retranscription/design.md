@@ -78,6 +78,13 @@
 4. **Gate snapshot ordering**: the gate pins the replay to a row snapshot
    AND cross-checks the live DB hash — after the render changes, the
    snapshot must be re-pinned AFTER the live persist (task 3.5), not before.
+5. **Async bridge at the seam is a non-problem**: `decode_with_params` is
+   async only for the tokio `RwLock` on the model context
+   (whisper_engine.rs:841); the whisper.cpp call itself is synchronous. The
+   seam closure uses a sync decode method (`blocking_read` over the same
+   lock) — legal because the speaker pipeline already runs inside
+   `spawn_blocking` (commands.rs:645+), where blocking primitives are
+   permitted.
 
 ## Explore-cycle thread resolutions (2026-09-29, second session)
 
