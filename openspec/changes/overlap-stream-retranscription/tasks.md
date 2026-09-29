@@ -26,7 +26,7 @@ evidence home, never repo-committed).
       the boundary unit test pins 0.25 exactly — a run sustaining ≥0.5
       mass for 0.24 s does NOT fire, 0.25 s does; the attested S16 window
       (longest 0.5-bar run 0.270 s) therefore fires.
-- [ ] 1.1 RED: `synthesize_overlap_rows` — covered span + both-stream
+- [x] 1.1 RED: `synthesize_overlap_rows` — covered span + both-stream
       decisive votes (per-span record carrying stream identity, margins,
       and texts) + per-stream texts → per-voice rows replacing the span's
       mixture rows, traced to source row ids. Adversarial: silent stream
@@ -38,10 +38,12 @@ evidence home, never repo-committed).
       multi-row span → pinned max-covered-atom id selection. (Checkbox
       reset by the panel: only this RED spec existed, no test — apply
       starts here.)
-- [ ] 1.2 GREEN: pure function + text guards (reuse degenerate-repeat dedup
+- [x] 1.2 GREEN: pure function + text guards (reuse degenerate-repeat dedup
       and the language pin on stream text; trimmed non-empty check —
       whitespace/punctuation-only text does not synthesize); adversarial
-      suite green.
+      suite green. (11 adversarial tests + full run_assembly suite green;
+      full lib 726/726 twice — one unrelated first-run flake did not
+      reproduce.)
 
 ## Phase 2 — transcription seam
 

@@ -303,6 +303,17 @@ Design decisions pinned by the panel:
 
 ## Adversarial tests (RED before GREEN)
 
+Replacement scope (pinned by task 1.1, per the delta spec's "stated in the
+design" requirement): a mixture row is replaced iff the covered-atom time
+overlap is at least half the row's duration (`SYNTH_ROW_COVERAGE`, mirroring
+run_engine's SEPARATION_ATOM_COVERAGE); such rows are replaced WHOLE — an
+out-of-span remainder's words leave the render, and the word-loss diagnostic
+is the honest accounting of that loss (the calibration clip set judges
+whether it is acceptable). A row under the bar survives untouched — no
+partial-row surgery, no silent loss. The source row whose covered overlap is
+largest (tie: earliest start) donates its `original_id` to both stream rows;
+if no row reaches the bar, synthesis degrades — an id is never fabricated.
+
 1. Silent stream (RMS-floor passed but no speech) → whisper returns empty →
    NO synthesis; mixture rows survive.
 2. Hallucination stream (whisper echoes a nonexistent sentence) → caught by
