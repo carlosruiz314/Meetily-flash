@@ -9,15 +9,15 @@ evidence home, never repo-committed).
 
 ## Phase 0 — blocking measurement (pre-implementation)
 
-- [ ] 0.1 Dry-run census probe (env-gated, existing pipeline, no render
+- [x] 0.1 Dry-run census probe (env-gated, existing pipeline, no render
       change): log every trigger-fired span — trigger mass, per-stream
-      best/second similarities and margins including REJECTS, pre-
-      normalization span RMS vs clip RMS — plus S16's per-frame mass
-      profile at 1055.5–1057.5 and the total span count. TOKEN-ONLY
-      output. Panel P0: nothing yet proves S16 fires at mass 0.5 (the
-      stop-gate bypassed the trigger). Outcome recorded in design.md; if
-      S16 does not fire, the mass-bar decision goes to the user with the
-      near-miss distribution in hand.
+      best/second similarities and margins including REJECTS, energy
+      split — plus S16's per-frame mass profile at 1055.5–1057.5 and the
+      total span count. TOKEN-ONLY output. OUTCOME (2026-09-30): S16 does
+      NOT fire — mass peaks 0.726 (bar 0.5 is crossed) but never sustains
+      0.4 s (longest run 0.270 s); dial sweep recorded in design.md,
+      decision with the user. Probe:
+      `frontend/src-tauri/tests/overlap_census_probe.rs`.
 
 ## Phase 1 — synthesis core (pure, fakes only)
 
