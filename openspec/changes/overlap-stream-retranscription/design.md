@@ -56,6 +56,27 @@
   gate reads expected needles from the local fixture (real text never
   enters code).
 
+## Explore-cycle findings (2026-09-29, pre-apply audit)
+
+1. **Whisper seam resolved to a concrete handle**: `whisper_engine::commands::
+   WHISPER_ENGINE` (static `Mutex<Option<Arc<WhisperEngine>>>`) with
+   `transcribe_audio(Vec<f32>, lang) -> Result<String>`. The closure is built
+   from that static at the composition root; an UNINITIALIZED engine (real
+   case: probe/test contexts) is the degrade path, not a hypothetical.
+2. **Persistence verified, one trap found**: `persist_regenerated_rendering`
+   writes `seg.text` (the RENDER text) into fresh-UUID rendering rows and
+   takes template metadata from `transcript_sources` keyed by
+   `original_id` — so stream text persists as-is. TRAP: a rendering row
+   whose `original_id` is absent from `transcript_sources` is silently
+   SKIPPED at persist. Stream rows MUST inherit the span's source row id as
+   `original_id` (tested in 1.1).
+3. **Replacement is already the persist model**: rendering rows are deleted
+   and reinserted (fresh UUIDs) on every persist — stream rows are ordinary
+   rendering rows; no special replacement mechanics exist or are needed.
+4. **Gate snapshot ordering**: the gate pins the replay to a row snapshot
+   AND cross-checks the live DB hash — after the render changes, the
+   snapshot must be re-pinned AFTER the live persist (task 3.5), not before.
+
 ## Security / trust boundaries
 
 Stream text is untrusted model output: it passes the same schema validation
