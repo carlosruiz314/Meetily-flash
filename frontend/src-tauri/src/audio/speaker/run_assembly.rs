@@ -11,6 +11,7 @@
 //! Vecs only — no HashMap iteration may affect any decision; spec step 8).
 //! Model I/O lives in `pyannote_segmentation` and `nemo_extractor`.
 
+use crate::audio::speaker::alignment::{AlignedSegment, SpeakerSource};
 use crate::audio::speaker::pyannote_segmentation::{FrameMasses, SILENCE_LABEL};
 
 /// Speech gate: summed speaker mass above this = speech (spec step 1).
@@ -1594,6 +1595,144 @@ pub fn rescue_candidates(
     out
 }
 
+// ---------------------------------------------------------------------------
+// Overlap-stream synthesis (overlap-stream-retranscription Phase 1)
+// ---------------------------------------------------------------------------
+
+/// One separated stream's evidence for an overlap span. Stream identity is
+/// the array index (0/1) — the separation port's stream ORDER carries no
+/// meaning, so the caller owns the index→stream binding.
+pub struct StreamEvidence {
+    pub cluster: u32,
+    pub margin: f32,
+    /// Per-stream decode AFTER the hallucination lane: None = engine
+    /// unavailable, quarantined, or guard-dropped.
+    pub text: Option<String>,
+}
+
+/// A span's both-stream synthesis evidence. Spans are seconds (the
+/// trigger's unit); rows are milliseconds (the alignment's unit).
+pub struct SpanSynthesis {
+    pub span: (f64, f64),
+    pub streams: [StreamEvidence; 2],
+}
+
+/// Spans longer than one Whisper window are render-hostile mega-rows and
+/// unbounded inferences — the oversized-span guard.
+pub const OVERLAP_MAX_SPAN_SECS: f64 = 30.0;
+/// Fraction of a row's duration that must be separation-covered for the
+/// row to be replaced whole. Mirrors run_engine's SEPARATION_ATOM_COVERAGE
+/// (atom-level bar); the row-level bar may diverge later, which is why it
+/// is its own constant.
+pub const SYNTH_ROW_COVERAGE: f64 = 0.5;
+
+/// Replace an overlap span's mixture rows with one row per decisive
+/// stream. Pure: no I/O, no model access — the caller supplies the rows,
+/// the per-span evidence, and the covered atoms. Returns the FULL
+/// replacement row list, or None when ANY gate fails (the caller then
+/// keeps the input rows — the byte-identical degrade). Stream rows inherit
+/// the source row's `original_id`; if no row is covered enough to donate
+/// one, synthesis degrades rather than fabricating an id the persist
+/// would silently drop.
+pub fn synthesize_overlap_rows(
+    rows: &[AlignedSegment],
+    synthesis: &SpanSynthesis,
+    covered_atoms: &[(i64, i64)],
+    cluster_speaker: &dyn Fn(u32) -> Option<String>,
+) -> Option<Vec<AlignedSegment>> {
+    let (s0, s1) = synthesis.span;
+    if s1 <= s0 || s1 - s0 > OVERLAP_MAX_SPAN_SECS {
+        return None;
+    }
+    // Last text gate: guard-dropped (None), whitespace- or punctuation-only
+    // stream text is no synthesis — garbage may abstain, never render.
+    let mut texts: [String; 2] = [String::new(), String::new()];
+    for (i, st) in synthesis.streams.iter().enumerate() {
+        let t = st.text.as_ref()?;
+        if !t.chars().any(|c| c.is_alphanumeric()) {
+            return None;
+        }
+        texts[i] = t.clone();
+    }
+    if synthesis.streams.iter().any(|st| st.margin < SUBTURN_VOTE_MARGIN) {
+        return None;
+    }
+    let (c0, c1) = (synthesis.streams[0].cluster, synthesis.streams[1].cluster);
+    if c0 == c1 {
+        // Separation collapse: two rows, one voice — the jumble this change
+        // exists to kill, reintroduced through a degenerate vote.
+        return None;
+    }
+    let badge0 = cluster_speaker(c0)?;
+    let badge1 = cluster_speaker(c1)?;
+
+    let span_ms = ((s0 * 1000.0) as i64, (s1 * 1000.0) as i64);
+    let covered_time = |row: &AlignedSegment| -> i64 {
+        let mut total = 0i64;
+        for &(a, b) in covered_atoms {
+            let lo = a.max(row.audio_start_ms);
+            let hi = b.min(row.audio_end_ms);
+            if hi > lo {
+                total += hi - lo;
+            }
+        }
+        total
+    };
+    // Replacement scope (design): a row is replaced WHOLE at or above the
+    // coverage bar; under-bar rows survive untouched. The source row donates
+    // its id — largest covered overlap, tie → earliest start.
+    let mut best: Option<(i64, i64, usize)> = None;
+    let mut replaced: Vec<bool> = vec![false; rows.len()];
+    for (i, row) in rows.iter().enumerate() {
+        let dur = row.audio_end_ms - row.audio_start_ms;
+        if dur <= 0 {
+            continue;
+        }
+        let cov = covered_time(row);
+        if (cov as f64 / dur as f64) >= SYNTH_ROW_COVERAGE {
+            replaced[i] = true;
+            let better = match best {
+                None => true,
+                Some((bc, bs, _)) => cov > bc || (cov == bc && row.audio_start_ms < bs),
+            };
+            if better {
+                best = Some((cov, row.audio_start_ms, i));
+            }
+        }
+    }
+    let (_, _, src_idx) = best?;
+    let source_id = rows[src_idx].original_id.clone();
+    let first_replaced = replaced.iter().position(|&r| r);
+
+    let mk = |text: &str, badge: String| AlignedSegment {
+        original_id: source_id.clone(),
+        text: text.to_string(),
+        audio_start_ms: span_ms.0,
+        audio_end_ms: span_ms.1,
+        speaker: badge,
+        speaker_source: SpeakerSource::Auto,
+    };
+    let mut stream0 = Some(mk(&texts[0], badge0));
+    let mut stream1 = Some(mk(&texts[1], badge1));
+
+    let mut out = Vec::with_capacity(rows.len() + 2);
+    let insert_at = first_replaced.unwrap_or(rows.len());
+    for (i, row) in rows.iter().enumerate() {
+        if i == insert_at {
+            if let Some(r) = stream0.take() {
+                out.push(r);
+            }
+            if let Some(r) = stream1.take() {
+                out.push(r);
+            }
+        }
+        if !replaced[i] {
+            out.push(row.clone());
+        }
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2867,5 +3006,175 @@ mod tests {
         assert!((turns[1].start_secs - 10.7).abs() < 1e-9, "{:?}", turns[1]);
         assert!(turns[1].low_confidence, "founder carries the promotion flag");
         assert!(!turns[1].continues_previous);
+    }
+
+    // ---- overlap-stream synthesis (overlap-stream-retranscription 1.1) ----
+
+    use crate::audio::speaker::alignment::SpeakerSource;
+
+    fn seg(id: &str, text: &str, start_ms: i64, end_ms: i64, speaker: &str) -> AlignedSegment {
+        AlignedSegment {
+            original_id: id.to_string(),
+            text: text.to_string(),
+            audio_start_ms: start_ms,
+            audio_end_ms: end_ms,
+            speaker: speaker.to_string(),
+            speaker_source: SpeakerSource::Auto,
+        }
+    }
+
+    fn ev(cluster: u32, margin: f32, text: Option<&str>) -> StreamEvidence {
+        StreamEvidence { cluster, margin, text: text.map(str::to_string) }
+    }
+
+    fn synth(span: (f64, f64), a: StreamEvidence, b: StreamEvidence) -> SpanSynthesis {
+        SpanSynthesis { span, streams: [a, b] }
+    }
+
+    fn cluster_speaker(c: u32) -> Option<String> {
+        match c {
+            1 => Some("userA".into()),
+            2 => Some("userB".into()),
+            3 => Some("userC".into()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn decisive_distinct_span_replaces_covered_rows_with_stream_rows() {
+        let rows = vec![
+            seg("src1", "jumbled interleave", 100_000, 102_000, "Speaker 0"),
+            seg("src2", "later row", 200_000, 202_000, "Speaker 1"),
+        ];
+        let s = synth(
+            (100.0, 102.0),
+            ev(1, 0.30, Some("alpha beta")),
+            ev(3, 0.20, Some("gamma delta")),
+        );
+        let out = synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker)
+            .expect("both streams decisive and distinct");
+        assert_eq!(out.len(), 3, "replaced row + two stream rows + survivor: {out:?}");
+        assert_eq!(out[0].speaker, "userA");
+        assert_eq!(out[0].text, "alpha beta");
+        assert_eq!((out[0].audio_start_ms, out[0].audio_end_ms), (100_000, 102_000));
+        assert_eq!(out[0].original_id, "src1", "stream rows trace the source row");
+        assert_eq!(out[1].speaker, "userC");
+        assert_eq!(out[1].text, "gamma delta");
+        assert_eq!(out[1].original_id, "src1");
+        assert_eq!(out[2].text, "later row", "uncovered row survives untouched");
+        assert!(matches!(out[0].speaker_source, SpeakerSource::Auto));
+    }
+
+    #[test]
+    fn margin_miss_on_either_stream_degrades() {
+        let rows = vec![seg("src1", "jumbled", 100_000, 102_000, "Speaker 0")];
+        let s = synth(
+            (100.0, 102.0),
+            ev(1, 0.30, Some("alpha")),
+            ev(3, SUBTURN_VOTE_MARGIN - 0.01, Some("gamma")),
+        );
+        assert!(synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker).is_none());
+    }
+
+    #[test]
+    fn same_badge_collapse_degrades() {
+        let rows = vec![seg("src1", "jumbled", 100_000, 102_000, "Speaker 0")];
+        let s = synth(
+            (100.0, 102.0),
+            ev(1, 0.30, Some("alpha")),
+            ev(1, 0.20, Some("gamma")),
+        );
+        assert!(synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker).is_none());
+    }
+
+    #[test]
+    fn guard_dropped_stream_text_degrades() {
+        let rows = vec![seg("src1", "jumbled", 100_000, 102_000, "Speaker 0")];
+        let s = synth((100.0, 102.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, None));
+        assert!(synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker).is_none());
+    }
+
+    #[test]
+    fn whitespace_or_punctuation_only_text_degrades() {
+        let rows = vec![seg("src1", "jumbled", 100_000, 102_000, "Speaker 0")];
+        for junk in ["   ", "..."] {
+            let s = synth((100.0, 102.0), ev(1, 0.30, Some(junk)), ev(3, 0.20, Some("gamma")));
+            assert!(
+                synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker).is_none(),
+                "junk stream text {junk:?} must not synthesize"
+            );
+        }
+    }
+
+    #[test]
+    fn degenerate_span_degrades_without_panic() {
+        let rows = vec![seg("src1", "jumbled", 100_000, 102_000, "Speaker 0")];
+        let s = synth((5.0, 5.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
+        assert!(synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_none());
+        let s = synth((7.0, 3.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
+        assert!(synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_none());
+    }
+
+    #[test]
+    fn oversized_span_degrades() {
+        let rows = vec![seg("src1", "long jumble", 0, 30_000, "Speaker 0")];
+        let s = synth((0.0, 30.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
+        let cov: Vec<(i64, i64)> = (0..30).map(|s| (s * 1000, (s + 1) * 1000)).collect();
+        assert!(synthesize_overlap_rows(&rows, &s, &cov, &cluster_speaker).is_some(), "exactly one whisper window is fine");
+        let s = synth((0.0, 30.5), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
+        assert!(synthesize_overlap_rows(&rows, &s, &cov, &cluster_speaker).is_none(), "beyond one window degrades");
+    }
+
+    #[test]
+    fn no_covered_row_degrades_rather_than_fabricating_an_id() {
+        let rows = vec![seg("src1", "far away", 500_000, 502_000, "Speaker 0")];
+        let s = synth((100.0, 102.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
+        assert!(synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker).is_none());
+    }
+
+    #[test]
+    fn multi_row_span_selects_max_coverage_tie_earliest() {
+        // Tie: both rows fully covered, earliest start wins.
+        let rows = vec![
+            seg("src1", "first", 100_000, 101_000, "Speaker 0"),
+            seg("src2", "second", 101_000, 102_000, "Speaker 1"),
+        ];
+        let s = synth((100.0, 102.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
+        let out = synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker)
+            .expect("both rows covered");
+        assert_eq!(out[0].original_id, "src1", "tie → earliest start donates the id");
+        assert_eq!(out.len(), 2, "both mixture rows replaced");
+
+        // Max coverage: the second row carries more covered time.
+        let rows = vec![
+            seg("src1", "partial", 100_000, 101_000, "Speaker 0"),
+            seg("src2", "wider", 100_500, 102_000, "Speaker 1"),
+        ];
+        let out = synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker)
+            .expect("both rows covered");
+        assert_eq!(out[0].original_id, "src2", "largest covered overlap donates the id");
+    }
+
+    #[test]
+    fn straddling_row_under_bar_survives_whole() {
+        // 1000 of 2500 ms covered (0.4 < bar) → the row survives with its
+        // full text; the fully-covered neighbor is replaced.
+        let rows = vec![
+            seg("src1", "straddling tail", 98_500, 101_000, "Speaker 0"),
+            seg("src2", "inside", 101_000, 102_000, "Speaker 1"),
+        ];
+        let s = synth((100.0, 102.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
+        let out = synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker)
+            .expect("one row covered");
+        assert_eq!(out[0].text, "straddling tail", "under-bar row keeps every word");
+        assert_eq!(out.len(), 3);
+        assert_eq!(out[1].original_id, "src2");
+    }
+
+    #[test]
+    fn unresolvable_cluster_degrades() {
+        let rows = vec![seg("src1", "jumbled", 100_000, 102_000, "Speaker 0")];
+        let s = synth((100.0, 102.0), ev(9, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
+        assert!(synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker).is_none());
     }
 }
