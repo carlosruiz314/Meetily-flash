@@ -5,13 +5,15 @@
 - **Port (reuse)**: the separation pre-pass's `VoiceSeparationPort` —
   unchanged.
 - **Transcription seam (new, first caller)**: the diarization pipeline has
-  never needed Whisper; this change does. Rather than import
-  `whisper_engine` deep in the aligner, `commands.rs` (composition root)
-  holds the loaded `TranscribePort` handle it already builds for the main
-  transcription path and passes a `&dyn Fn(&[f32]) -> Option<String>` to the
+  never needed Whisper; this change does. The composition root for Tauri
+  commands is `lib.rs`; the closure is built at the adapter command surface
+  (`audio/speaker/commands.rs`) over the `whisper_engine::commands::
+  WHISPER_ENGINE` static (no `TranscriberPort` exists — port traits are
+  deferred) and passed as a `&dyn Fn(&[f32]) -> Option<String>` into the
   synthesis pass. This is the §8 `hexagonal-port-traits` forcing function
   arriving from a real §4 need; the closure is the seam until the deferred
-  port-traits change lands.
+  port-traits change lands. The adapter→adapter import is confined to
+  `commands.rs` and recorded as debt in `hexagonal-port-traits`.
 - **Use case (new, pure)**: `run_assembly::synthesize_overlap_rows` — pure
   function, no I/O: inputs are the existing rows, the separation votes,
   covered atoms, and per-stream texts; output is the synthesized row list.
@@ -78,13 +80,25 @@
 4. **Gate snapshot ordering**: the gate pins the replay to a row snapshot
    AND cross-checks the live DB hash — after the render changes, the
    snapshot must be re-pinned AFTER the live persist (task 3.5), not before.
-5. **Async bridge at the seam is a non-problem**: `decode_with_params` is
-   async only for the tokio `RwLock` on the model context
-   (whisper_engine.rs:841); the whisper.cpp call itself is synchronous. The
-   seam closure uses a sync decode method (`blocking_read` over the same
-   lock) — legal because the speaker pipeline already runs inside
-   `spawn_blocking` (commands.rs:645+), where blocking primitives are
-   permitted.
+5. **Async bridge — CORRECTED by the panel (finding was wrong as
+   written)**: `transcribe_audio`/`decode_with_params` are async for the
+   tokio locks on the model context AND three stats locks
+   (whisper_engine.rs:841, 985–1016), and the mandated splice point
+   (after `resolve_duplicate_clusters`, commands.rs ~970) is OUTSIDE the
+   `spawn_blocking` region — the pipeline's only spawn_blocking block ends
+   at the join (~796), and the separated streams are moved into it and
+   dropped inside. A naive closure at the splice point panics
+   ("Cannot block the current thread from within a runtime"). **The pass
+   is therefore split along the existing boundary**: per-span synthesized
+   CANDIDATES (separation + per-stream decode + per-stream vote, as a
+   per-span record `{stream → (cluster, margin, text)}`) are computed
+   INSIDE the existing commands.rs:645 `spawn_blocking` and returned
+   alongside the engine outputs; the PURE `synthesize_overlap_rows` splice
+   runs after the resolver on the async side with no I/O. A new sync
+   decode method on `WhisperEngine` (`blocking_read` over
+   `current_context`, stats locks skipped or migrated) backs the closure;
+   unit-tested on a plain thread. The ear gate replays synthesis inside
+   `spawn_blocking` too (its `#[tokio::test]` body is a runtime worker).
 
 ## Explore-cycle thread resolutions (2026-09-29, second session)
 
@@ -178,6 +192,109 @@ and hallucination guards as live transcription before touching the render.
 No LLM in this path. The separator's output never reaches persistence
 (audio only becomes text via Whisper; embeddings never leave the process).
 
+## Pre-implementation adversarial panel (2026-09-29, 5 reviewers) — folded decisions
+
+Five read-only reviewers (architecture, test coverage, security/PII, spec
+fidelity, data science) attacked the artifacts. Convergent and singular
+findings, folded as follows. Blocking measurement first:
+
+- **P0 — does S16 even fire the trigger?** The archived prepass recorded
+  overlap mass 0.16–0.26 at 1055.5–1057.5; the trigger bar is
+  OVERLAP_TRIGGER_MASS = 0.5, and the S16 stop-gate measurements bypassed
+  the trigger (separator run directly on attested coordinates). Nothing
+  proves S16 is among the 38 fired spans. Task 0.1 runs a token-only
+  dry-run census (existing pipeline, no render change) recording every
+  trigger-fired span's mass, per-stream similarities/margins including
+  rejects, and pre-normalization RMS ratios. If S16 does not fire, the
+  mass-bar decision goes to the user with the near-miss distribution in
+  hand — never lowered blind.
+
+Design decisions pinned by the panel:
+
+1. **Language (arch + DSP + tests converged)**: the stream decode uses the
+   meeting's resolved language — the concrete code when the user
+   preference names one, else the same resolution the mixture rows used.
+   Never `auto-translate` (the global default would render Spanish
+   meetings as English stream rows), never per-stream auto-detect on
+   2–3 s clips, never the strict lane's `en` fallback.
+2. **Stream identity + distinct badges (arch + DSP + tests converged)**:
+   votes are bare `(start, end, cluster)` tuples with stream order
+   non-contractual — badges cannot be derived from them. The vote record
+   is extended to a per-span record `{stream → (cluster, margin, text)}`,
+   and the gate requires the two streams' clusters to DIFFER; a same-badge
+   collapse (Conv-TasNet returns voice + residue) degrades to the mixture
+   render. The real same-shape hazard is consolidation merging same-badge
+   rows at negative gap (turns.rs gap ≤ 3 s, negative for identical
+   spans) — concatenating two voices under one badge.
+3. **D4-resolver hazard re-pointed (arch)**: `duplicate_pair` never merges
+   overlapping spans by construction — the resolver hazard is structurally
+   impossible; test 10's ordering stays (costs nothing) but the pinned
+   adversarial energy moves to the consolidation case (test 13).
+4. **original_id selection for multi-row spans (arch + DSP)**: a span can
+   cover atoms of two source rows; each stream row inherits the id of the
+   source row with maximum covered-atom overlap (tie → earliest start),
+   pinned by test. Replacement scope (a row straddling the span walls)
+   keeps its out-of-span remainder or is replaced whole — pinned, no
+   silent word loss.
+5. **Census contract (DSP + tests + security converged)**: the census
+   covers ALL trigger-fired spans (synthesized or rejected) — trigger
+   mass, per-stream best/second similarities and margins, pre-
+   normalization RMS ratios, outcome — so retuning has the near-miss
+   distribution, not just precision. This requires
+   `separated_stream_voice_votes` to stop discarding margins. Recorded
+   census artifacts are TOKEN-ONLY (walls, ids, margins, word/char counts,
+   sha256 of each stream's text); verbatim text is terminal-only
+   (env-gated) or in the evidence home — the runner script's output file
+   in the change folder must never carry meeting text (security P0), and
+   `openspec/changes/**/gate-runs/` gets a .gitignore entry + pre-push
+   pathspec.
+6. **Whisper stream profile (DSP)**: deterministic decode — pinned
+   language, greedy (reuse the strict lane's param shape), temperature 0
+   (no noise-amplifying fallback ladder on bleed-heavy streams), no token
+   timestamps (rows use span walls). Below-1 s spans may return empty —
+   the non-empty guard degrades them, census logs it.
+7. **Eligibility floor (DSP)**: a stream is eligible only if its
+   PRE-normalization span RMS is ≥ a stated fraction of the clip's RMS
+   (target 0.1); SEPARATION_MIN_WINDOW_RMS evaluated post-normalization
+   means "digitally silent", not "no voice" — normalization amplifies
+   near-silence 100–1000× into the hallucination regime. Optional
+   absolute-cosine floor on votes.
+8. **Word-loss statistic (DSP)**: duration-normalized rates
+   (words/sec over the span, flagged both directions — too low = lost
+   words, too high = hallucination); raw count vs the SUM of replaced rows
+   is secondary. The mixture row's count is echo-inflated, so a raw ratio
+   would bias the clip set toward non-defects.
+9. **Cross-stream duplication flag (DSP)**: same utterance leaked into
+   both streams (likely near span edges) is a distinct failure the
+   provenance exemption would positively pass; census flags ≥3-token
+   contiguous overlap covering ≥80% of the shorter text. Flag-only.
+10. **Manual rows (arch + tests)**: a span containing a surviving
+    manually-labeled row does not synthesize — midpoint suppression would
+    otherwise eat BOTH fresh stream rows on the next run (the un-labeled
+    voice vanishes). Manual wins; synthesis degrades for that span.
+11. **Byte-identity comparators (spec + tests)**: `transcript_sources`
+    via the source_hash digest; the degrade render via the structural
+    signature (count/text/span/badge, generated ids excepted — fresh UUIDs
+    make id-inclusive identity impossible by construction).
+12. **Gate needs a real engine (arch)**: the gate process has
+    WHISPER_ENGINE = None → degrade → the S16 assertion could never pass;
+    task 3.3 constructs the engine explicitly (precedent: the live
+    speaker tests) and the census records the model name.
+13. **speaker_source (arch)**: persist hardcodes `'auto'`; task 3.2 is
+    rescoped to "stream rows persist as `'auto'`" — a new SpeakerSource
+    variant would touch every row's persistence and both label predicates,
+    out of scope for v1.
+14. **Threshold provenance (DSP, on record)**: margin 0.05 is the
+    production mixture bar applied unchanged (measured stream margins
+    0.135–0.29 give 3–6× headroom); trigger mass 0.5 + 0.4 s was chosen
+    for cost, never validated for false-positive rate. Inherited, not
+    stream-calibrated — the census + ear protocol is what calibrates them.
+15. **Pre-existing public verbatim needles (security, out of scope
+    here)**: hardcoded dialogue needles already on origin/main
+    (ear_truth_gate.rs, alignment.rs, commands.rs) — do NOT extend the
+    pattern (S16 needles come from the local fixture); a dedicated scrub
+    change follows.
+
 ## Adversarial tests (RED before GREEN)
 
 1. Silent stream (RMS-floor passed but no speech) → whisper returns empty →
@@ -192,19 +309,41 @@ No LLM in this path. The separator's output never reaches persistence
    render identical to today's (existing channel).
 7. Persistence round-trip: stream rows persist with their per-stream badge
    and survive a refetch (DB-layer verification, terminal-only rule).
-8. Gate: S16 window renders two distinct-badge in-order rows; the 33.2–38.5
-   regression pins stay green (no synthesis outside overlap spans).
+8. Gate: S16 window renders two distinct-badge in-order rows (needs a real
+   loaded engine in the gate process, decision 12); no synthesis outside
+   overlap spans, asserted mechanically — every synthesized row's span is
+   covered by an overlap span (covered-atom property, synthetic-subset
+   assertable without audio).
 9. Duplicate-scan exemption is provenance-scoped (thread A): two
    overlapping-wall groups whose absorbed-row id sets intersect (stream
    pair sharing the span's source id) pass the scan; a disjoint-id
    overlapping-wall pair still fails it.
 10. Stream pair survives `resolve_duplicate_clusters`: synthesis inserts
-    after the D4 resolver, and a same-span stream pair with token-similar
-    text is never classified as a re-transcription cluster (no voice
-    vanishes).
+    after the D4 resolver. (Panel correction: the resolver never merges
+    overlapping spans by construction, so this ordering is belt-and-
+    braces; the pinned hazard is consolidation — test 13.)
 11. Word-loss flag is diagnostic only: a span whose synthesized rows lose
     words vs the mixture row is flagged in the census and still renders
     its synthesized rows — the flag never drops or reverts anything.
+12. Oversized span: a minutes-long overlap span (no MAX guard exists
+    today) degrades or is bounded by an OVERLAP_MAX_SPAN_SECS guard —
+    never two unbounded inferences and a render-hostile mega-row.
+13. Same-badge collapse: both streams voting one cluster → NO synthesis;
+    stream rows survive consolidation as atoms (a stream row is never
+    re-merged into an adjacent same-speaker turn).
+14. Language pin reaches the decode: a fake engine records the language
+    argument; the meeting's resolved language (never auto-translate)
+    arrives for every stream decode.
+15. Manual row wins: a span with a surviving manual row does not
+    synthesize, and the OTHER voice's fresh row is not suppressed by
+    midpoint suppression on the next run.
+16. Cross-stream duplication: near-identical texts on the two streams are
+    flagged in the census (suspected separator leak) and still render —
+    flag-only.
+17. Census contract: a synthesized span's census record carries walls,
+    both voices, token-only text data (counts + sha256), trigger mass,
+    per-vote margins, word-loss and cross-stream flags — a green
+    implementation missing any field fails the test.
 
 ## §3 smoke-spec decision
 
