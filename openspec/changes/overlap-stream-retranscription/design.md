@@ -198,16 +198,20 @@ Five read-only reviewers (architecture, test coverage, security/PII, spec
 fidelity, data science) attacked the artifacts. Convergent and singular
 findings, folded as follows. Blocking measurement first:
 
-- **P0 — does S16 even fire the trigger?** The archived prepass recorded
-  overlap mass 0.16–0.26 at 1055.5–1057.5; the trigger bar is
-  OVERLAP_TRIGGER_MASS = 0.5, and the S16 stop-gate measurements bypassed
-  the trigger (separator run directly on attested coordinates). Nothing
-  proves S16 is among the 38 fired spans. Task 0.1 runs a token-only
-  dry-run census (existing pipeline, no render change) recording every
-  trigger-fired span's mass, per-stream similarities/margins including
-  rejects, and pre-normalization RMS ratios. If S16 does not fire, the
-  mass-bar decision goes to the user with the near-miss distribution in
-  hand — never lowered blind.
+- **P0 — RESOLVED by the task 0.1 dry-run census (2026-09-30, probe
+  committed, env-gated + token-only)**: S16 does NOT fire at the current
+  dials — not because of the mass bar (the window's mass peaks 0.726,
+  above 0.5) but because mass ≥ 0.5 never SUSTAINS the 0.4 s minimum
+  (longest run 0.270 s; 0.405 s at a 0.3 bar). Sweep (mass, duration →
+  fired spans, S16): (0.5, 0.4) → 38, no; (0.5, 0.3) → 61, no;
+  **(0.5, 0.25) → 75, FIRES**; (0.5, 0.2) → 87; (0.5, 0.1) → 109;
+  (0.4, 0.4) → 62, no; (0.4, 0.3) → 85; (0.3, 0.4) → 80. Of the current
+  38 fired spans: 22 both-decisive-distinct (span-level proxy for
+  synthesis — production atom votes may reject more), 13 margin rejects,
+  10 same-badge collapses (the distinctness gate is load-bearing), 2
+  collapsed-stream energy splits. Dial decision goes to the user with
+  this table; the probe reuses the gate's frame-mass cache so re-runs
+  are cheap.
 
 Design decisions pinned by the panel:
 
