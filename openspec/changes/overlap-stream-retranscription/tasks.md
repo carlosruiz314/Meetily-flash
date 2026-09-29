@@ -43,11 +43,13 @@ committed tests.
       duplicate scan's exemption is provenance-scoped at GROUP level
       (overlapping-wall groups with intersecting absorbed-row id sets pass;
       disjoint-id overlaps still fail — design thread A, adversarial test
-      9); the gate logs a census of every synthesized span (walls, both
-      voices, per-stream text) as the Phase 4 sampling inventory — the
-      both-decisive span count is measured, never assumed; all existing
-      pins stay green (33.2–38.5 regression window proves no synthesis
-      outside overlap spans).
+      9); the gate logs the census the Phase 4 clip set draws from: every
+      synthesized span's walls, both voices, per-stream text, the trigger
+      mass and vote margins that fired it, and a word-loss flag
+      (synthesized rows' word count vs the mixture row's) — flag-only,
+      never drops (adversarial test 11); all existing pins stay green
+      (33.2–38.5 regression window proves no synthesis outside overlap
+      spans).
 - [ ] 3.4 Live `live_speakers_run`-equivalent persist; DB-layer verification
       (terminal-only rule): S16 rows per-voice, transcript_sources
       untouched.
@@ -56,9 +58,14 @@ committed tests.
 
 ## Phase 4 — the ear
 
-- [ ] 4.1 Clip loop for the user: audio slices + the new transcript lines
-      around 1055–1058 and the 33.2–38.5 regression window. User's ear
-      confirms both bars (attribution AND no scrambled sentences).
-- [ ] 4.2 S16 graduation: on confirmation, remove the S16 waiver from the
-      fixture's known_limitations (amendment record stays), making the
-      window a hard pin.
+- [ ] 4.1 Ear-calibration clip loop (user-ruled protocol, design thread C):
+      the agent reads the full rerun transcript against the original and
+      reports whether it makes more or less sense; then hands the user a
+      clip set — word-loss-flagged moments first, remainder evenly spaced
+      through the meeting, up to ~20 total — each clip with its transcript
+      lines and detector evidence. User's ear rules: genuine talk-over?
+      lines read right? Rulings tune the detector dials as a general rule
+      (never a per-moment skip list).
+- [ ] 4.2 S16 graduation: on the user's confirmation, remove the S16
+      waiver from the fixture's known_limitations (amendment record
+      stays), making the window a hard pin.

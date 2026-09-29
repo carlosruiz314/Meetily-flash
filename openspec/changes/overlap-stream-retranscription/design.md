@@ -135,22 +135,34 @@ enforced by the hallucination lane (degenerate-repeat guard, quarantine,
 echo dedup) exactly as the both-streams gate already assumed. The pure
 function signature is untouched.
 
-### Thread C (scoping stance) — uniform rule + gate census
+### Thread C (USER-DECIDED 2026-09-29) — run everywhere, calibrate by ear, flags never drop
 
-Synthesize ALL spans meeting the both-streams-decisive gate
-meeting-wide (uniform), vs only ear-attested spans (S16 only).
+The user ruled: run the talk-over moments machine-wide, then hand them a
+sample of clips (up to ~20) to confirm by ear which are genuine talk-overs
+and whether the lines read right. Motivation on record: the detector has
+dials (trigger mass, vote margins) and may fire too often — over-firing
+would produce MORE hallucinated streams, not fixes. Protocol:
 
-**Resolution**: uniform + gate census. Selecting spans by hand would be a
-hardcoded override in disguise; the uniform rule is driven entirely by the
-evidence channels (votes + margin + text guards). The meeting-wide count
-of both-streams-decisive spans is genuinely UNKNOWN until the gate runs —
-the prepass probes verified individual spans (S7c, S16), not coverage —
-so the census IS the measurement: the gate logs every synthesized span
-(walls, both voices, per-stream text from the local fixture), and Phase 4
-ear sampling draws from that complete inventory, not a curated list. S16
-stays special only in the fixture's expected needles (task 3.3), not in
-the rule. Cost bound: worst case 2 inferences × 38 spans ≈ 76 short
-inferences on an already-loaded model.
+1. **Uniform run**: every span meeting the both-streams gate is
+   synthesized. No hand-picked list; ear rulings tune the general dials,
+   never a per-moment skip list.
+2. **Census + word-loss flags**: the gate logs every synthesized span —
+   walls, both voices, per-stream text, the trigger mass and vote margins
+   that fired it, and a word-loss flag (synthesized rows' word count vs
+   the mixture row's). FLAG-ONLY: a flagged span still renders its
+   synthesized rows — no automatic dropping or reverting at this
+   calibration stage (user explicit).
+3. **Clip set (Phase 4)**: up to ~20 moments for the user's ear —
+   word-loss-flagged moments first, remainder evenly spaced through the
+   meeting (mechanical, not curated). Before sending, the agent reads the
+   full rerun transcript against the original and reports whether it makes
+   more or less sense (the agent's read is a signal, the user's ear is the
+   judge).
+4. **Graduation bar unchanged**: S16's fixture needles stay the regression
+   pin; the 33.2–38.5 window proves no synthesis outside real overlaps.
+
+Cost bound: worst case 2 inferences × 38 spans ≈ 76 short inferences on an
+already-loaded model.
 
 ## Security / trust boundaries
 
@@ -183,6 +195,9 @@ No LLM in this path. The separator's output never reaches persistence
     after the D4 resolver, and a same-span stream pair with token-similar
     text is never classified as a re-transcription cluster (no voice
     vanishes).
+11. Word-loss flag is diagnostic only: a span whose synthesized rows lose
+    words vs the mixture row is flagged in the census and still renders
+    its synthesized rows — the flag never drops or reverts anything.
 
 ## §3 smoke-spec decision
 
