@@ -1808,9 +1808,13 @@ pub fn synthesize_overlap_rows(
                 // Proportional split at the span walls; pieces without
                 // alphanumeric content drop (sub-word slivers).
                 let head = piece(
+                    // Two shares: the last chunk is usize::MAX by
+                    // construction, so a single-share call returns the FULL
+                    // text as chunk 0 — the live-persist duplication bug.
+                    // Chunk 1 exists purely to bound chunk 0 at the wall.
                     split_words_proportional(
                         &row.text,
-                        &[proportional_share(row, span_ms.0)],
+                        &[proportional_share(row, span_ms.0), 1.0 - proportional_share(row, span_ms.0)],
                     )
                     .into_iter()
                     .next()
@@ -1824,7 +1828,7 @@ pub fn synthesize_overlap_rows(
                 let tail = piece(
                     split_words_proportional(
                         &row.text,
-                        &[proportional_share(row, span_ms.1)],
+                        &[proportional_share(row, span_ms.1), 1.0 - proportional_share(row, span_ms.1)],
                     )
                     .into_iter()
                     .last()
@@ -3358,17 +3362,18 @@ mod tests {
             .expect("rows intersect the span");
         // head piece (pre-span words) + 2 stream rows = 3 (the covered
         // neighbor emits nothing; no tail — the row ends inside the span).
+        // share(100s)=0.6 of "straddling tail words" → head keeps the
+        // out-of-span prefix only; "words" sits proportionally inside the
+        // span and is replaced by the streams (design: "keeps its
+        // out-of-span remainder").
         assert_eq!(out.len(), 3, "{out:?}");
         let head = &out[0];
         assert_eq!(head.audio_start_ms, 98_500);
         assert_eq!(head.audio_end_ms, 100_000);
+        assert_eq!(head.text, "straddling tail", "out-of-span prefix, nothing more: {out:?}");
         assert_eq!(head.original_id, "src1", "head keeps its own source id");
         assert_eq!(head.synth_parent.as_deref(), Some("src1"));
         assert!(!head.synth_atom, "head is merge-eligible ordinary speech");
-        let joined: String = out.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join(" ");
-        for w in ["straddling", "tail", "words", "alpha", "gamma"] {
-            assert!(joined.contains(w), "word {w} lost in the split: {joined:?}");
-        }
         assert!(out[1].synth_atom && out[2].synth_atom);
         assert_eq!(out[1].synth_parent.as_deref(), Some("src1"), "stream rows link the donor");
     }
@@ -3377,20 +3382,59 @@ mod tests {
     fn straddling_row_with_tail_keeps_post_span_words() {
         // A row straddling the WHOLE span: head AND tail pieces, both
         // parent-linked; the stream rows sit between them in time order.
+        // Proportional partition of "one two three four five six" at walls
+        // 100/102 of [99,103]: head = "one two", tail = "six"; the middle
+        // words are the in-span mixture the streams replace.
         let rows = vec![seg("src1", "one two three four five six", 99_000, 103_000, "Speaker 0")];
         let s = synth((100.0, 102.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
         let out = synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker)
             .expect("row intersects the span");
         assert_eq!(out.len(), 4, "head + streams + tail: {out:?}");
         assert_eq!(out[0].audio_end_ms, 100_000);
+        assert_eq!(out[0].text, "one two", "{out:?}");
         assert_eq!(out[3].audio_start_ms, 102_000);
         assert_eq!(out[3].audio_end_ms, 103_000);
+        assert_eq!(out[3].text, "six", "{out:?}");
         assert!(out[1].synth_atom && out[2].synth_atom);
         assert!(!out[0].synth_atom && !out[3].synth_atom);
-        let joined = out.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join(" ");
-        for w in ["one", "two", "three", "four", "five", "six", "alpha", "gamma"] {
-            assert!(joined.contains(w), "word {w} lost: {joined:?}");
+    }
+
+    #[test]
+    fn split_never_duplicates_a_word_between_head_and_tail() {
+        // Live-persist regression (2026-09-30): both split calls handed
+        // split_words_proportional a SINGLE share, whose last chunk takes
+        // usize::MAX — so head AND tail each carried the row's FULL text
+        // (cde5c264 rendered 12031 non-synth words over 11902 source words,
+        // the surplus pure duplication). The pieces must PARTITION the
+        // row's words: head = strict prefix, tail = strict suffix, disjoint,
+        // in-span words owned by the streams alone.
+        let text = "alpha bravo charlie delta echo foxtrot golf hotel india juliet";
+        let rows = vec![seg("src1", text, 98_000, 108_000, "Speaker 0")];
+        let s = synth((100.0, 106.0), ev(1, 0.30, Some("x1")), ev(3, 0.20, Some("x2")));
+        let out = synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker)
+            .expect("row straddles both walls");
+        let expected: Vec<&str> = text.split_whitespace().collect();
+        let head_words: Vec<&str> = out[0].text.split_whitespace().collect();
+        let tail_words: Vec<&str> = out[3].text.split_whitespace().collect();
+        assert!(
+            expected.starts_with(&head_words[..]),
+            "head must be a strict prefix of the row: {head_words:?}"
+        );
+        assert!(
+            expected.ends_with(&tail_words[..]),
+            "tail must be a strict suffix of the row: {tail_words:?}"
+        );
+        for w in &head_words {
+            assert!(
+                !tail_words.contains(w),
+                "word {w:?} duplicated across head and tail"
+            );
         }
+        assert!(!head_words.is_empty() && !tail_words.is_empty());
+        // the deterministic partition at these walls (chunk 0 consumes
+        // until its char count reaches the proportional target)
+        assert_eq!(head_words, ["alpha", "bravo", "charlie"]);
+        assert_eq!(tail_words, ["india", "juliet"]);
     }
 
     #[test]

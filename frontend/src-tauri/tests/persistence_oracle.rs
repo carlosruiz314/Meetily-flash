@@ -89,7 +89,8 @@ async fn make_temp_pool() -> sqlx::SqlitePool {
             speaker TEXT,
             audio_start_time REAL, audio_end_time REAL, duration REAL,
             speaker_label TEXT, speaker_source TEXT,
-            token_timestamps TEXT, previous_label TEXT
+            token_timestamps TEXT, previous_label TEXT,
+            synth_atom INTEGER, continues_previous INTEGER, synth_parent TEXT
         )",
     )
     .execute(&pool)
