@@ -838,7 +838,7 @@ async fn ear_truth_gate_cde5c264() {
             "fixture drifted — re-pin: live DB differs from snapshot \
              cde5c264_transcripts.json (snapshot: {} rows / sha {}, live: {} rows / \
              sha {}). Understand the mutation, then re-run \
-             openspec/changes/no-split-sentences/tools/snapshot_fixture.py.",
+             openspec/changes/archive/2026-09-13-no-split-sentences/tools/snapshot_fixture.py.",
             render_fixture.rows.len(),
             render_fixture.row_sha256,
             live_rows.len(),
