@@ -65,23 +65,31 @@ evidence home, never repo-committed).
       `list_manual_spans` stand-down; hallucination audit in the decoder.
       Eligibility floor `SYNTH_STREAM_MIN_RMS_RATIO = 0.1` implemented
       (panel finding 7). Lib 732/732.
-- [ ] 2.2 RED: whisper unavailable / separation model missing → render
-      byte-identical to today's, verified by the structural signature
-      comparator (count/text/span/badge, generated ids excepted) —
-      "existing pin" covered only vote-level; this pins the render level.
+- [x] 2.2 RED: whisper unavailable / separation model missing → render
+      byte-identical to today's. DONE (2026-09-30): the splice is extracted
+      as `apply_overlap_synthesis` and pinned — no candidates or an
+      all-degraded span returns the input unchanged; the persist layer's
+      structural signature comparator ((text, span, badge) multiset, ids
+      excepted) pins render identity; double-run idempotency already
+      pinned.
 
 ## Phase 3 — render + persistence
 
-- [ ] 3.1 RED: immutability — full run leaves `transcript_sources`
-      byte-identical (source_hash digest comparator); regenerated
-      rendering contains the stream rows.
-- [ ] 3.2 GREEN: stream rows persist with `speaker_source` `'auto'`
-      (persist hardcodes it; a new SpeakerSource variant is out of scope
-      for v1 — panel); stream rows carry `continues_previous = true` when
-      their text begins mid-sentence (hard-invariant compliance);
-      persistence round-trip (persist → refetch → badges and text intact);
-      consolidation treats stream rows as atoms (re-run does not re-merge
-      a stream row into a same-speaker neighbor).
+- [x] 3.1 DONE: immutability pinned by
+      `synth_rows_persist_with_facts_and_sources_stay_immutable` —
+      transcript_sources rows compared before/after a persist that
+      synthesized stream rows (stronger than a digest: full-row
+      comparison).
+- [x] 3.2 DONE: stream rows persist as `'auto'` with a new nullable
+      `synth_atom` marker (migration 20260930000000) — consolidation
+      isolates synth rows via the manual-row singleton-group pattern
+      (`consolidation_never_merges_a_synth_row_into_a_same_speaker_neighbor`,
+      with a control pair proving plain rows still merge, and idempotent
+      re-run); synth rows carry `continues_previous` from a mid-sentence
+      check at INSERT (engine stamping preserves it via OR semantics);
+      round-trip asserted (badges/text/facts intact after refetch).
+      Projection drift detector extended (synth_atom +
+      continues_previous = override cols). Lib 735/735.
 - [ ] 3.3 Gate extension: gate constructs a real Whisper engine (degrade
       would suppress every synthesized row — panel) and asserts the S16
       window renders two distinct-badge in-order rows (needles from the

@@ -39,6 +39,13 @@ pub struct AlignedSegment {
     pub audio_end_ms: i64,
     pub speaker: String,
     pub speaker_source: SpeakerSource,
+    /// Overlap-stream synthesis atom (overlap-stream-retranscription):
+    /// persisted as `synth_atom` so consolidation isolates the row — a
+    /// stream row must never re-merge into a same-speaker neighbor (the
+    /// manual-row isolation pattern). Serde-defaulted: older checkpoint
+    /// payloads predate the flag.
+    #[serde(default)]
+    pub synth_atom: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1038,6 +1045,7 @@ pub fn align_transcripts_with_diarization(
                 audio_end_ms: t.audio_end_ms,
                 speaker: "Unknown Speaker".to_string(),
                 speaker_source: SpeakerSource::Unknown,
+                synth_atom: false,
             })
             .collect();
     }
@@ -1112,6 +1120,7 @@ pub fn align_transcripts_with_diarization(
                         audio_end_ms: atom.last().expect("non-empty").end_ms,
                         speaker: format!("Speaker {speaker}"),
                         speaker_source: source.clone(),
+                        synth_atom: false,
                     });
                 }
                 if let Some(last) = results.last() {
@@ -1149,6 +1158,7 @@ pub fn align_transcripts_with_diarization(
                 audio_end_ms: atom.last().expect("non-empty").end_ms,
                 speaker: badge.clone(),
                 speaker_source: badge_source,
+                synth_atom: false,
             });
             previous_badge = Some(badge);
         }
@@ -2706,6 +2716,7 @@ Yeah, for Paulina, right?";
             audio_end_ms: end,
             speaker: speaker.to_string(),
             speaker_source: SpeakerSource::Fallback,
+            synth_atom: false,
         }
     }
 

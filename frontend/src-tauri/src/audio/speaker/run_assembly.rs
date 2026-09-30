@@ -1742,6 +1742,7 @@ pub fn synthesize_overlap_rows(
         audio_end_ms: span_ms.1,
         speaker: badge,
         speaker_source: SpeakerSource::Auto,
+        synth_atom: true,
     };
     let mut stream0 = Some(mk(&texts[0], badge0));
     let mut stream1 = Some(mk(&texts[1], badge1));
@@ -3051,6 +3052,7 @@ mod tests {
             audio_end_ms: end_ms,
             speaker: speaker.to_string(),
             speaker_source: SpeakerSource::Auto,
+            synth_atom: false,
         }
     }
 

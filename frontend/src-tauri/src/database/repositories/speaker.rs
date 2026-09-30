@@ -355,6 +355,17 @@ impl SpeakerRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Mid-sentence-initial check for synth rows' continuation stamp at
+    /// INSERT. The canonical predicate is
+    /// `run_assembly::is_mid_sentence_start`; duplicated here (3 lines) so
+    /// the database layer keeps zero audio imports.
+    fn mid_sentence_initial(text: &str) -> bool {
+        text.chars()
+            .skip_while(|c| !c.is_alphanumeric())
+            .next()
+            .map_or(false, |c| c.is_alphabetic() && c.is_lowercase())
+    }
+
     /// Surviving manual rendering rows' [start_ms, end_ms) spans — the same
     /// set `persist_regenerated_rendering` honors, read BEFORE the splice so
     /// overlap-span synthesis can stand down where a manual row wins
@@ -525,8 +536,8 @@ impl SpeakerRepository {
                 "INSERT INTO transcripts \
                    (id, meeting_id, transcript, timestamp, summary, action_items, key_points, \
                     speaker, audio_start_time, audio_end_time, duration, speaker_label, \
-                    speaker_source, token_timestamps, previous_label) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', NULL, NULL)",
+                    speaker_source, token_timestamps, previous_label, synth_atom, continues_previous) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', NULL, NULL, ?, ?)",
             )
             .bind(uuid::Uuid::new_v4().to_string())
             .bind(&t.meeting_id)
@@ -540,6 +551,11 @@ impl SpeakerRepository {
             .bind(audio_end)
             .bind(duration)
             .bind(&seg.speaker)
+            .bind(if seg.synth_atom { Some(1i64) } else { None::<i64> })
+            // Synth rows carry their own mid-sentence fact at INSERT (the
+            // engine-turn stamping pass doesn't know them). The engine stamp
+            // preserves it: effective_continuation ORs the text heuristic.
+            .bind(if seg.synth_atom { Some(Self::mid_sentence_initial(&seg.text) as i64) } else { None::<i64> })
             .execute(&mut *tx)
             .await?;
             written += 1;
@@ -672,24 +688,29 @@ impl SpeakerRepository {
             id: String,
             speaker_label: Option<String>,
             speaker_source: Option<String>,
+            synth_atom: Option<i64>,
             audio_start_time: f64,
             audio_end_time: f64,
             transcript: String,
         }
         let frags = sqlx::query_as::<_, Frag>(
-            "SELECT id, speaker_label, speaker_source, audio_start_time, audio_end_time, transcript FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time, audio_end_time",
+            "SELECT id, speaker_label, speaker_source, synth_atom, audio_start_time, audio_end_time, transcript FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time, audio_end_time",
         )
         .bind(meeting_id)
         .fetch_all(pool)
         .await?;
 
-        // Manual rows are isolated into singleton groups via a unique group
-        // key so the turn predicate can never merge them.
+        // Manual rows and overlap-stream synthesis atoms are isolated into
+        // singleton groups via a unique group key so the turn predicate can
+        // never merge them (a stream row re-merged into a same-speaker
+        // neighbor would unwind the per-voice render).
         let group_keys: Vec<String> = frags
             .iter()
             .map(|f| {
                 if f.speaker_source.as_deref() == Some("manual") {
                     format!("manual:{}", f.id)
+                } else if f.synth_atom == Some(1) {
+                    format!("synth:{}", f.id)
                 } else {
                     f.speaker_label.clone().unwrap_or_else(|| "Unknown Speaker".into())
                 }
@@ -992,7 +1013,9 @@ mod tests {
                 duration REAL NOT NULL,
                 speaker_label TEXT,
                 speaker_source TEXT,
-                previous_label TEXT
+                previous_label TEXT,
+                synth_atom INTEGER,
+                continues_previous INTEGER
             )",
         )
         .execute(&pool)
@@ -1364,6 +1387,8 @@ mod tests {
         "duration",
         "token_timestamps",
         "previous_label",
+        "synth_atom",
+        "continues_previous",
     ];
     const COPY_COLS: &[&str] = &[
         "meeting_id",
@@ -1374,7 +1399,7 @@ mod tests {
         "speaker",
     ];
 
-    #[derive(sqlx::FromRow)]
+    #[derive(Debug, sqlx::FromRow)]
     struct ReadRow {
         id: String,
         transcript: String,
@@ -1389,15 +1414,17 @@ mod tests {
         duration: Option<f64>,
         speaker_label: Option<String>,
         speaker_source: Option<String>,
+        synth_atom: Option<i64>,
         token_timestamps: Option<String>,
         previous_label: Option<String>,
+        continues_previous: Option<i64>,
     }
 
     async fn read_rows(pool: &SqlitePool, meeting_id: &str) -> Vec<ReadRow> {
         sqlx::query_as::<_, ReadRow>(
             "SELECT id, transcript, meeting_id, timestamp, summary, action_items, key_points, \
              speaker, audio_start_time, audio_end_time, duration, speaker_label, speaker_source, \
-             token_timestamps, previous_label \
+             synth_atom, token_timestamps, previous_label, continues_previous \
              FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time ASC, id ASC",
         )
         .bind(meeting_id)
@@ -1438,7 +1465,8 @@ mod tests {
                 speaker TEXT,
                 audio_start_time REAL, audio_end_time REAL, duration REAL,
                 speaker_label TEXT, speaker_source TEXT,
-                token_timestamps TEXT, previous_label TEXT
+                token_timestamps TEXT, previous_label TEXT,
+                synth_atom INTEGER, continues_previous INTEGER
             )",
         ))
         .execute(pool)
@@ -1541,6 +1569,7 @@ mod tests {
             audio_end_ms: end_ms,
             speaker: speaker.to_string(),
             speaker_source: SpeakerSource::Auto,
+            synth_atom: false,
         }
     }
 
@@ -1734,6 +1763,104 @@ mod tests {
         assert_eq!(rows.len(), 1, "split re-expanded to one row");
         assert_eq!(rows[0].transcript, "hello world foo bar", "full source text");
         assert_ne!(rows[0].id, "src-3");
+    }
+
+    // ── Overlap-stream synthesis persist (overlap-stream-retranscription 3.1/3.2) ──
+
+    async fn all_source_rows(pool: &SqlitePool, meeting_id: &str) -> Vec<(String, String, f64, f64)> {
+        sqlx::query_as(
+            "SELECT id, transcript, audio_start_time, audio_end_time FROM transcript_sources \
+             WHERE meeting_id = ? ORDER BY id",
+        )
+        .bind(meeting_id)
+        .fetch_all(pool)
+        .await
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn synth_rows_persist_with_facts_and_sources_stay_immutable() {
+        let pool = transcripts_test_pool().await;
+        seed_row(&pool, "src-1", "meet-1", "mixture jumble", 100.0, 102.0, None, None).await;
+        let before = all_source_rows(&pool, "meet-1").await;
+
+        let mut synth = aligned("src-1", "or whatever she said", 100_000, 102_000, "Speaker 1");
+        synth.synth_atom = true;
+        let plain = aligned("src-1", "And a clean row.", 102_500, 104_000, "Speaker 2");
+        let written = SpeakerRepository::persist_regenerated_rendering(
+            &pool,
+            "meet-1",
+            vec![synth, plain],
+            false,
+        )
+        .await
+        .unwrap();
+        assert_eq!(written, 2);
+
+        // Immutability: the immutable transcription source is untouched by a
+        // run that synthesized stream rows.
+        assert_eq!(all_source_rows(&pool, "meet-1").await, before, "transcript_sources byte-identical");
+
+        // Round-trip: badge, text, marker, and the continuation fact.
+        let rows = read_rows(&pool, "meet-1").await;
+        let synth_row = rows.iter().find(|r| r.synth_atom == Some(1)).expect("synth row persisted");
+        assert_eq!(synth_row.transcript, "or whatever she said");
+        assert_eq!(synth_row.speaker_label.as_deref(), Some("Speaker 1"));
+        assert_eq!(
+            synth_row.continues_previous,
+            Some(1),
+            "lowercase-initial synth row carries continues_previous = true (hard invariant)"
+        );
+        let plain_row = rows.iter().find(|r| r.synth_atom.is_none()).expect("plain row persisted");
+        assert_eq!(plain_row.transcript, "And a clean row.");
+        assert_eq!(plain_row.continues_previous, None, "engine stamping owns plain rows' facts");
+    }
+
+    #[tokio::test]
+    async fn consolidation_never_merges_a_synth_row_into_a_same_speaker_neighbor() {
+        let pool = transcripts_test_pool().await;
+        seed_row(&pool, "src-1", "meet-1", "mixture jumble", 99.6, 101.5, None, None).await;
+        seed_row(&pool, "src-2", "meet-1", "other voice", 99.6, 101.5, None, None).await;
+        seed_row(&pool, "src-3", "meet-1", "control one", 200.0, 200.8, None, None).await;
+        seed_row(&pool, "src-4", "meet-1", "control two", 201.2, 202.0, None, None).await;
+        let mut synth = aligned("src-1", "or whatever", 99_600, 101_500, "Speaker 1");
+        synth.synth_atom = true;
+        let aligned = vec![
+            aligned("src-1", "Neighbor tail", 98_000, 99_500, "Speaker 1"),
+            synth,
+            aligned("src-2", "Other voice line", 99_600, 101_500, "Speaker 2"),
+            aligned("src-3", "Control fragment one", 200_000, 200_800, "Speaker 3"),
+            aligned("src-4", "control fragment two", 201_200, 202_000, "Speaker 3"),
+        ];
+        SpeakerRepository::persist_regenerated_rendering(&pool, "meet-1", aligned, false)
+            .await
+            .unwrap();
+
+        let (turns, _absorbed) = SpeakerRepository::consolidate_meeting_turns(&pool, "meet-1")
+            .await
+            .unwrap();
+        let rows = read_rows(&pool, "meet-1").await;
+        // The synth row and its same-speaker neighbor (gap 0.1 s) stay
+        // separate; the far-away same-speaker CONTROL pair merges (proof the
+        // predicate still merges plain rows); the other voice never merges.
+        assert_eq!(rows.len(), 4, "synth atom isolated, control pair merged: {rows:?}");
+        assert_eq!(turns, 4);
+        assert!(
+            rows.iter().any(|r| r.transcript == "or whatever")
+                && rows.iter().any(|r| r.transcript == "Neighbor tail"),
+            "both survive with their own text"
+        );
+        assert!(
+            rows.iter().any(|r| r.transcript.contains("Control fragment one") && r.transcript.contains("control fragment two")),
+            "control pair merged into one turn"
+        );
+        // Idempotent: a second consolidation pass changes nothing.
+        let (turns2, absorbed2) = SpeakerRepository::consolidate_meeting_turns(&pool, "meet-1")
+            .await
+            .unwrap();
+        assert_eq!(turns2, 4);
+        assert_eq!(absorbed2, 0);
+        assert_eq!(read_rows(&pool, "meet-1").await.len(), 4);
     }
 
     // 2.3(c) — a consolidation-shaped prior rendering is REBUILT from source,
@@ -2816,7 +2943,7 @@ mod tests {
         let pool = SqlitePool::connect(":memory:").await.unwrap();
         sqlx::query("CREATE TABLE speakers (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT 'now', updated_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE speaker_embeddings (id TEXT PRIMARY KEY, speaker_id TEXT, embedding BLOB NOT NULL, source_meeting_id TEXT NOT NULL, cluster_label TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
-        sqlx::query("CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, transcript TEXT NOT NULL, timestamp TEXT NOT NULL, audio_start_time REAL NOT NULL, audio_end_time REAL NOT NULL, duration REAL NOT NULL, speaker_label TEXT, speaker_source TEXT, previous_label TEXT, token_timestamps TEXT)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, transcript TEXT NOT NULL, timestamp TEXT NOT NULL, audio_start_time REAL NOT NULL, audio_end_time REAL NOT NULL, duration REAL NOT NULL, speaker_label TEXT, speaker_source TEXT, previous_label TEXT, token_timestamps TEXT, synth_atom INTEGER, continues_previous INTEGER)").execute(&pool).await.unwrap();
         pool
     }
 
