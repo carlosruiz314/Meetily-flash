@@ -52,6 +52,41 @@ test.describe('speaker-diarization smoke (section 15 backfill)', () => {
     await expect(page.getByText('Detected 3 speakers')).toBeVisible({ timeout: 10_000 });
   });
 
+  // overlap-stream-retranscription 3.6: the new persisted row shape — two
+  // per-voice rows at IDENTICAL walls (the synthesis pair) — must render
+  // under its own badges and survive the post-run refetch (the backend now
+  // persists exactly this shape; the mock fixture mirrors it).
+  test('15.3e — overlap-stream pair renders two distinct-badge rows at the same walls and survives refetch', async ({ page }) => {
+    await bootstrap(page, [
+      { id: 't1', text: 'Mixture jumble line.', timestamp: '00:00:10', audio_start_time: 10, speaker: 'Speaker 0' },
+      { id: 't2', text: 'Alpha stream sentence.', timestamp: '00:00:12', audio_start_time: 12, speaker: 'Speaker 0' },
+      { id: 't3', text: 'Beta stream interjection.', timestamp: '00:00:12', audio_start_time: 12, speaker: 'Speaker 2' },
+    ]);
+
+    const speakersBtn = page.getByTitle('Re-run speaker detection on this meeting');
+    await expect(speakersBtn).toBeVisible({ timeout: 20_000 });
+    await speakersBtn.click();
+    await expect.poll(async () => {
+      const calls = await speakerCalls(page);
+      return calls.find((c) => c.cmd === 'reset_speaker_labels') ?? null;
+    }, { timeout: 10_000 }).toEqual({ cmd: 'reset_speaker_labels', meetingId: 'meet-summary-001' });
+
+    // Refetch on completion: the pair must SURVIVE it (stale-render guard) —
+    // two rows at identical walls, each under its own badge, no merge, no
+    // dropped row.
+    await page.evaluate(() => {
+      (window as unknown as { __tauriMockEventBus: { emit: (e: string, p: unknown) => void } })
+        .__tauriMockEventBus.emit('diarization-complete', {
+          meeting_id: 'meet-summary-001',
+          speaker_count: 3,
+          segments_labeled: 3,
+        });
+    });
+    await expect(page.getByText('Detected 3 speakers')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText('Alpha stream sentence.')).toBeVisible();
+    await expect(page.getByText('Beta stream interjection.')).toBeVisible();
+  });
+
   test('15.2 — inline rename dispatches label_speaker {meetingId, clusterLabel, speakerName}', async ({ page }) => {
     await bootstrap(page, [
       { id: 't1', text: 'Speaker zero talking.', timestamp: '00:00:01', audio_start_time: 0, speaker: 'Speaker 0' },

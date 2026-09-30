@@ -117,11 +117,11 @@ evidence home, never repo-committed).
       baseline documented as lost after re-pin, so census baselines come
       from the 0.1/3.3 runs) and name the re-pin tool's current location
       (it lived in the archived no-split-sentences change).
-- [ ] 3.6 Playwright smoke spec extending `e2e/smoke/speaker-
-      diarization.spec.ts` (§3 deliverable, recorded here per AGENTS.md):
-      mutate the mock's command-handler fixture to return a stream pair
-      for one span, assert the post-refetch render shows two badges at
-      the same timestamp in order, and no undo affordance on auto rows.
+- [x] 3.6 DONE (2026-09-30): smoke 15.3e in `e2e/smoke/speaker-
+      diarization.spec.ts` — the new persisted shape (two per-voice rows at
+      identical walls) renders under its own badges and SURVIVES the
+      post-run refetch (stale-render guard; the mock fixture mirrors what
+      the real backend persists). 9/9 specs green on chromium.
 
 ## Phase 4 — the ear
 
