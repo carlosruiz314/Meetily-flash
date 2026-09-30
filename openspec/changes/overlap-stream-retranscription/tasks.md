@@ -110,16 +110,32 @@ evidence home, never repo-committed).
       under 2 distinct badges with 2/2 fixture needles — full gate pass on
       the real meeting.
 
-- [ ] 3.4 Live `live_speakers_run`-equivalent persist; DB-layer verification
-      (terminal-only rule): S16 rows per-voice, transcript_sources
-      untouched.
-- [ ] 3.5 Re-pin the gate's render snapshot AFTER 3.4 (explore finding 4).
-      Panel semantics addition: the re-pinned snapshot is the
-      post-synthesis render — verify replay idempotence (synthesis on
-      already-synthesized input must not double-synthesize; word-loss
-      baseline documented as lost after re-pin, so census baselines come
-      from the 0.1/3.3 runs) and name the re-pin tool's current location
-      (it lived in the archived no-split-sentences change).
+- [x] 3.4 DONE (2026-09-30): `live_speakers_run_cde5c264` green in 5190s
+      against the real meeting DB — 3 speakers, 442 segments, unmatched=[];
+      transcript_sources byte-identical (hard assert, pre/post hash);
+      10/132 spans synthesized per-voice (matches the gate); S16 window
+      (1054–1059s) holds 2 synth rows under distinct badges ("Speaker 2"
+      "I don't know if I can't do it." / "Participant A" "I can't wait to
+      see it."). Harness fixes that made it land: sqlx::migrate! before
+      the run, WHISPER_ENGINE static populated from the production model
+      store + discover_models.
+- [x] 3.5 DONE (2026-09-30): re-pin resolved to a NO-OP, verified not
+      assumed. Design finding 4 ("snapshot must be re-pinned after the
+      live persist") predates the align-from-immutable-source pivot: the
+      gate's cross-check target is `transcript_sources` (commands.rs:1492
+      is also the production synthesis input), which never contains synth
+      output. Direct hash check post-persist: fixture sha ==
+      live transcript_sources sha (9b643fda…, 229 rows) — no drift;
+      word-loss baselines from 0.1/3.3 remain valid (nothing re-pinned).
+      Replay idempotence is structural: every Speakers run re-derives
+      from the immutable source table and rewrites the rendering wholesale
+      (locked by `regeneration_rebuilds_consolidation_shaped_rendering`);
+      synthesis on already-synthesized input cannot occur. Live rendering
+      verified: 20 synth rows (10 spans × 2 streams) + 32 rows with
+      synth_parent (20 stream + 12 split head/tail). Re-pin tool location
+      named and corrected in the gate's drift-panic message:
+      `openspec/changes/archive/2026-09-13-no-split-sentences/tools/
+      snapshot_fixture.py` (was missing the archive prefix).
 - [x] 3.6 DONE (2026-09-30): smoke 15.3e in `e2e/smoke/speaker-
       diarization.spec.ts` — the new persisted shape (two per-voice rows at
       identical walls) renders under its own badges and SURVIVES the

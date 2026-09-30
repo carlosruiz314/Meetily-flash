@@ -1882,6 +1882,7 @@ mod tests {
             speaker: speaker.to_string(),
             speaker_source: crate::audio::speaker::alignment::SpeakerSource::Auto,
             synth_atom: false,
+            synth_parent: None,
         }
     }
 
