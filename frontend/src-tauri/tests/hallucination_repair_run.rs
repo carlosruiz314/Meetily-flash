@@ -723,6 +723,7 @@ async fn repair_write_lands_in_both_tables_and_regeneration_rederives_repaired_t
             speaker: "Speaker 0".to_string(),
             speaker_source: SpeakerSource::Auto,
             synth_atom: false,
+            synth_parent: None,
         })
         .collect();
     let regenerated =

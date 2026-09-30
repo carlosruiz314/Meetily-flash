@@ -46,6 +46,13 @@ pub struct AlignedSegment {
     /// payloads predate the flag.
     #[serde(default)]
     pub synth_atom: bool,
+    /// Parent-row link for rows born from a span SPLIT (prefix/suffix
+    /// pieces keep their own source id as original_id; stream rows carry
+    /// the donor's): persisted as `synth_parent` so downstream analysis
+    /// (summarizer, gate, exports) can reconstruct the pre-split row by
+    /// grouping on it. Serde-defaulted like synth_atom.
+    #[serde(default)]
+    pub synth_parent: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1046,6 +1053,7 @@ pub fn align_transcripts_with_diarization(
                 speaker: "Unknown Speaker".to_string(),
                 speaker_source: SpeakerSource::Unknown,
                 synth_atom: false,
+                synth_parent: None,
             })
             .collect();
     }
@@ -1121,6 +1129,7 @@ pub fn align_transcripts_with_diarization(
                         speaker: format!("Speaker {speaker}"),
                         speaker_source: source.clone(),
                         synth_atom: false,
+                        synth_parent: None,
                     });
                 }
                 if let Some(last) = results.last() {
@@ -1159,6 +1168,7 @@ pub fn align_transcripts_with_diarization(
                 speaker: badge.clone(),
                 speaker_source: badge_source,
                 synth_atom: false,
+                synth_parent: None,
             });
             previous_badge = Some(badge);
         }
@@ -2717,6 +2727,7 @@ Yeah, for Paulina, right?";
             speaker: speaker.to_string(),
             speaker_source: SpeakerSource::Fallback,
             synth_atom: false,
+            synth_parent: None,
         }
     }
 
