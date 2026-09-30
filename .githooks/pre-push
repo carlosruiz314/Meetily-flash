@@ -51,7 +51,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
       ':(icase)frontend/src-tauri/tests/fixtures/cde5c264_transcripts*' \
       ':(icase)embed-probe-clips*' \
       ':(icase,glob)openspec/exploration/**' \
-      ':(icase,glob)openspec/changes/**/fixture-answers.md' \
+      ':(icase,glob)openspec/changes/**/fixture-answers.md' \n      ':(icase,glob)openspec/changes/**/gate-runs/**' \
       ':(icase,glob)openspec/changes/**/fixture-offsets.json' \
       ':(icase,glob)openspec/changes/**/design-notes-banter.md') || exit 1
   if [ -n "$out" ]; then

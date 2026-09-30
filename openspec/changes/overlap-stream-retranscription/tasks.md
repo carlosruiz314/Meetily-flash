@@ -90,21 +90,23 @@ evidence home, never repo-committed).
       round-trip asserted (badges/text/facts intact after refetch).
       Projection drift detector extended (synth_atom +
       continues_previous = override cols). Lib 735/735.
-- [ ] 3.3 Gate extension: gate constructs a real Whisper engine (degrade
-      would suppress every synthesized row — panel) and asserts the S16
-      window renders two distinct-badge in-order rows (needles from the
-      local fixture; conditional on 0.1 confirming S16 fires); duplicate
-      scan's exemption provenance-scoped at GROUP level (intersecting
-      absorbed-row id sets pass, disjoint-id overlaps still fail — design
-      thread A, adversarial test 9); census over ALL trigger-fired spans
-      (walls, trigger mass, per-stream margins incl. rejects, RMS ratios,
-      both voices, token-only text data — counts + sha256, word-loss and
-      cross-stream flags; adversarial test 17), recorded via a named
-      runner script with token-only output; `openspec/changes/**/gate-
-      runs/` added to .gitignore and the pre-push guard's protected
-      pathspecs; every synthesized row's span covered by an overlap span
-      (mechanical no-outside-synthesis assertion, synthetic-subset
-      assertable).
+- [x] 3.3 DONE (2026-09-30): gate constructs a real Whisper engine
+      (MEETIFY_GATE_WHISPER_MODEL; MEETIFY_GATE_LANG pins the decode —
+      unset = degrade, never auto-translate) and replays the SAME pure
+      splice after the resolver via `apply_overlap_synthesis` (now pub);
+      S16 assertion — two distinct badges + per-voice needles from the
+      LOCAL fixture (`needles` field, serde-defaulted) — routed through
+      the amendment path (AMENDED while the waiver stands; 4.2 removes
+      it); duplicate + fracture scans exempt provenance-scoped pairs at
+      GROUP level (synth rows sharing one source id; disjoint ids still
+      fail — adversarial tests 9/13); token-only census per candidate span
+      (walls, span-in-spans guard, identities, margins, RMS ratios, word
+      counts, sha256 of both texts; verbatim text only under
+      MEETIFY_RENDER_PRINT, terminal-only); runner script
+      `tools/run_ear_gate.bat` records output into `gate-runs/`
+      (gitignored + pre-push pathspec Gate 1). Gate lint + lib 735/735;
+      live run lands with 3.4.
+
 - [ ] 3.4 Live `live_speakers_run`-equivalent persist; DB-layer verification
       (terminal-only rule): S16 rows per-voice, transcript_sources
       untouched.

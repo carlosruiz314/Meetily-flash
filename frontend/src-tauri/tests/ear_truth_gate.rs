@@ -81,6 +81,11 @@ struct Entry {
     tolerance_s: Option<f64>,
     #[serde(default)]
     hold_out: bool,
+    /// Per-voice text needles for the synthesis assertion (S16): verbatim
+    /// from THIS local fixture — never code. Empty for entries that don't
+    /// pin stream text.
+    #[serde(default)]
+    needles: Vec<String>,
 }
 
 /// One derived turn: label + span + engine continuation fact + aligned text.
@@ -892,6 +897,9 @@ async fn ear_truth_gate_cde5c264() {
         // Word-wall atom votes (production parity): the live path computes
         // these in commands.rs; the gate replays the same call over the
         // fixture inputs so the render-text pins hold by the same evidence.
+        // Synthesis candidates ride out of this scope for the splice below
+        // (overlap-stream-retranscription 3.3).
+        let mut gate_synthesis_inputs: Vec<run_engine::SpanSynthesisInput> = Vec::new();
         {
             let cent_pairs: Vec<(u32, Vec<f32>)> = out
                 .centroids
@@ -915,7 +923,7 @@ async fn ear_truth_gate_cde5c264() {
             let separated = separator.as_ref().map(|s| {
                 let embed =
                     |a: &[f32]| extractor.extract_embedding(a, run_engine::SAMPLE_RATE);
-                let (v, c, _synthesis_inputs) = run_engine::separated_stream_voice_votes(
+                let (v, c, synthesis_inputs) = run_engine::separated_stream_voice_votes(
                     &samples,
                     &inputs,
                     &embed,
@@ -924,6 +932,7 @@ async fn ear_truth_gate_cde5c264() {
                     s,
                     &out.overlap_spans,
                 );
+                gate_synthesis_inputs = synthesis_inputs;
                 (v, c)
             });
             eprintln!(
@@ -996,6 +1005,138 @@ async fn ear_truth_gate_cde5c264() {
         // merge and the persist step (no-split-sentences D4); replay it so the
         // assertions and dump judge the shape persist would actually write.
         let merged = app_lib::audio::speaker::alignment::resolve_duplicate_clusters(merged);
+        // Overlap-stream synthesis replay (overlap-stream-retranscription
+        // 3.3): the SAME pure splice production runs after the resolver,
+        // with a REAL Whisper engine — the degrade path (engine None) would
+        // suppress every synthesized row and the S16 assertion could never
+        // pass. Language and model are pinned explicitly by the operator
+        // (env): the gate process has no language preference static, and an
+        // automatic mode degrades by design.
+        let gate_lang = std::env::var("MEETIFY_GATE_LANG").unwrap_or_else(|_| {
+            eprintln!("GATE: MEETIFY_GATE_LANG unset — stream decode degrades (no synthesis)");
+            String::new()
+        });
+        let gate_decoder = {
+            let engine = app_lib::whisper_engine::WhisperEngine::new_with_models_dir(Some(
+                std::path::PathBuf::from(&models_dir),
+            ))
+            .expect("gate whisper engine");
+            let model = std::env::var("MEETIFY_GATE_WHISPER_MODEL").unwrap_or_default();
+            if gate_lang.is_empty() || model.is_empty() {
+                None
+            } else {
+                let mut e = engine;
+                // discover + load are async; the gate test is async too —
+                // block_in_place is unavailable in #[tokio::test] without
+                // multithread runtime, so construction happens via the
+                // existing async surface.
+                Some((e, model, gate_lang))
+            }
+        };
+        let gate_manual_spans = if db_path.exists() {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .read_only(true)
+                        .filename(&db_path),
+                )
+                .await;
+            match pool {
+                Ok(p) => app_lib::database::repositories::speaker::SpeakerRepository::list_manual_spans(&p, &render_fixture.meeting).await,
+                Err(_) => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        let mut gate_synthesis: Vec<app_lib::audio::speaker::run_assembly::SpanSynthesis> = Vec::new();
+        if let Some((mut engine, model, lang)) = gate_decoder {
+            use app_lib::audio::speaker::run_assembly::{SpanSynthesis, StreamEvidence};
+            engine.discover_models().await.expect("discover models");
+            engine.load_model(&model).await.expect("load gate whisper model");
+            for input in &gate_synthesis_inputs {
+                let [Some((c0, m0)), Some((c1, m1))] = input.identity else { continue };
+                let decode = |samples: &[f32]| -> Option<String> {
+                    let text = engine.transcribe_span_blocking(samples.to_vec(), &lang)?;
+                    let trimmed = text.trim();
+                    if !trimmed.chars().any(|c| c.is_alphanumeric()) {
+                        return None;
+                    }
+                    let end_ms = samples.len() as f64
+                        / run_engine::SAMPLE_RATE as f64
+                        * 1000.0;
+                    let report = app_lib::audio::hallucination::audit(trimmed, 0.0, end_ms);
+                    if report.is_garbage { None } else { Some(trimmed.to_string()) }
+                };
+                let t0 = decode(&input.streams[0]);
+                let t1 = decode(&input.streams[1]);
+                gate_synthesis.push(SpanSynthesis {
+                    span: input.span,
+                    streams: [
+                        StreamEvidence { cluster: c0, margin: m0, rms_ratio: input.rms_ratio[0], text: t0 },
+                        StreamEvidence { cluster: c1, margin: m1, rms_ratio: input.rms_ratio[1], text: t1 },
+                    ],
+                    covered_atoms: input.covered_atoms.clone(),
+                });
+            }
+        }
+        let (merged, gate_synthesized) = app_lib::audio::speaker::commands::apply_overlap_synthesis(
+            merged,
+            &gate_synthesis,
+            &gate_manual_spans,
+            &Default::default(),
+        );
+        // Token-only census over every candidate span (walls, identities,
+        // margins, RMS ratios, word counts, text sha256) — the ear-
+        // calibration inventory. Verbatim stream text prints ONLY under
+        // MEETIFY_RENDER_PRINT (terminal, never recorded).
+        for cand in &gate_synthesis {
+            use sha2::{Digest, Sha256};
+            let sha = |t: &str| format!("{:x}", Sha256::digest(t.as_bytes()));
+            let words = |t: &str| t.split_whitespace().count();
+            let (w0, w1) = (
+                cand.streams[0].text.as_deref().map(words).unwrap_or(0),
+                cand.streams[1].text.as_deref().map(words).unwrap_or(0),
+            );
+            let fired = out
+                .overlap_spans
+                .iter()
+                .any(|&(a, b)| a <= cand.span.0 && cand.span.1 <= b);
+            let ids: Vec<Option<u32>> = cand
+                .streams
+                .iter()
+                .map(|st| if st.text.is_some() { Some(st.cluster) } else { None })
+                .collect();
+            eprintln!(
+                "CENSUS-SYN span=[{:.2}-{:.2}] span_in_spans={} ids=({:?},{:?}) margins=({:.3},{:.3}) rms=({:.3},{:.3}) words=({}, {}) sha=({},{}) verdict={}",
+                cand.span.0,
+                cand.span.1,
+                fired,
+                ids[0],
+                ids[1],
+                cand.streams[0].margin,
+                cand.streams[1].margin,
+                cand.streams[0].rms_ratio,
+                cand.streams[1].rms_ratio,
+                w0,
+                w1,
+                sha(cand.streams[0].text.as_deref().unwrap_or("")),
+                sha(cand.streams[1].text.as_deref().unwrap_or("")),
+                if ids[0].is_some() && ids[1].is_some() && ids[0] != ids[1] { "SYNTH" } else { "DEGRADE" },
+            );
+            if std::env::var("MEETIFY_RENDER_PRINT").is_ok() {
+                eprintln!(
+                    "CENSUS-TEXT [{:.2}-{:.2}] A={:?} B={:?}",
+                    cand.span.0, cand.span.1, cand.streams[0].text, cand.streams[1].text
+                );
+            }
+        }
+        eprintln!(
+            "GATE: synthesis replay: {} candidate span(s), {} synthesized, {} manual stand-down span(s)",
+            gate_synthesis.len(),
+            gate_synthesized,
+            gate_manual_spans.len()
+        );
         // Production Step 8 tail: same-speaker consolidation (sentence-aware
         // turn assembly, gap ≤3s) produces the PERSISTED row shape the UI
         // serves. Replay it so the assertions and dump judge what the user
@@ -1009,6 +1150,12 @@ async fn ear_truth_gate_cde5c264() {
                 text: &r.text,
             })
             .collect();
+        // Provenance parallel to refs (thread A): a group's identity is the
+        // id set of its absorbed rows; two overlapping-wall groups sharing a
+        // source id are ATTESTED simultaneous speech (the both-streams gate
+        // is the attestation), never double-decode suspects.
+        let row_source_ids: Vec<&str> = merged.iter().map(|r| r.original_id.as_str()).collect();
+        let row_is_synth: Vec<bool> = merged.iter().map(|r| r.synth_atom).collect();
         let groups = app_lib::audio::speaker::turns::assemble_groups(&refs);
         let cons_zero_dur = groups
             .iter()
@@ -1314,7 +1461,23 @@ async fn ear_truth_gate_cde5c264() {
                 continue;
             }
             let prev = &groups[i - 1];
-            if g.turn.speaker != prev.turn.speaker
+            // Provenance-scoped exemption (thread A): two synthesized stream
+            // rows sharing one source id are attested SIMULTANEOUS speech —
+            // their cross-badge adjacency is the attested phenomenon, not a
+            // sentence cut. Rows with disjoint source ids still fracture.
+            let attested_pair = |a: usize, b: usize| -> bool {
+                row_is_synth[a]
+                    && row_is_synth[b]
+                    && row_source_ids[a] == row_source_ids[b]
+            };
+            let prev_is_synth_pair = prev
+                .row_indexes
+                .iter()
+                .any(|&a| {
+                    g.row_indexes.iter().any(|&b| attested_pair(a, b))
+                });
+            if !prev_is_synth_pair
+                && g.turn.speaker != prev.turn.speaker
                 && is_mid_sentence_start(&g.turn.text)
                 && !ends_with_sentence_terminal(&prev.turn.text)
             {
@@ -1339,6 +1502,57 @@ async fn ear_truth_gate_cde5c264() {
         );
         for f in &fractures {
             render_failures.push(format!("unexpected cross-badge fracture: {f}"));
+        }
+
+        // overlap-stream-retranscription 3.3: the attested S16 crosstalk
+        // window must render two distinct-badge rows carrying the attested
+        // per-voice needles (verbatim in THIS local fixture, never code).
+        // While S16 is a KNOWN-LIMITATION this routes through the amendment
+        // path (AMENDED, not a failure); graduation (task 4.2) makes it a
+        // hard pin by removing the waiver.
+        {
+            let s16 = fixture
+                .entries
+                .iter()
+                .find(|e| e.id == "S16_ads_overlap_1056")
+                .expect("S16 entry present");
+            let window_rows: Vec<&app_lib::audio::speaker::turns::SpeakerTurn> = groups
+                .iter()
+                .map(|g| &g.turn)
+                .filter(|t| t.start_ms < (s16.end_s * 1000.0) as i64 && ((s16.start_s * 1000.0) as i64) < t.end_ms)
+                .collect();
+            let badges: std::collections::BTreeSet<&str> =
+                window_rows.iter().map(|t| t.speaker.as_str()).collect();
+            let lowered: Vec<String> = window_rows
+                .iter()
+                .map(|t| t.text.to_lowercase())
+                .collect();
+            let needles: Vec<&String> = s16
+                .needles
+                .iter()
+                .filter(|n| lowered.iter().any(|t| t.contains(&n.to_lowercase())))
+                .collect();
+            let ok = badges.len() >= 2 && needles.len() == s16.needles.len();
+            eprintln!(
+                "GATE: S16 stream render: {} row(s), {} distinct badge(s), {}/{} needle(s)",
+                window_rows.len(),
+                badges.len(),
+                needles.len(),
+                s16.needles.len()
+            );
+            if !ok {
+                record_render_failure(
+                    &mut render_failures,
+                    &render_fixture,
+                    "S16_ads_overlap_1056",
+                    format!(
+                        "S16 window renders {} distinct badge(s), {}/{} stream needle(s) — per-voice render missing or wrong",
+                        badges.len(),
+                        needles.len(),
+                        s16.needles.len()
+                    ),
+                );
+            }
         }
 
         // no-split-sentences task 1.4 — DUPLICATE-CLUSTER scan over a ±10 s
@@ -1369,8 +1583,19 @@ async fn ear_truth_gate_cde5c264() {
                     break; // groups are time-ordered; nothing further in window
                 }
                 // overlapping spans = same-audio double-decode suspect:
-                // reported and failed, NEVER dropped silently here
-                if a.start_ms < b.end_ms && b.start_ms < a.end_ms {
+                // reported and failed, NEVER dropped silently here — unless
+                // the pair is attested simultaneous (synth rows sharing one
+                // source id: the both-streams gate attested them).
+                let gi = groups[i]
+                    .row_indexes
+                    .iter()
+                    .flat_map(|&x| groups[j].row_indexes.iter().map(move |&y| (x, y)))
+                    .any(|(x, y)| {
+                        row_is_synth[x]
+                            && row_is_synth[y]
+                            && row_source_ids[x] == row_source_ids[y]
+                    });
+                if !gi && a.start_ms < b.end_ms && b.start_ms < a.end_ms {
                     overlap_pairs.push(format!(
                         "[{:>7.2}-{:.2}] {} <-> [{:>7.2}-{:.2}] {}",
                         a.start_ms as f64 / 1000.0,
