@@ -30,6 +30,10 @@ async fn live_speakers_run_cde5c264() {
     let pool = sqlx::sqlite::SqlitePool::connect(db.to_str().unwrap())
         .await
         .unwrap();
+    // The harness bypasses app startup — run the same migrations the app
+    // would (the persist writes schema-dependent columns; an unmigrated DB
+    // aborts the whole 80-minute run at persist time).
+    sqlx::migrate!("./migrations").run(&pool).await.expect("run migrations");
 
     // Same threshold source as AppState::sync_threshold_from_db.
     let threshold: f64 = sqlx::query("SELECT speakerMergeThreshold FROM settings LIMIT 1")
@@ -51,18 +55,25 @@ async fn live_speakers_run_cde5c264() {
     // the app does at startup: init the engine, load the meeting's model,
     // pin a CONCRETE language (automatic states degrade by design — never
     // auto-translate).
-    app_lib::whisper_engine::commands::whisper_init()
-        .await
-        .expect("whisper init");
-    let engine = app_lib::whisper_engine::commands::WHISPER_ENGINE
-        .lock()
-        .unwrap()
-        .clone()
-        .expect("engine static populated");
+    // Same wiring as the app's startup (set_models_directory + whisper_init)
+    // — the harness has no AppHandle, so the static is populated directly
+    // with the production model store.
+    let models_dir = dirs::data_dir()
+        .expect("no user data dir")
+        .join("com.meetily.ai")
+        .join("models");
+    let engine = std::sync::Arc::new(
+        app_lib::whisper_engine::whisper_engine::WhisperEngine::new_with_models_dir(Some(
+            models_dir,
+        ))
+        .expect("engine ctor"),
+    );
+    engine.discover_models().await.expect("discover models");
     engine
         .load_model("large-v3-turbo-q5_0")
         .await
         .expect("load the meeting's whisper model");
+    *app_lib::whisper_engine::commands::WHISPER_ENGINE.lock().unwrap() = Some(engine.clone());
     app_lib::set_language_preference_internal("en");
     eprintln!("whisper engine loaded, language pinned for the synthesis seam");
 
