@@ -480,6 +480,16 @@ pub fn get_language_preference_internal() -> Option<String> {
     LANGUAGE_PREFERENCE.lock().ok().map(|lang| lang.clone())
 }
 
+/// Test/l harness pin for the language preference (the UI command is the
+/// production path). The overlap-stream synthesis seam resolves the stream
+/// decode language from this preference: a concrete code pins it,
+/// automatic states degrade.
+pub fn set_language_preference_internal(code: &str) {
+    if let Ok(mut guard) = LANGUAGE_PREFERENCE.lock() {
+        *guard = code.to_string();
+    }
+}
+
 /// Resolve the BATCH transcription language from the user's preference
 /// (whisper-hallucination-cleanup D1). The queue used to pass `None`, which
 /// the engine maps to per-segment auto-detection WITHOUT translation —

@@ -45,6 +45,37 @@ async fn live_speakers_run_cde5c264() {
         Mutex<Option<app_lib::audio::speaker::sherpa_adapter::CosineRegistryAdapter>>,
     > = Arc::new(Mutex::new(None));
 
+    // Overlap-stream synthesis (overlap-stream-retranscription 3.4): the
+    // seam reads the WHISPER_ENGINE static and the language preference —
+    // both default to degrade in a fresh process. Populate them exactly as
+    // the app does at startup: init the engine, load the meeting's model,
+    // pin a CONCRETE language (automatic states degrade by design — never
+    // auto-translate).
+    app_lib::whisper_engine::commands::whisper_init()
+        .await
+        .expect("whisper init");
+    let engine = app_lib::whisper_engine::commands::WHISPER_ENGINE
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("engine static populated");
+    engine
+        .load_model("large-v3-turbo-q5_0")
+        .await
+        .expect("load the meeting's whisper model");
+    app_lib::set_language_preference_internal("en");
+    eprintln!("whisper engine loaded, language pinned for the synthesis seam");
+
+    // transcript_sources is immutable across the run (task 3.4): hash the
+    // source table before and compare after.
+    let sources_before: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id, transcript FROM transcript_sources WHERE meeting_id = ? ORDER BY id",
+    )
+    .bind(MEETING_ID)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+
     let t0 = std::time::Instant::now();
     let result = app_lib::audio::speaker::commands::run_speakers_reset_standalone(
         &pool,
@@ -80,6 +111,34 @@ async fn live_speakers_run_cde5c264() {
             r.2
         );
     }
+
+    // DB-layer verification (terminal-only rule): the S16 window carries the
+    // per-voice synth pair; transcript_sources is untouched.
+    let sources_after: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id, transcript FROM transcript_sources WHERE meeting_id = ? ORDER BY id",
+    )
+    .bind(MEETING_ID)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(sources_after, sources_before, "transcript_sources must be byte-identical across the run");
+
+    let s16_rows: Vec<(Option<i64>, Option<String>, String)> = sqlx::query_as(
+        "SELECT synth_atom, speaker_label, transcript FROM transcripts          WHERE meeting_id = ? AND audio_start_time >= 1054.0 AND audio_end_time <= 1059.0          ORDER BY audio_start_time, audio_end_time",
+    )
+    .bind(MEETING_ID)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    eprintln!("--- S16 window rows (1054-1059s) ---");
+    for r in &s16_rows {
+        eprintln!("synth={:?} badge={:?} | {}", r.0, r.1, r.2);
+    }
+    let synth_count = s16_rows.iter().filter(|r| r.0 == Some(1)).count();
+    eprintln!(
+        "VERIFY: S16 window holds {synth_count} synth row(s) of {} total",
+        s16_rows.len()
+    );
 
     pool.close().await;
 }

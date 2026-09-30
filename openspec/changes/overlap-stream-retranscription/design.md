@@ -301,6 +301,51 @@ Design decisions pinned by the panel:
     pattern (S16 needles come from the local fixture); a dedicated scrub
     change follows.
 
+## Live-gate findings (2026-09-30, first full replay — task 3.3 verification)
+
+The env-gated ear gate ran the FULL synthesis replay against the real
+meeting (75 candidates at the ruled dials; real Whisper decodes on both
+streams of every span). Results, and the one open design question:
+
+1. **The machinery works end to end.** All 75 spans separated; both streams
+   decoded with real text on 61; identities decisive and DISTINCT on those
+   (margins 0.038–0.43); the census, guards, degrade path and scan
+   exemptions all behaved. Every gate that failed, failed honestly
+   (byte-identical degrade; the gate itself stayed green via the S16
+   amendment waiver).
+
+2. **BLOCKING FINDING — the row-coverage replacement rule fires (almost)
+   never.** 0 of 61 healthy candidates synthesized. Cause: the replacement
+   rule replaces only rows the span covers ≥ SYNTH_ROW_COVERAGE (50% of the
+   ROW's duration) and requires such a donor row. But real crosstalk spans
+   (0.25–0.5 s at the ruled dials) are almost always a MINORITY of their
+   containing mixture row (rows are sentence-scale; crosstalk is
+   backchannel-scale) — so no row is ever ≥50% covered and every span
+   degrades. The rule assumed span/row geometry agreement that does not
+   hold. The gate did exactly its job: this would otherwise have been
+   discovered as "the feature silently never fires".
+
+3. **S16 geometry reality**: at the ruled dials (mass 0.5, duration 0.25 s)
+   the trigger fires only the exchange's TAIL — span [1056.97–1057.24]
+   (0.27 s). The exchange body (1055.5–1057.5) hovers at pyannote overlap
+   mass 0.16–0.26 (the fixture's own corroboration) and never crosses the
+   0.5 bar for long. Even a perfect replacement rule therefore cannot make
+   the S16 EXCHANGE per-voice without lowering the mass bar to ≈0.2–0.3
+   (span counts rise accordingly; the census quantifies the cost).
+
+**Open decision (user's call, 2026-09-30)**: how to reconcile span
+geometry with row geometry —
+(a) keep the current rule (fires only when crosstalk dominates a row —
+    rare), accepting the feature stays mostly dormant;
+(b) span-slice surgery: replace only the row's IN-SPAN words (token-wall
+    partition), keep the remainder — mechanically complete but creates
+    mid-sentence row boundaries (fracture-gate pressure) and needs new
+    exemption plumbing;
+(c) lower the mass bar so spans align with rows that crosstalk already
+    dominates (S16's jumble row IS the exchange) — the dial the user
+    declined to move, now with census evidence that the cost is ~80–100
+    spans.
+
 ## Adversarial tests (RED before GREEN)
 
 Replacement scope (pinned by task 1.1, per the delta spec's "stated in the

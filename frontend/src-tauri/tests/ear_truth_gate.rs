@@ -1017,8 +1017,12 @@ async fn ear_truth_gate_cde5c264() {
             String::new()
         });
         let gate_decoder = {
+            // The whisper models live in the production app dir (ONNX
+            // models live in ~/.meetily-models — a different store).
+            let whisper_dir = std::path::Path::new(&home)
+                .join("AppData/Roaming/com.meetily.ai/models");
             let engine = app_lib::whisper_engine::WhisperEngine::new_with_models_dir(Some(
-                std::path::PathBuf::from(&models_dir),
+                whisper_dir,
             ))
             .expect("gate whisper engine");
             let model = std::env::var("MEETIFY_GATE_WHISPER_MODEL").unwrap_or_default();
@@ -1054,31 +1058,42 @@ async fn ear_truth_gate_cde5c264() {
             use app_lib::audio::speaker::run_assembly::{SpanSynthesis, StreamEvidence};
             engine.discover_models().await.expect("discover models");
             engine.load_model(&model).await.expect("load gate whisper model");
-            for input in &gate_synthesis_inputs {
-                let [Some((c0, m0)), Some((c1, m1))] = input.identity else { continue };
-                let decode = |samples: &[f32]| -> Option<String> {
-                    let text = engine.transcribe_span_blocking(samples.to_vec(), &lang)?;
-                    let trimmed = text.trim();
-                    if !trimmed.chars().any(|c| c.is_alphanumeric()) {
-                        return None;
-                    }
-                    let end_ms = samples.len() as f64
-                        / run_engine::SAMPLE_RATE as f64
-                        * 1000.0;
-                    let report = app_lib::audio::hallucination::audit(trimmed, 0.0, end_ms);
-                    if report.is_garbage { None } else { Some(trimmed.to_string()) }
-                };
-                let t0 = decode(&input.streams[0]);
-                let t1 = decode(&input.streams[1]);
-                gate_synthesis.push(SpanSynthesis {
-                    span: input.span,
-                    streams: [
-                        StreamEvidence { cluster: c0, margin: m0, rms_ratio: input.rms_ratio[0], text: t0 },
-                        StreamEvidence { cluster: c1, margin: m1, rms_ratio: input.rms_ratio[1], text: t1 },
-                    ],
-                    covered_atoms: input.covered_atoms.clone(),
-                });
-            }
+            // The blocking decode is spawn_blocking-ONLY (tokio panics on a
+            // runtime worker — the design's pinned constraint); model load
+            // stays on the async surface. The engine MOVES into the blocking
+            // closure.
+            let inputs = std::mem::take(&mut gate_synthesis_inputs);
+            gate_synthesis = tokio::task::spawn_blocking(move || {
+                let mut out = Vec::new();
+                for input in &inputs {
+                    let [Some((c0, m0)), Some((c1, m1))] = input.identity else { continue };
+                    let decode = |samples: &[f32]| -> Option<String> {
+                        let text = engine.transcribe_span_blocking(samples.to_vec(), &lang)?;
+                        let trimmed = text.trim();
+                        if !trimmed.chars().any(|c| c.is_alphanumeric()) {
+                            return None;
+                        }
+                        let end_ms = samples.len() as f64
+                            / run_engine::SAMPLE_RATE as f64
+                            * 1000.0;
+                        let report = app_lib::audio::hallucination::audit(trimmed, 0.0, end_ms);
+                        if report.is_garbage { None } else { Some(trimmed.to_string()) }
+                    };
+                    let t0 = decode(&input.streams[0]);
+                    let t1 = decode(&input.streams[1]);
+                    out.push(SpanSynthesis {
+                        span: input.span,
+                        streams: [
+                            StreamEvidence { cluster: c0, margin: m0, rms_ratio: input.rms_ratio[0], text: t0 },
+                            StreamEvidence { cluster: c1, margin: m1, rms_ratio: input.rms_ratio[1], text: t1 },
+                        ],
+                        covered_atoms: input.covered_atoms.clone(),
+                    });
+                }
+                out
+            })
+            .await
+            .expect("synthesis decode join");
         }
         let (merged, gate_synthesized) = app_lib::audio::speaker::commands::apply_overlap_synthesis(
             merged,
@@ -1541,17 +1556,27 @@ async fn ear_truth_gate_cde5c264() {
                 s16.needles.len()
             );
             if !ok {
-                record_render_failure(
-                    &mut render_failures,
-                    &render_fixture,
-                    "S16_ads_overlap_1056",
-                    format!(
-                        "S16 window renders {} distinct badge(s), {}/{} stream needle(s) — per-voice render missing or wrong",
-                        badges.len(),
-                        needles.len(),
-                        s16.needles.len()
-                    ),
+                // Waiver state lives on the ATTRIBUTION fixture (this is the
+                // entry's own amendment; the render snapshot's list is a
+                // different document). While waived: AMENDED, not a failure —
+                // graduation (4.2) removes the waiver and this becomes a
+                // hard pin.
+                let waived = fixture.known_limitations.iter().any(|k| k == "S16_ads_overlap_1056")
+                    && fixture
+                        .amendments
+                        .get("S16_ads_overlap_1056")
+                        .map_or(false, |a| !a.user_confirmed.is_empty() && !a.reason.is_empty());
+                let msg = format!(
+                    "S16 window renders {} distinct badge(s), {}/{} stream needle(s) — per-voice render missing or wrong",
+                    badges.len(),
+                    needles.len(),
+                    s16.needles.len()
                 );
+                if waived {
+                    eprintln!("AMENDED S16_ads_overlap_1056 — stream render not yet per-voice | {msg}");
+                } else {
+                    render_failures.push(format!("S16 stream render: {msg}"));
+                }
             }
         }
 
