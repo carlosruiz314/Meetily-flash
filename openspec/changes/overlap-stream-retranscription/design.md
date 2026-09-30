@@ -333,18 +333,16 @@ streams of every span). Results, and the one open design question:
    the S16 EXCHANGE per-voice without lowering the mass bar to ≈0.2–0.3
    (span counts rise accordingly; the census quantifies the cost).
 
-**Open decision (user's call, 2026-09-30)**: how to reconcile span
-geometry with row geometry —
-(a) keep the current rule (fires only when crosstalk dominates a row —
-    rare), accepting the feature stays mostly dormant;
-(b) span-slice surgery: replace only the row's IN-SPAN words (token-wall
-    partition), keep the remainder — mechanically complete but creates
-    mid-sentence row boundaries (fracture-gate pressure) and needs new
-    exemption plumbing;
-(c) lower the mass bar so spans align with rows that crosstalk already
-    dominates (S16's jumble row IS the exchange) — the dial the user
-    declined to move, now with census evidence that the cost is ~80–100
-    spans.
+**DECIDED (user, 2026-09-30)**: (b) + a lowered bar — span-slice surgery
+with a persisted parent link, and the mass bar moves to 0.3. The user's
+explicit requirement: the split pieces MUST carry a parent identifier so
+downstream analysis (the AI summarizer) can reconstruct the pre-split
+sentence — implemented as the `synth_parent` column (head/tail pieces link
+their own source row; stream rows link the donor), while head/tail pieces
+stay merge-eligible so consolidation re-heals them into readable turns.
+Mass bar 0.3 (the moderate option): real exchanges peak at 0.16–0.26, so
+0.5 structurally never fired; 0.3 admits ~80 spans meeting-wide and the
+clip calibration measures what it admits.
 
 ## Adversarial tests (RED before GREEN)
 

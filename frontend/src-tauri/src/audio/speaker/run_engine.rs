@@ -808,8 +808,12 @@ pub fn wall_atom_voice_votes(
 
 // ── Separation pre-pass (overlap-separation-prepass Phase 1) ────────────
 
-/// Overlap class mass a frame must carry to count as crosstalk.
-pub const OVERLAP_TRIGGER_MASS: f32 = 0.5;
+/// Overlap class mass a frame must carry to count as crosstalk. Ruled 0.3
+/// (2026-09-30, live-gate census): pyannote's own two-voice mass inside the
+/// attested S16 exchange peaks 0.16–0.26 — the 0.5 bar structurally never
+/// saw real crosstalk bodies; 0.3 admits real exchanges at ~80 fired spans
+/// meeting-wide, and the census + clip calibration measure what it admits.
+pub const OVERLAP_TRIGGER_MASS: f32 = 0.3;
 /// Sustained duration a run of triggered frames needs to qualify as an
 /// overlap span worth separating. Ruled 0.25s (overlap-stream-
 /// retranscription task 0.1 census sweep): the attested S16 exchange
@@ -1549,16 +1553,16 @@ mod tests {
             overlap,
             silence: 1.0 - overlap,
         };
-        // Minimum pinned at the ruled 0.25s (task 0.1 census sweep: the
-        // attested S16 exchange sustains the 0.5 bar for only 0.270s).
-        // frame_shift 0.01: 25 frames = 0.25s exactly, 24 frames = 0.24s —
-        // one frame under. Mass below the trigger never opens a run; runs
-        // under the minimum are dropped.
+        // Minimum pinned at the ruled 0.25s (task 0.1 census sweep) and the
+        // mass bar at the ruled 0.3 (2026-09-30: real exchanges peak below
+        // 0.5). frame_shift 0.01: 25 frames = 0.25s exactly, 24 = 0.24s.
+        // Mass below the trigger never opens a run; runs under the minimum
+        // are dropped.
         let mut frames: Vec<_> = std::iter::repeat(f(0.1)).take(10).collect();
         frames.extend(std::iter::repeat(f(0.2)).take(5)); // 0.05s blip below min
-        frames.extend(std::iter::repeat(f(0.6)).take(24)); // 0.24s: one frame under
+        frames.extend(std::iter::repeat(f(0.4)).take(24)); // 0.24s: one frame under
         frames.extend(std::iter::repeat(f(0.1)).take(4));
-        frames.extend(std::iter::repeat(f(0.6)).take(25)); // 0.25s: fires
+        frames.extend(std::iter::repeat(f(0.4)).take(25)); // 0.25s: fires
         frames.extend(std::iter::repeat(f(0.1)).take(10));
         frames.extend(std::iter::repeat(f(0.7)).take(3)); // trigger but 0.03s
         let spans = overlap_spans(&frames, 0.01);

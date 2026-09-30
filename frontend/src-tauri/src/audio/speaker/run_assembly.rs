@@ -1712,57 +1712,178 @@ pub fn synthesize_overlap_rows(
     // Replacement scope (design): a row is replaced WHOLE at or above the
     // coverage bar; under-bar rows survive untouched. The source row donates
     // its id — largest covered overlap, tie → earliest start.
+    // Row geometry (ruled semantics, 2026-09-30): a row the span FULLY
+    // covers is replaced whole; a row the span PARTIALLY covers is SPLIT at
+    // the span walls — prefix words, [stream rows], suffix words — so no
+    // word is lost. Word partition is proportional to duration (the same
+    // mechanism the aligner uses for wall-less rows; token-precise
+    // partition is a future refinement the ear can demand). Every piece
+    // carries `synth_parent` = its own source row id (stream rows: the
+    // donor's) so downstream analysis reconstructs the pre-split row.
     let mut best: Option<(i64, i64, usize)> = None;
-    let mut replaced: Vec<bool> = vec![false; rows.len()];
+    let mut kind: Vec<RowKind> = vec![RowKind::Outside; rows.len()];
     for (i, row) in rows.iter().enumerate() {
         let dur = row.audio_end_ms - row.audio_start_ms;
         if dur <= 0 {
             continue;
         }
         let cov = covered_time(row);
-        if (cov as f64 / dur as f64) >= SYNTH_ROW_COVERAGE {
-            replaced[i] = true;
-            let better = match best {
-                None => true,
-                Some((bc, bs, _)) => cov > bc || (cov == bc && row.audio_start_ms < bs),
-            };
-            if better {
-                best = Some((cov, row.audio_start_ms, i));
-            }
+        if cov <= 0 {
+            continue;
         }
+        let better = match best {
+            None => true,
+            Some((bc, bs, _)) => cov > bc || (cov == bc && row.audio_start_ms < bs),
+        };
+        if better {
+            best = Some((cov, row.audio_start_ms, i));
+        }
+        kind[i] = if (cov as f64 / dur as f64) >= 0.999 {
+            RowKind::Covered
+        } else {
+            RowKind::Straddling
+        };
     }
     let (_, _, src_idx) = best?;
     let source_id = rows[src_idx].original_id.clone();
-    let first_replaced = replaced.iter().position(|&r| r);
+    let first_touched = kind
+        .iter()
+        .position(|k| !matches!(k, RowKind::Outside));
 
-    let mk = |text: &str, badge: String| AlignedSegment {
-        original_id: source_id.clone(),
-        text: text.to_string(),
-        audio_start_ms: span_ms.0,
-        audio_end_ms: span_ms.1,
-        speaker: badge,
-        speaker_source: SpeakerSource::Auto,
-        synth_atom: true,
-    };
-    let mut stream0 = Some(mk(&texts[0], badge0));
-    let mut stream1 = Some(mk(&texts[1], badge1));
-
-    let mut out = Vec::with_capacity(rows.len() + 2);
-    let insert_at = first_replaced.unwrap_or(rows.len());
-    for (i, row) in rows.iter().enumerate() {
-        if i == insert_at {
-            if let Some(r) = stream0.take() {
-                out.push(r);
-            }
-            if let Some(r) = stream1.take() {
-                out.push(r);
-            }
+    let mut piece = |text: String,
+                     start_ms: i64,
+                     end_ms: i64,
+                     parent: &str,
+                     badge: Option<String>,
+                     atom: bool| -> Option<AlignedSegment> {
+        if !text.chars().any(|c| c.is_alphanumeric()) {
+            return None;
         }
-        if !replaced[i] {
-            out.push(row.clone());
+        Some(AlignedSegment {
+            original_id: if atom { source_id.clone() } else { parent.to_string() },
+            text,
+            audio_start_ms: start_ms,
+            audio_end_ms: end_ms,
+            speaker: badge.unwrap_or_else(|| String::new()),
+            speaker_source: SpeakerSource::Auto,
+            synth_atom: atom,
+            synth_parent: Some(parent.to_string()),
+        })
+    };
+
+    let mut stream0 = piece(
+        texts[0].clone(),
+        span_ms.0,
+        span_ms.1,
+        &source_id,
+        Some(badge0),
+        true,
+    );
+    let mut stream1 = piece(
+        texts[1].clone(),
+        span_ms.0,
+        span_ms.1,
+        &source_id,
+        Some(badge1),
+        true,
+    );
+
+    let mut out = Vec::with_capacity(rows.len() + 4);
+    let mut streams_placed = false;
+
+    for (i, row) in rows.iter().enumerate() {
+        match kind[i] {
+            RowKind::Outside => {
+                if Some(i) == first_touched && !streams_placed {
+                    place_streams(&mut out, &mut stream0, &mut stream1, &mut streams_placed);
+                }
+                out.push(row.clone())
+            }
+            RowKind::Covered => {
+                if Some(i) == first_touched && !streams_placed {
+                    place_streams(&mut out, &mut stream0, &mut stream1, &mut streams_placed);
+                }
+            }
+            RowKind::Straddling => {
+                // Proportional split at the span walls; pieces without
+                // alphanumeric content drop (sub-word slivers).
+                let head = piece(
+                    split_words_proportional(
+                        &row.text,
+                        &[proportional_share(row, span_ms.0)],
+                    )
+                    .into_iter()
+                    .next()
+                    .unwrap_or_default(),
+                    row.audio_start_ms,
+                    span_ms.0,
+                    &row.original_id,
+                    Some(row.speaker.clone()),
+                    false,
+                );
+                let tail = piece(
+                    split_words_proportional(
+                        &row.text,
+                        &[proportional_share(row, span_ms.1)],
+                    )
+                    .into_iter()
+                    .last()
+                    .unwrap_or_default(),
+                    span_ms.1,
+                    row.audio_end_ms,
+                    &row.original_id,
+                    Some(row.speaker.clone()),
+                    false,
+                );
+                let head_dur = span_ms.0 - row.audio_start_ms;
+                let tail_dur = row.audio_end_ms - span_ms.1;
+                if let Some(h) = head.filter(|_| head_dur > 0) {
+                    out.push(h);
+                }
+                if Some(i) == first_touched && !streams_placed {
+                    place_streams(&mut out, &mut stream0, &mut stream1, &mut streams_placed);
+                }
+                if let Some(t) = tail.filter(|_| tail_dur > 0) {
+                    out.push(t);
+                }
+            }
         }
     }
+    if !streams_placed {
+        place_streams(&mut out, &mut stream0, &mut stream1, &mut streams_placed);
+    }
     Some(out)
+}
+
+/// Insert the two stream rows once, at the span's position in time order.
+fn place_streams(
+    out: &mut Vec<AlignedSegment>,
+    stream0: &mut Option<AlignedSegment>,
+    stream1: &mut Option<AlignedSegment>,
+    placed: &mut bool,
+) {
+    if let Some(r) = stream0.take() {
+        out.push(r);
+    }
+    if let Some(r) = stream1.take() {
+        out.push(r);
+    }
+    *placed = true;
+}
+
+/// How the span interacts with a row's walls.
+#[derive(Clone, Copy, PartialEq)]
+enum RowKind {
+    Outside,
+    Covered,
+    Straddling,
+}
+
+/// Fraction of `row`'s duration before `wall_ms` (clamped to [0,1]) — the
+/// proportional word-split point.
+fn proportional_share(row: &AlignedSegment, wall_ms: i64) -> f64 {
+    let dur = (row.audio_end_ms - row.audio_start_ms).max(1);
+    ((wall_ms - row.audio_start_ms).clamp(0, dur) as f64 / dur as f64)
 }
 
 #[cfg(test)]
@@ -3053,6 +3174,7 @@ mod tests {
             speaker: speaker.to_string(),
             speaker_source: SpeakerSource::Auto,
             synth_atom: false,
+            synth_parent: None,
         }
     }
 
@@ -3222,19 +3344,53 @@ mod tests {
     }
 
     #[test]
-    fn straddling_row_under_bar_survives_whole() {
-        // 1000 of 2500 ms covered (0.4 < bar) → the row survives with its
-        // full text; the fully-covered neighbor is replaced.
+    fn straddling_row_splits_at_span_walls_with_parent_links() {
+        // Ruled surgery semantics: the straddler's words before the span
+        // survive as a head piece (its own source id, synth_parent set);
+        // its in-span words are replaced by the stream rows; the
+        // fully-covered neighbor is replaced whole.
         let rows = vec![
-            seg("src1", "straddling tail", 98_500, 101_000, "Speaker 0"),
+            seg("src1", "straddling tail words", 98_500, 101_000, "Speaker 0"),
             seg("src2", "inside", 101_000, 102_000, "Speaker 1"),
         ];
         let s = synth((100.0, 102.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
         let out = synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker)
-            .expect("one row covered");
-        assert_eq!(out[0].text, "straddling tail", "under-bar row keeps every word");
-        assert_eq!(out.len(), 3);
-        assert_eq!(out[1].original_id, "src2");
+            .expect("rows intersect the span");
+        // head piece (pre-span words) + 2 stream rows = 3 (the covered
+        // neighbor emits nothing; no tail — the row ends inside the span).
+        assert_eq!(out.len(), 3, "{out:?}");
+        let head = &out[0];
+        assert_eq!(head.audio_start_ms, 98_500);
+        assert_eq!(head.audio_end_ms, 100_000);
+        assert_eq!(head.original_id, "src1", "head keeps its own source id");
+        assert_eq!(head.synth_parent.as_deref(), Some("src1"));
+        assert!(!head.synth_atom, "head is merge-eligible ordinary speech");
+        let joined: String = out.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join(" ");
+        for w in ["straddling", "tail", "words", "alpha", "gamma"] {
+            assert!(joined.contains(w), "word {w} lost in the split: {joined:?}");
+        }
+        assert!(out[1].synth_atom && out[2].synth_atom);
+        assert_eq!(out[1].synth_parent.as_deref(), Some("src1"), "stream rows link the donor");
+    }
+
+    #[test]
+    fn straddling_row_with_tail_keeps_post_span_words() {
+        // A row straddling the WHOLE span: head AND tail pieces, both
+        // parent-linked; the stream rows sit between them in time order.
+        let rows = vec![seg("src1", "one two three four five six", 99_000, 103_000, "Speaker 0")];
+        let s = synth((100.0, 102.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
+        let out = synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker)
+            .expect("row intersects the span");
+        assert_eq!(out.len(), 4, "head + streams + tail: {out:?}");
+        assert_eq!(out[0].audio_end_ms, 100_000);
+        assert_eq!(out[3].audio_start_ms, 102_000);
+        assert_eq!(out[3].audio_end_ms, 103_000);
+        assert!(out[1].synth_atom && out[2].synth_atom);
+        assert!(!out[0].synth_atom && !out[3].synth_atom);
+        let joined = out.iter().map(|r| r.text.as_str()).collect::<Vec<_>>().join(" ");
+        for w in ["one", "two", "three", "four", "five", "six", "alpha", "gamma"] {
+            assert!(joined.contains(w), "word {w} lost: {joined:?}");
+        }
     }
 
     #[test]

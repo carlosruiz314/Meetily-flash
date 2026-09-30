@@ -21,10 +21,17 @@ persistence and undo flows can trace it (a rendering row whose
 persist). When a span's covered atoms intersect multiple source rows, each
 stream row SHALL inherit the id of the source row with maximum covered-atom
 overlap (tie: earliest start); the selection SHALL be pinned by test.
-Replacement scope is likewise pinned: a mixture row extending beyond the
-span walls either keeps its out-of-span remainder or is replaced whole —
-the rule SHALL be stated in the change's design and tested so no out-of-span
-words are silently lost.
+Replacement scope (USER-RULED 2026-09-30, after the live gate proved the
+whole-row rule never fires): a mixture row the span FULLY covers is
+replaced whole; a row the span PARTIALLY covers is SPLIT at the span walls
+— its pre-span words persist as a head piece, its post-span words as a tail
+piece (word partition proportional to duration), and the two stream rows
+sit between them. No word is ever lost. Every piece born from a split
+SHALL carry a persisted `synth_parent` link (its own source row id; stream
+rows: the donor's) so downstream analysis — the summarizer above all — can
+reconstruct the pre-split row by grouping on it. Head/tail pieces are
+ordinary merge-eligible speech (not synthesis atoms); the stream rows are
+synthesis atoms as before.
 
 The stream decode SHALL use the meeting's resolved language — the concrete
 code when the user preference names one; automatic preference states SHALL

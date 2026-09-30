@@ -536,8 +536,8 @@ impl SpeakerRepository {
                 "INSERT INTO transcripts \
                    (id, meeting_id, transcript, timestamp, summary, action_items, key_points, \
                     speaker, audio_start_time, audio_end_time, duration, speaker_label, \
-                    speaker_source, token_timestamps, previous_label, synth_atom, continues_previous) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', NULL, NULL, ?, ?)",
+                    speaker_source, token_timestamps, previous_label, synth_atom, continues_previous, synth_parent) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', NULL, NULL, ?, ?, ?)",
             )
             .bind(uuid::Uuid::new_v4().to_string())
             .bind(&t.meeting_id)
@@ -556,6 +556,7 @@ impl SpeakerRepository {
             // engine-turn stamping pass doesn't know them). The engine stamp
             // preserves it: effective_continuation ORs the text heuristic.
             .bind(if seg.synth_atom { Some(Self::mid_sentence_initial(&seg.text) as i64) } else { None::<i64> })
+            .bind(seg.synth_parent.as_deref())
             .execute(&mut *tx)
             .await?;
             written += 1;
@@ -1015,7 +1016,8 @@ mod tests {
                 speaker_source TEXT,
                 previous_label TEXT,
                 synth_atom INTEGER,
-                continues_previous INTEGER
+                continues_previous INTEGER,
+                synth_parent TEXT
             )",
         )
         .execute(&pool)
@@ -1389,6 +1391,7 @@ mod tests {
         "previous_label",
         "synth_atom",
         "continues_previous",
+        "synth_parent",
     ];
     const COPY_COLS: &[&str] = &[
         "meeting_id",
@@ -1466,7 +1469,7 @@ mod tests {
                 audio_start_time REAL, audio_end_time REAL, duration REAL,
                 speaker_label TEXT, speaker_source TEXT,
                 token_timestamps TEXT, previous_label TEXT,
-                synth_atom INTEGER, continues_previous INTEGER
+                synth_atom INTEGER, continues_previous INTEGER, synth_parent TEXT
             )",
         ))
         .execute(pool)
@@ -1570,6 +1573,7 @@ mod tests {
             speaker: speaker.to_string(),
             speaker_source: SpeakerSource::Auto,
             synth_atom: false,
+            synth_parent: None,
         }
     }
 
@@ -2943,7 +2947,7 @@ mod tests {
         let pool = SqlitePool::connect(":memory:").await.unwrap();
         sqlx::query("CREATE TABLE speakers (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT 'now', updated_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
         sqlx::query("CREATE TABLE speaker_embeddings (id TEXT PRIMARY KEY, speaker_id TEXT, embedding BLOB NOT NULL, source_meeting_id TEXT NOT NULL, cluster_label TEXT NOT NULL, created_at TEXT NOT NULL DEFAULT 'now')").execute(&pool).await.unwrap();
-        sqlx::query("CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, transcript TEXT NOT NULL, timestamp TEXT NOT NULL, audio_start_time REAL NOT NULL, audio_end_time REAL NOT NULL, duration REAL NOT NULL, speaker_label TEXT, speaker_source TEXT, previous_label TEXT, token_timestamps TEXT, synth_atom INTEGER, continues_previous INTEGER)").execute(&pool).await.unwrap();
+        sqlx::query("CREATE TABLE transcripts (id TEXT PRIMARY KEY, meeting_id TEXT NOT NULL, transcript TEXT NOT NULL, timestamp TEXT NOT NULL, audio_start_time REAL NOT NULL, audio_end_time REAL NOT NULL, duration REAL NOT NULL, speaker_label TEXT, speaker_source TEXT, previous_label TEXT, token_timestamps TEXT, synth_atom INTEGER, continues_previous INTEGER, synth_parent TEXT)").execute(&pool).await.unwrap();
         pool
     }
 
