@@ -1017,32 +1017,15 @@ pub async fn run_diarization_for_meeting(
     // block; this only reshapes rows. Manual rows win (their spans stand
     // synthesis down); a span whose gates fail anywhere keeps today's
     // mixture rows.
-    let aligned: Vec<AlignedSegment> = {
-        let manual_spans = SpeakerRepository::list_manual_spans(pool, meeting_id).await;
-        let cluster_speaker = |c: u32| -> Option<String> {
-            Some(resolve_label(&format!("Speaker {c}"), &label_map))
-        };
-        let mut aligned = aligned;
-        let mut synthesized = 0usize;
-        for s in &span_synthesis {
-            if let Some(next) = crate::audio::speaker::run_assembly::synthesize_overlap_rows(
-                &aligned,
-                s,
-                &manual_spans,
-                &cluster_speaker,
-            ) {
-                aligned = next;
-                synthesized += 1;
-            }
-        }
-        if synthesized > 0 {
-            log::warn!(
-                "DIARIZATION: synthesized {synthesized}/{} overlap span(s) per-voice",
-                span_synthesis.len()
-            );
-        }
-        aligned
-    };
+    let manual_spans = SpeakerRepository::list_manual_spans(pool, meeting_id).await;
+    let (aligned, synthesized) =
+        apply_overlap_synthesis(aligned, &span_synthesis, &manual_spans, &label_map);
+    if synthesized > 0 {
+        log::warn!(
+            "DIARIZATION: synthesized {synthesized}/{} overlap span(s) per-voice",
+            span_synthesis.len()
+        );
+    }
     let segments_labeled =
         SpeakerRepository::persist_regenerated_rendering(pool, meeting_id, aligned, manual_rederive)
             .await
@@ -1578,6 +1561,36 @@ fn resolve_label(speaker: &str, label_map: &std::collections::HashMap<u32, Strin
 
 // ── Overlap-stream synthesis seam (overlap-stream-retranscription 2.1) ──
 
+/// The render splice: fold every span's synthesis candidates into the
+/// aligned rows. No candidate, or a span whose gates fail anywhere (manual
+/// row, margin miss, same-badge collapse, junk text), leaves the input
+/// byte-identical — the degrade channel, pinned from here (task 2.2).
+/// Returns the row list plus how many spans synthesized.
+pub(crate) fn apply_overlap_synthesis(
+    aligned: Vec<crate::audio::speaker::alignment::AlignedSegment>,
+    synthesis: &[crate::audio::speaker::run_assembly::SpanSynthesis],
+    manual_spans: &[(i64, i64)],
+    label_map: &std::collections::HashMap<u32, String>,
+) -> (Vec<crate::audio::speaker::alignment::AlignedSegment>, usize) {
+    let cluster_speaker = |c: u32| -> Option<String> {
+        Some(resolve_label(&format!("Speaker {c}"), label_map))
+    };
+    let mut aligned = aligned;
+    let mut synthesized = 0usize;
+    for s in synthesis {
+        if let Some(next) = crate::audio::speaker::run_assembly::synthesize_overlap_rows(
+            &aligned,
+            s,
+            manual_spans,
+            &cluster_speaker,
+        ) {
+            aligned = next;
+            synthesized += 1;
+        }
+    }
+    (aligned, synthesized)
+}
+
 /// The stream decode's language, resolved ONCE per run. A concrete
 /// preference code pins it; the automatic states degrade (None → no
 /// synthesis) — never `auto-translate` (stream rows would render as
@@ -1807,6 +1820,59 @@ mod tests {
         assert_eq!(out, None, "no model loaded → degrade, not error");
     }
 
+    #[test]
+    fn overlap_synthesis_splice_degrade_is_byte_identical_and_marks_stream_rows() {
+        let make_rows = || vec![frag("src1", "jumble", 0, 2000, "Speaker 0")];
+        // No candidates at all (missing model / no spans) → unchanged.
+        let (out, n) = apply_overlap_synthesis(make_rows(), &[], &[], &Default::default());
+        assert_eq!((out.len(), n), (1, 0));
+        assert_eq!(out[0].text, "jumble");
+        // A degraded candidate (same-badge collapse) → unchanged.
+        let s = crate::audio::speaker::run_assembly::SpanSynthesis {
+            span: (0.0, 2.0),
+            streams: [
+                crate::audio::speaker::run_assembly::StreamEvidence {
+                    cluster: 1,
+                    margin: 0.3,
+                    rms_ratio: 1.0,
+                    text: Some("alpha".into()),
+                },
+                crate::audio::speaker::run_assembly::StreamEvidence {
+                    cluster: 1,
+                    margin: 0.2,
+                    rms_ratio: 1.0,
+                    text: Some("gamma".into()),
+                },
+            ],
+            covered_atoms: vec![(0, 2000)],
+        };
+        let (out, n) = apply_overlap_synthesis(make_rows(), &[s], &[], &Default::default());
+        assert_eq!((out.len(), n), (1, 0));
+        // A decisive span synthesizes AND marks the stream rows as atoms —
+        // the marker consolidation isolates on.
+        let s = crate::audio::speaker::run_assembly::SpanSynthesis {
+            span: (0.0, 2.0),
+            streams: [
+                crate::audio::speaker::run_assembly::StreamEvidence {
+                    cluster: 1,
+                    margin: 0.3,
+                    rms_ratio: 1.0,
+                    text: Some("alpha".into()),
+                },
+                crate::audio::speaker::run_assembly::StreamEvidence {
+                    cluster: 2,
+                    margin: 0.2,
+                    rms_ratio: 1.0,
+                    text: Some("gamma".into()),
+                },
+            ],
+            covered_atoms: vec![(0, 2000)],
+        };
+        let (out, n) = apply_overlap_synthesis(make_rows(), &[s], &[], &Default::default());
+        assert_eq!((out.len(), n), (2, 1), "one covered row replaced by two stream rows");
+        assert!(out.iter().all(|r| r.synth_atom), "every output row here is a stream row");
+    }
+
     fn frag(id: &str, text: &str, start: i64, end: i64, speaker: &str) -> crate::audio::speaker::alignment::AlignedSegment {
         crate::audio::speaker::alignment::AlignedSegment {
             original_id: id.to_string(),
@@ -1815,6 +1881,7 @@ mod tests {
             audio_end_ms: end,
             speaker: speaker.to_string(),
             speaker_source: crate::audio::speaker::alignment::SpeakerSource::Auto,
+            synth_atom: false,
         }
     }
 

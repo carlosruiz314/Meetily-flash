@@ -722,6 +722,7 @@ async fn repair_write_lands_in_both_tables_and_regeneration_rederives_repaired_t
             audio_end_ms: (s.end_s * 1000.0) as i64,
             speaker: "Speaker 0".to_string(),
             speaker_source: SpeakerSource::Auto,
+            synth_atom: false,
         })
         .collect();
     let regenerated =
