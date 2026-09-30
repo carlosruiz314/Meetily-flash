@@ -732,6 +732,56 @@ impl WhisperEngine {
         self.decode_with_params(params, audio_data, segment_offset_ms).await
     }
 
+    /// Sync span decode for the overlap-stream synthesis seam
+    /// (overlap-stream-retranscription task 2.1). STRICT profile reused
+    /// verbatim (greedy, temperature 0, language PINNED by the caller —
+    /// never auto-detect, never translate); token timestamps are not
+    /// extracted because stream rows carry span walls. Blocking-reads the
+    /// context lock: legal ONLY from `spawn_blocking` threads (the speaker
+    /// pipeline's home) — tokio panics if called from an async worker. The
+    /// async stats locks are deliberately skipped: stream decodes are
+    /// off the stats path. Returns None — not an error — when no model is
+    /// loaded; the seam treats None as engine-unavailable and degrades.
+    pub fn transcribe_span_blocking(&self, audio_data: Vec<f32>, pinned_language: &str) -> Option<String> {
+        let ctx_lock = self.current_context.blocking_read();
+        let ctx = ctx_lock.as_ref()?;
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 5 });
+        apply_strict_params(&mut params, pinned_language);
+        let audio_ctx = ((audio_data.len() / 320) + 32).min(1500) as i32;
+        params.set_audio_ctx(audio_ctx);
+
+        let (num_segments, state) = {
+            let mut state = ctx.create_state().ok()?;
+            state.full(params, &audio_data).ok()?;
+            let num_segments = state.full_n_segments();
+            (num_segments, state)
+        };
+        let mut result = String::new();
+        for i in 0..num_segments {
+            let Some(segment) = state.get_segment(i) else {
+                continue;
+            };
+            let Ok(segment_text) = segment.to_str_lossy() else {
+                continue;
+            };
+            let cleaned_text =
+                crate::audio::speaker::token_timestamps::strip_eot_markers(&segment_text);
+            if !cleaned_text.is_empty() {
+                if !result.is_empty() {
+                    result.push(' ');
+                }
+                result.push_str(&cleaned_text);
+            }
+        }
+        let final_result = result.trim().to_string();
+        let cleaned_result = Self::clean_repetitive_text(&final_result);
+        if cleaned_result.is_empty() {
+            None
+        } else {
+            Some(cleaned_result)
+        }
+    }
+
     /// Strict re-decode that keeps whisper's per-segment structure instead of
     /// the joined text — the offline repair harness writes one row per
     /// re-decoded segment (whisper-hallucination-cleanup task 4.2).

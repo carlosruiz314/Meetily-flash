@@ -27,9 +27,10 @@ the rule SHALL be stated in the change's design and tested so no out-of-span
 words are silently lost.
 
 The stream decode SHALL use the meeting's resolved language — the concrete
-code when the user preference names one, otherwise the same resolution the
-meeting's mixture rows were decoded under — never `auto-translate`, never
-per-stream auto-detection. Streams SHALL decode under a deterministic
+code when the user preference names one; automatic preference states SHALL
+degrade (no synthesis), because the automatic resolution is translation and
+stream rows translated to English would be the defect. Never
+`auto-translate`, never per-stream auto-detection. Streams SHALL decode under a deterministic
 profile (pinned language, greedy search, temperature 0) rather than the
 live chunked profile, and the profile SHALL NOT consume token timestamps
 (stream rows use span walls). A stream SHALL be eligible for synthesis only

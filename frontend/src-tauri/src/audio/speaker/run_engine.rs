@@ -859,6 +859,27 @@ pub fn overlap_spans(frames: &[FrameMasses], frame_shift: f64) -> Vec<(f64, f64)
 /// the votes plus the separation-covered atoms, so the caller can drop
 /// mixture votes there (their geometry is the crosstalk the port exists
 /// to resolve).
+/// One span's synthesis candidate: the per-stream span-level identity
+/// (cluster + margin from the ref-anchored ranking of the WHOLE stream —
+/// the census-validated identity read), the span-carved RMS-normalized
+/// stream audio (decode-ready for the composition root's Whisper closure),
+/// and the span's separation-covered atoms (the pure splice's row-coverage
+/// evidence). Stream order is the port's array order — it carries no
+/// meaning; the caller owns the index→stream binding.
+pub struct SpanSynthesisInput {
+    pub span: (f64, f64),
+    /// Per-stream span-level identity: None when the stream's span slice is
+    /// too short to embed (extractor floor) or the anchor ranking is
+    /// undecisive at ANY margin (the margin gate applies downstream).
+    pub identity: [Option<(u32, f32)>; 2],
+    /// Per-stream pre-normalization RMS ratio (the port's silence report) —
+    /// the synthesis eligibility floor reads this, never post-
+    /// normalization RMS.
+    pub rms_ratio: [f32; 2],
+    pub streams: [Vec<f32>; 2],
+    pub covered_atoms: Vec<(i64, i64)>,
+}
+
 pub fn separated_stream_voice_votes(
     samples: &[f32],
     transcripts: &[crate::audio::speaker::alignment::TranscriptInput],
@@ -867,11 +888,12 @@ pub fn separated_stream_voice_votes(
     references: &[(String, Vec<f32>)],
     port: &dyn VoiceSeparationPort,
     spans: &[(f64, f64)],
-) -> (Vec<(f64, f64, u32)>, Vec<(i64, i64)>) {
+) -> (Vec<(f64, f64, u32)>, Vec<(i64, i64)>, Vec<SpanSynthesisInput>) {
     let mut votes = Vec::new();
     let mut covered = Vec::new();
+    let mut span_inputs: Vec<SpanSynthesisInput> = Vec::new();
     if centroids.is_empty() || spans.is_empty() {
-        return (votes, covered);
+        return (votes, covered, span_inputs);
     }
     let anchors = ref_anchored_anchors(centroids, references);
     let rows = wall_vote_token_streams(transcripts);
@@ -884,6 +906,7 @@ pub fn separated_stream_voice_votes(
                 continue;
             }
         };
+        let mut span_covered: Vec<(i64, i64)> = Vec::new();
         for tokens in &rows {
             for (a_ms, b_ms) in crate::audio::speaker::run_assembly::token_wall_atoms(tokens) {
                 let a_s = a_ms as f64 / 1000.0;
@@ -897,6 +920,7 @@ pub fn separated_stream_voice_votes(
                     continue;
                 }
                 covered.push((a_ms, b_ms));
+                span_covered.push((a_ms, b_ms));
                 for stream in &streams {
                     let i0 = ((a_s - s0) * sr).max(0.0) as usize;
                     let i1 = ((b_s - s0) * sr).min(stream.samples.len() as f64) as usize;
@@ -924,8 +948,42 @@ pub fn separated_stream_voice_votes(
                 }
             }
         }
+        // Span-level synthesis identity (census-validated read): rank the
+        // WHOLE stream against the anchors. Recorded regardless of the
+        // margin outcome — the census needs the near-miss distribution and
+        // the pure splice applies the gate.
+        let mut identity: [Option<(u32, f32)>; 2] = [None, None];
+        if streams.len() == 2 {
+            for (i, stream) in streams.iter().enumerate() {
+                let Some(emb) = embed(&stream.samples) else {
+                    continue;
+                };
+                let mut scored: Vec<(f32, usize)> = anchors
+                    .iter()
+                    .enumerate()
+                    .map(|(j, (_, anc))| (cosine(anc, &emb), j))
+                    .collect();
+                scored.sort_by(|x, y| y.0.total_cmp(&x.0));
+                if scored.len() >= 2 {
+                    identity[i] = Some((anchors[scored[0].1].0, scored[0].0 - scored[1].0));
+                }
+            }
+        }
+        span_inputs.push(SpanSynthesisInput {
+            span: (s0, s1),
+            identity,
+            rms_ratio: [
+                streams.first().map(|s| s.pre_rms_ratio).unwrap_or(0.0),
+                streams.get(1).map(|s| s.pre_rms_ratio).unwrap_or(0.0),
+            ],
+            streams: [
+                streams.first().map(|s| s.samples.clone()).unwrap_or_default(),
+                streams.get(1).map(|s| s.samples.clone()).unwrap_or_default(),
+            ],
+            covered_atoms: span_covered,
+        });
     }
-    (votes, covered)
+    (votes, covered, span_inputs)
 }
 
 /// Merge mixture-channel wall votes with the separated-stream channel:
@@ -1279,7 +1337,9 @@ mod tests {
     /// Returns preset streams regardless of span — the unit test pins the
     /// vote assembly's behavior, not the adapter's inference.
     struct FakeSeparator {
-        streams: Vec<Vec<f32>>,
+        /// (samples, pre_rms_ratio) per stream — the ratio is the port's
+        /// honest silence report, set by the test like the adapter would.
+        streams: Vec<(Vec<f32>, f32)>,
     }
 
     impl VoiceSeparationPort for FakeSeparator {
@@ -1291,7 +1351,7 @@ mod tests {
             Ok(self
                 .streams
                 .iter()
-                .map(|s| SeparatedStream { samples: s.clone() })
+                .map(|(s, r)| SeparatedStream { samples: s.clone(), pre_rms_ratio: *r })
                 .collect())
         }
     }
@@ -1354,17 +1414,26 @@ mod tests {
         ];
 
         let embed = |a: &[f32]| FakeVoiceprint.extract(a, SAMPLE_RATE).ok().map(|e| e.0);
-        let (votes, covered) = separated_stream_voice_votes(
+        let (votes, covered, span_inputs) = separated_stream_voice_votes(
             &mixture,
             &rows,
             &embed,
             &centroids,
             &references,
             &FakeSeparator {
-                streams: vec![stream_a, stream_b],
+                streams: vec![(stream_a, 0.6), (stream_b, 0.4)],
             },
             &[(1.0, 3.0)],
         );
+        // Span-level synthesis input rides along (identity asserted in its
+        // dedicated test — the zcr fake dilutes over span-long silence, a
+        // fake artifact real embeddings don't have).
+        assert_eq!(span_inputs.len(), 1, "one span in, one synthesis input out");
+        let si = &span_inputs[0];
+        assert_eq!(si.span, (1.0, 3.0));
+        assert_eq!(si.covered_atoms, vec![(1_200, 1_800), (2_000, 2_600)]);
+        assert_eq!(si.streams.len(), 2);
+        assert_eq!(si.rms_ratio, [0.6, 0.4]);
 
         let mut v = votes.clone();
         v.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
@@ -1404,8 +1473,42 @@ mod tests {
     }
 
     #[test]
-    fn garbage_and_empty_streams_abstain() {
+    fn span_level_identity_rides_the_synthesis_input() {
+        // Dedicated identity test with SPAN-LONG tones: the atom test's
+        // silence-padded streams dilute the zcr fake below its bucket cut
+        // (a fake artifact — real embeddings are silence-robust, measured
+        // on S16 in the census). Each stream ranks its own anchor at the
+        // span level; the margin is recorded but the gate lives downstream.
         let sr = SAMPLE_RATE as usize;
+        let stream_a = tone(0.005f32, 2 * sr, 0.2); // zcr ≈ 0.0016 → bucket 0
+        let stream_b = tone(0.1f32, 2 * sr, 0.2); // zcr ≈ 0.032 → bucket 1
+        let rows = vec![transcript_input(
+            "a",
+            "fee fi",
+            1_200,
+            1_800,
+            vec![token_word("fee", 1_200, 1_500), token_word("fi", 1_500, 1_800)],
+        )];
+        let embed = |a: &[f32]| FakeVoiceprint.extract(a, SAMPLE_RATE).ok().map(|e| e.0);
+        let (_votes, _covered, span_inputs) = separated_stream_voice_votes(
+            &vec![0.0f32; 3 * sr],
+            &rows,
+            &embed,
+            &[(7u32, onehot(0)), (9u32, onehot(1))],
+            &[("refa".to_string(), onehot(0)), ("refb".to_string(), onehot(1))],
+            &FakeSeparator {
+                streams: vec![(stream_a, 0.7), (stream_b, 0.3)],
+            },
+            &[(1.0, 3.0)],
+        );
+        assert_eq!(span_inputs.len(), 1);
+        assert_eq!(span_inputs[0].identity[0].map(|(c, _)| c), Some(7));
+        assert_eq!(span_inputs[0].identity[1].map(|(c, _)| c), Some(9));
+        assert_eq!(span_inputs[0].rms_ratio, [0.7, 0.3]);
+    }
+
+    #[test]
+    fn garbage_and_empty_streams_abstain() {        let sr = SAMPLE_RATE as usize;
         // Near-silence stream (below the RMS floor) and a loud orthogonal
         // tone (bucket 2 — cosine 0 against both anchors): neither may vote.
         let quiet: Vec<f32> = vec![1e-5; 3 * sr];
@@ -1418,19 +1521,25 @@ mod tests {
             vec![token_word("fee", 1_200, 1_500), token_word("fi", 1_500, 1_800)],
         )];
         let embed = |a: &[f32]| FakeVoiceprint.extract(a, SAMPLE_RATE).ok().map(|e| e.0);
-        let (votes, covered) = separated_stream_voice_votes(
+        let (votes, covered, span_inputs) = separated_stream_voice_votes(
             &vec![0.0f32; 4 * sr],
             &rows,
             &embed,
             &[(7u32, onehot(0)), (9u32, onehot(1))],
             &[("refa".to_string(), onehot(0)), ("refb".to_string(), onehot(1))],
             &FakeSeparator {
-                streams: vec![quiet, orthogonal],
+                streams: vec![(quiet, 0.001), (orthogonal, 0.5)],
             },
             &[(1.0, 3.0)],
         );
         assert!(votes.is_empty(), "no stream may vote: {votes:?}");
         assert_eq!(covered, vec![(1_200, 1_800)]);
+        // The quiet stream's collapse is visible ONLY through the port's
+        // pre-normalization ratio (normalization would otherwise amplify it
+        // to clip level and its fake-voiceprint identity would look
+        // decisive) — the eligibility floor downstream reads exactly this.
+        assert_eq!(span_inputs.len(), 1);
+        assert_eq!(span_inputs[0].rms_ratio, [0.001, 0.5]);
     }
 
     #[test]
