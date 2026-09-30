@@ -104,8 +104,11 @@ evidence home, never repo-committed).
       counts, sha256 of both texts; verbatim text only under
       MEETIFY_RENDER_PRINT, terminal-only); runner script
       `tools/run_ear_gate.bat` records output into `gate-runs/`
-      (gitignored + pre-push pathspec Gate 1). Gate lint + lib 735/735;
-      live run lands with 3.4.
+      (gitignored + pre-push pathspec Gate 1). Gate lint + lib 735/735.
+      LIVE GATE GREEN (2026-09-30, second replay at the ruled semantics):
+      132 candidates at mass 0.3, 10 synthesized, S16 window renders 3 rows
+      under 2 distinct badges with 2/2 fixture needles — full gate pass on
+      the real meeting.
 
 - [ ] 3.4 Live `live_speakers_run`-equivalent persist; DB-layer verification
       (terminal-only rule): S16 rows per-voice, transcript_sources
