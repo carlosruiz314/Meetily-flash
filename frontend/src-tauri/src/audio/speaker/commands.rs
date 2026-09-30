@@ -641,7 +641,7 @@ pub async fn run_diarization_for_meeting(
     let transcripts_for_engine = transcripts.clone();
     let segmentation_path_for_pya = segmentation_path.clone();
     let embedding_path_for_engine = embedding_path.clone();
-    let (segments, centroids, engine_turns, rescue_seams, voice_votes) =
+    let (segments, centroids, engine_turns, rescue_seams, voice_votes, span_synthesis) =
         tokio::task::spawn_blocking(move || {
         // SUCCESS PATH (design D5): the run-assembly engine derives the final
         // turns from ONE full-meeting pyannote pass. The chunk grid, temporal
@@ -658,6 +658,7 @@ pub async fn run_diarization_for_meeting(
         );
         if let (Ok(pya), Ok(extractor)) = engine_models {
             let t_eng = std::time::Instant::now();
+            let mut span_synthesis: Vec<super::run_assembly::SpanSynthesis> = Vec::new();
             let engine_out = super::run_engine::derive_turns(
                 &samples,
                 &pya,
@@ -727,10 +728,52 @@ pub async fn run_diarization_for_meeting(
                         &engine_out.overlap_spans,
                     )
                 });
-                let wall = super::run_engine::merge_wall_and_separated(wall, separated);
+                let (separated_channel, synthesis_inputs) = match separated {
+                    Some((v, c, inputs)) => (Some((v, c)), inputs),
+                    None => (None, Vec::new()),
+                };
+                let wall = super::run_engine::merge_wall_and_separated(wall, separated_channel);
                 votes.extend(wall);
+                // Per-span synthesis candidates (design: separation + decode +
+                // per-stream identity computed INSIDE spawn_blocking — the
+                // pure splice after the duplicate resolver stays I/O-free).
+                // The stream decode is the composition root's closure over
+                // the WHISPER_ENGINE static; an unresolved language, a
+                // missing engine/model, or flagged text degrades that stream.
+                let decoder = StreamDecoder::from_static();
+                for input in synthesis_inputs {
+                    let [Some((c0, m0)), Some((c1, m1))] = input.identity else {
+                        continue;
+                    };
+                    let t0 = decoder.decode(&input.streams[0]);
+                    let t1 = decoder.decode(&input.streams[1]);
+                    span_synthesis.push(super::run_assembly::SpanSynthesis {
+                        span: input.span,
+                        streams: [
+                            super::run_assembly::StreamEvidence {
+                                cluster: c0,
+                                margin: m0,
+                                rms_ratio: input.rms_ratio[0],
+                                text: t0,
+                            },
+                            super::run_assembly::StreamEvidence {
+                                cluster: c1,
+                                margin: m1,
+                                rms_ratio: input.rms_ratio[1],
+                                text: t1,
+                            },
+                        ],
+                        covered_atoms: input.covered_atoms,
+                    });
+                }
+                if !span_synthesis.is_empty() {
+                    log::warn!(
+                        "DIARIZATION: {} overlap span(s) carry both-stream synthesis candidates",
+                        span_synthesis.len()
+                    );
+                }
             }
-            return Ok::<_, anyhow::Error>((segments, centroids, Some(turns), seams, votes));
+            return Ok::<_, anyhow::Error>((segments, centroids, Some(turns), seams, votes, span_synthesis));
         }
 
         // FALLBACK (only on model-load failure): legacy grid path, unchanged.
@@ -792,7 +835,7 @@ pub async fn run_diarization_for_meeting(
             }
         }
         let turns: Option<Vec<super::run_engine::EngineTurn>> = None;
-        Ok::<_, anyhow::Error>((segments, centroids, turns, Vec::new(), Vec::new()))
+        Ok::<_, anyhow::Error>((segments, centroids, turns, Vec::new(), Vec::new(), Vec::new()))
     })
     .await
     .map_err(|e| format!("Diarization blocking task failed: {}", e))?
@@ -968,6 +1011,38 @@ pub async fn run_diarization_for_meeting(
     // row is deleted and rebuilt from source in one transaction, so an
     // absorbed member's stale row simply ceases to exist.
     let aligned = crate::audio::speaker::alignment::resolve_duplicate_clusters(aligned);
+    // Overlap-stream synthesis (overlap-stream-retranscription): replace
+    // both-streams-decisive overlap spans with one row per voice. PURE
+    // splice — all model I/O already happened inside the spawn_blocking
+    // block; this only reshapes rows. Manual rows win (their spans stand
+    // synthesis down); a span whose gates fail anywhere keeps today's
+    // mixture rows.
+    let aligned: Vec<AlignedSegment> = {
+        let manual_spans = SpeakerRepository::list_manual_spans(pool, meeting_id).await;
+        let cluster_speaker = |c: u32| -> Option<String> {
+            Some(resolve_label(&format!("Speaker {c}"), &label_map))
+        };
+        let mut aligned = aligned;
+        let mut synthesized = 0usize;
+        for s in &span_synthesis {
+            if let Some(next) = crate::audio::speaker::run_assembly::synthesize_overlap_rows(
+                &aligned,
+                s,
+                &manual_spans,
+                &cluster_speaker,
+            ) {
+                aligned = next;
+                synthesized += 1;
+            }
+        }
+        if synthesized > 0 {
+            log::warn!(
+                "DIARIZATION: synthesized {synthesized}/{} overlap span(s) per-voice",
+                span_synthesis.len()
+            );
+        }
+        aligned
+    };
     let segments_labeled =
         SpeakerRepository::persist_regenerated_rendering(pool, meeting_id, aligned, manual_rederive)
             .await
@@ -1501,6 +1576,65 @@ fn resolve_label(speaker: &str, label_map: &std::collections::HashMap<u32, Strin
     speaker.to_string()
 }
 
+// ── Overlap-stream synthesis seam (overlap-stream-retranscription 2.1) ──
+
+/// The stream decode's language, resolved ONCE per run. A concrete
+/// preference code pins it; the automatic states degrade (None → no
+/// synthesis) — never `auto-translate` (stream rows would render as
+/// English translations of a Spanish meeting) and never per-stream
+/// auto-detection on 2–3 s separated clips (weak and can diverge between
+/// the two streams of one span). A failed resolution degrades; it never
+/// falls back to translation.
+pub(crate) fn resolve_stream_language(pref: Option<&str>) -> Option<String> {
+    match pref {
+        Some(code) if !matches!(code, "auto" | "auto-translate") => Some(code.to_string()),
+        _ => None,
+    }
+}
+
+/// The composition-root Whisper closure: strict sync span decode over the
+/// loaded engine, then the text-level hallucination audit. `None` at any
+/// stage (no engine, no model, unresolved language, empty decode, flagged
+/// text) is the no-synthesis degrade — garbage abstains, never renders.
+pub(crate) struct StreamDecoder {
+    engine: Option<Arc<crate::whisper_engine::whisper_engine::WhisperEngine>>,
+    language: Option<String>,
+}
+
+impl StreamDecoder {
+    /// Built at the composition root: the WHISPER_ENGINE static (the same
+    /// handle the live transcription path loads) plus the run's resolved
+    /// language.
+    pub fn from_static() -> Self {
+        let engine = crate::whisper_engine::commands::WHISPER_ENGINE
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone());
+        StreamDecoder {
+            engine,
+            language: resolve_stream_language(
+                crate::get_language_preference_internal().as_deref(),
+            ),
+        }
+    }
+
+    pub fn decode(&self, samples: &[f32]) -> Option<String> {
+        let lang = self.language.as_deref()?;
+        let engine = self.engine.as_ref()?;
+        let text = engine.transcribe_span_blocking(samples.to_vec(), lang)?;
+        let trimmed = text.trim();
+        if !trimmed.chars().any(|c| c.is_alphanumeric()) {
+            return None;
+        }
+        let end_ms = samples.len() as f64 / super::run_engine::SAMPLE_RATE as f64 * 1000.0;
+        let report = crate::audio::hallucination::audit(trimmed, 0.0, end_ms);
+        if report.is_garbage {
+            return None;
+        }
+        Some(trimmed.to_string())
+    }
+}
+
 fn cosine_similarity_centroids(a: &[f32], b: &[f32]) -> f32 {
     let min_len = a.len().min(b.len());
     let dot: f32 = a[..min_len].iter().zip(&b[..min_len]).map(|(x, y)| x * y).sum();
@@ -1636,6 +1770,42 @@ pub fn enforce_max_speakers_cap(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── Overlap-stream synthesis seam (task 2.1) ──
+
+    #[test]
+    fn stream_language_resolution_never_translates() {
+        assert_eq!(resolve_stream_language(Some("es")).as_deref(), Some("es"));
+        assert_eq!(resolve_stream_language(Some("ca")).as_deref(), Some("ca"));
+        // Automatic states degrade — an English translation of a Spanish
+        // meeting is the defect, not the fallback.
+        assert_eq!(resolve_stream_language(Some("auto")), None);
+        assert_eq!(resolve_stream_language(Some("auto-translate")), None);
+        assert_eq!(resolve_stream_language(None), None);
+    }
+
+    #[test]
+    fn stream_decoder_without_engine_or_language_degrades() {
+        // Unit-test context: no model ever loaded into the static, and the
+        // preference static holds its default. Every stage must abstain.
+        let d = StreamDecoder::from_static();
+        assert!(d.language.is_none(), "default preference is auto-translate → unresolved");
+        assert!(d.decode(&[0.0f32; 1600]).is_none());
+    }
+
+    #[tokio::test]
+    async fn span_decode_is_spawn_blocking_safe_and_degrades_without_model() {
+        let engine = crate::whisper_engine::whisper_engine::WhisperEngine::new()
+            .expect("engine constructible without models");
+        // blocking_read panics on an async worker; the seam's contract is
+        // spawn_blocking only. This pin fails the first naive wiring.
+        let out = tokio::task::spawn_blocking(move || {
+            engine.transcribe_span_blocking(vec![0.0f32; 16_000], "es")
+        })
+        .await
+        .expect("join");
+        assert_eq!(out, None, "no model loaded → degrade, not error");
+    }
 
     fn frag(id: &str, text: &str, start: i64, end: i64, speaker: &str) -> crate::audio::speaker::alignment::AlignedSegment {
         crate::audio::speaker::alignment::AlignedSegment {

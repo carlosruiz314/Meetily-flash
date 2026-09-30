@@ -355,6 +355,26 @@ impl SpeakerRepository {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Surviving manual rendering rows' [start_ms, end_ms) spans — the same
+    /// set `persist_regenerated_rendering` honors, read BEFORE the splice so
+    /// overlap-span synthesis can stand down where a manual row wins
+    /// (midpoint suppression would otherwise eat both fresh stream rows on
+    /// the next run). Absent/NULL timings claim no span.
+    pub async fn list_manual_spans(pool: &SqlitePool, meeting_id: &str) -> Vec<(i64, i64)> {
+        sqlx::query_as::<_, (f64, f64)>(
+            "SELECT audio_start_time, audio_end_time FROM transcripts \
+             WHERE meeting_id = ? AND speaker_source = 'manual' \
+             AND audio_start_time IS NOT NULL AND audio_end_time IS NOT NULL",
+        )
+        .bind(meeting_id)
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(s, e)| ((s * 1000.0) as i64, (e * 1000.0) as i64))
+        .collect()
+    }
+
     /// Full-meeting regeneration persist (design D4, change
     /// `align-from-immutable-source`): write the aligned output as the
     /// meeting's COMPLETE auto rendering in one transaction. Supersedes the
@@ -381,8 +401,7 @@ impl SpeakerRepository {
     ///      non-empty — a degenerate run never wipes the rendering to nothing.
     ///
     /// Returns the number of rendering rows inserted.
-    pub async fn persist_regenerated_rendering(
-        pool: &SqlitePool,
+    pub async fn persist_regenerated_rendering(        pool: &SqlitePool,
         meeting_id: &str,
         aligned: Vec<AlignedSegment>,
         rederive_manual: bool,

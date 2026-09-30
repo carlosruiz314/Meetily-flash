@@ -1605,16 +1605,30 @@ pub fn rescue_candidates(
 pub struct StreamEvidence {
     pub cluster: u32,
     pub margin: f32,
+    /// The port's pre-normalization RMS ratio — the honest silence signal.
+    /// Post-normalization RMS always reads clip level, so eligibility uses
+    /// this: a residue-only stream (amplified noise) must not synthesize.
+    pub rms_ratio: f32,
     /// Per-stream decode AFTER the hallucination lane: None = engine
     /// unavailable, quarantined, or guard-dropped.
     pub text: Option<String>,
 }
 
+/// A stream is synthesis-eligible only if it carried at least this share of
+/// the mixture clip's energy BEFORE normalization (panel finding: an
+/// amplified residue stream is the classic hallucination regime). The
+/// census records the exact ratios so the bar is retunable from evidence.
+pub const SYNTH_STREAM_MIN_RMS_RATIO: f32 = 0.1;
+
 /// A span's both-stream synthesis evidence. Spans are seconds (the
-/// trigger's unit); rows are milliseconds (the alignment's unit).
+/// trigger's unit); rows and covered atoms are milliseconds (the
+/// alignment's unit).
 pub struct SpanSynthesis {
     pub span: (f64, f64),
     pub streams: [StreamEvidence; 2],
+    /// The span's separation-covered atoms — the row-replacement coverage
+    /// evidence.
+    pub covered_atoms: Vec<(i64, i64)>,
 }
 
 /// Spans longer than one Whisper window are render-hostile mega-rows and
@@ -1628,20 +1642,29 @@ pub const SYNTH_ROW_COVERAGE: f64 = 0.5;
 
 /// Replace an overlap span's mixture rows with one row per decisive
 /// stream. Pure: no I/O, no model access — the caller supplies the rows,
-/// the per-span evidence, and the covered atoms. Returns the FULL
-/// replacement row list, or None when ANY gate fails (the caller then
-/// keeps the input rows — the byte-identical degrade). Stream rows inherit
-/// the source row's `original_id`; if no row is covered enough to donate
-/// one, synthesis degrades rather than fabricating an id the persist
-/// would silently drop.
+/// the per-span evidence, the covered atoms, and the surviving manual-row
+/// spans. Returns the FULL replacement row list, or None when ANY gate
+/// fails (the caller then keeps the input rows — the byte-identical
+/// degrade). Stream rows inherit the source row's `original_id`; if no row
+/// is covered enough to donate one, synthesis degrades rather than
+/// fabricating an id the persist would silently drop. A span overlapping a
+/// manual row's span never synthesizes: midpoint suppression would eat
+/// BOTH fresh stream rows on the next run, vanishing the un-labeled voice.
 pub fn synthesize_overlap_rows(
     rows: &[AlignedSegment],
     synthesis: &SpanSynthesis,
-    covered_atoms: &[(i64, i64)],
+    manual_spans: &[(i64, i64)],
     cluster_speaker: &dyn Fn(u32) -> Option<String>,
 ) -> Option<Vec<AlignedSegment>> {
     let (s0, s1) = synthesis.span;
     if s1 <= s0 || s1 - s0 > OVERLAP_MAX_SPAN_SECS {
+        return None;
+    }
+    let span_ms = ((s0 * 1000.0) as i64, (s1 * 1000.0) as i64);
+    if manual_spans
+        .iter()
+        .any(|&(a, b)| span_ms.0 < b && a < span_ms.1)
+    {
         return None;
     }
     // Last text gate: guard-dropped (None), whitespace- or punctuation-only
@@ -1657,6 +1680,15 @@ pub fn synthesize_overlap_rows(
     if synthesis.streams.iter().any(|st| st.margin < SUBTURN_VOTE_MARGIN) {
         return None;
     }
+    if synthesis
+        .streams
+        .iter()
+        .any(|st| st.rms_ratio < SYNTH_STREAM_MIN_RMS_RATIO)
+    {
+        // Collapsed (residue-only) stream: normalization made it loud, the
+        // ratio says it carried no voice.
+        return None;
+    }
     let (c0, c1) = (synthesis.streams[0].cluster, synthesis.streams[1].cluster);
     if c0 == c1 {
         // Separation collapse: two rows, one voice — the jumble this change
@@ -1666,10 +1698,9 @@ pub fn synthesize_overlap_rows(
     let badge0 = cluster_speaker(c0)?;
     let badge1 = cluster_speaker(c1)?;
 
-    let span_ms = ((s0 * 1000.0) as i64, (s1 * 1000.0) as i64);
     let covered_time = |row: &AlignedSegment| -> i64 {
         let mut total = 0i64;
-        for &(a, b) in covered_atoms {
+        for &(a, b) in &synthesis.covered_atoms {
             let lo = a.max(row.audio_start_ms);
             let hi = b.min(row.audio_end_ms);
             if hi > lo {
@@ -3024,11 +3055,24 @@ mod tests {
     }
 
     fn ev(cluster: u32, margin: f32, text: Option<&str>) -> StreamEvidence {
-        StreamEvidence { cluster, margin, text: text.map(str::to_string) }
+        StreamEvidence { cluster, margin, rms_ratio: 1.0, text: text.map(str::to_string) }
+    }
+
+    fn ev_quiet(cluster: u32, margin: f32, ratio: f32) -> StreamEvidence {
+        StreamEvidence { cluster, margin, rms_ratio: ratio, text: Some("alpha".into()) }
     }
 
     fn synth(span: (f64, f64), a: StreamEvidence, b: StreamEvidence) -> SpanSynthesis {
-        SpanSynthesis { span, streams: [a, b] }
+        synth_cov(span, a, b, &[(100_000, 102_000)])
+    }
+
+    fn synth_cov(
+        span: (f64, f64),
+        a: StreamEvidence,
+        b: StreamEvidence,
+        cov: &[(i64, i64)],
+    ) -> SpanSynthesis {
+        SpanSynthesis { span, streams: [a, b], covered_atoms: cov.to_vec() }
     }
 
     fn cluster_speaker(c: u32) -> Option<String> {
@@ -3051,7 +3095,7 @@ mod tests {
             ev(1, 0.30, Some("alpha beta")),
             ev(3, 0.20, Some("gamma delta")),
         );
-        let out = synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker)
+        let out = synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker)
             .expect("both streams decisive and distinct");
         assert_eq!(out.len(), 3, "replaced row + two stream rows + survivor: {out:?}");
         assert_eq!(out[0].speaker, "userA");
@@ -3073,7 +3117,27 @@ mod tests {
             ev(1, 0.30, Some("alpha")),
             ev(3, SUBTURN_VOTE_MARGIN - 0.01, Some("gamma")),
         );
-        assert!(synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker).is_none());
+        assert!(synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_none());
+    }
+
+    #[test]
+    fn collapsed_stream_below_energy_floor_degrades() {
+        // Both streams margin-pass and carry text, but one carried almost no
+        // pre-normalization energy: amplified residue, not a voice.
+        let rows = vec![seg("src1", "jumbled", 100_000, 102_000, "Speaker 0")];
+        let s = synth(
+            (100.0, 102.0),
+            ev(1, 0.30, Some("alpha")),
+            ev_quiet(3, 0.20, SYNTH_STREAM_MIN_RMS_RATIO - 0.01),
+        );
+        assert!(synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_none());
+        // Exactly at the floor is eligible (the bar is inclusive).
+        let s = synth(
+            (100.0, 102.0),
+            ev(1, 0.30, Some("alpha")),
+            ev_quiet(3, 0.20, SYNTH_STREAM_MIN_RMS_RATIO),
+        );
+        assert!(synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_some());
     }
 
     #[test]
@@ -3084,14 +3148,14 @@ mod tests {
             ev(1, 0.30, Some("alpha")),
             ev(1, 0.20, Some("gamma")),
         );
-        assert!(synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker).is_none());
+        assert!(synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_none());
     }
 
     #[test]
     fn guard_dropped_stream_text_degrades() {
         let rows = vec![seg("src1", "jumbled", 100_000, 102_000, "Speaker 0")];
         let s = synth((100.0, 102.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, None));
-        assert!(synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker).is_none());
+        assert!(synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_none());
     }
 
     #[test]
@@ -3100,7 +3164,7 @@ mod tests {
         for junk in ["   ", "..."] {
             let s = synth((100.0, 102.0), ev(1, 0.30, Some(junk)), ev(3, 0.20, Some("gamma")));
             assert!(
-                synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker).is_none(),
+                synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_none(),
                 "junk stream text {junk:?} must not synthesize"
             );
         }
@@ -3118,18 +3182,18 @@ mod tests {
     #[test]
     fn oversized_span_degrades() {
         let rows = vec![seg("src1", "long jumble", 0, 30_000, "Speaker 0")];
-        let s = synth((0.0, 30.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
         let cov: Vec<(i64, i64)> = (0..30).map(|s| (s * 1000, (s + 1) * 1000)).collect();
-        assert!(synthesize_overlap_rows(&rows, &s, &cov, &cluster_speaker).is_some(), "exactly one whisper window is fine");
-        let s = synth((0.0, 30.5), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
-        assert!(synthesize_overlap_rows(&rows, &s, &cov, &cluster_speaker).is_none(), "beyond one window degrades");
+        let s = synth_cov((0.0, 30.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")), &cov);
+        assert!(synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_some(), "exactly one whisper window is fine");
+        let s = synth_cov((0.0, 30.5), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")), &cov);
+        assert!(synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_none(), "beyond one window degrades");
     }
 
     #[test]
     fn no_covered_row_degrades_rather_than_fabricating_an_id() {
         let rows = vec![seg("src1", "far away", 500_000, 502_000, "Speaker 0")];
         let s = synth((100.0, 102.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
-        assert!(synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker).is_none());
+        assert!(synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_none());
     }
 
     #[test]
@@ -3140,7 +3204,7 @@ mod tests {
             seg("src2", "second", 101_000, 102_000, "Speaker 1"),
         ];
         let s = synth((100.0, 102.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
-        let out = synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker)
+        let out = synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker)
             .expect("both rows covered");
         assert_eq!(out[0].original_id, "src1", "tie → earliest start donates the id");
         assert_eq!(out.len(), 2, "both mixture rows replaced");
@@ -3150,7 +3214,7 @@ mod tests {
             seg("src1", "partial", 100_000, 101_000, "Speaker 0"),
             seg("src2", "wider", 100_500, 102_000, "Speaker 1"),
         ];
-        let out = synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker)
+        let out = synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker)
             .expect("both rows covered");
         assert_eq!(out[0].original_id, "src2", "largest covered overlap donates the id");
     }
@@ -3164,7 +3228,7 @@ mod tests {
             seg("src2", "inside", 101_000, 102_000, "Speaker 1"),
         ];
         let s = synth((100.0, 102.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
-        let out = synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker)
+        let out = synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker)
             .expect("one row covered");
         assert_eq!(out[0].text, "straddling tail", "under-bar row keeps every word");
         assert_eq!(out.len(), 3);
@@ -3175,6 +3239,23 @@ mod tests {
     fn unresolvable_cluster_degrades() {
         let rows = vec![seg("src1", "jumbled", 100_000, 102_000, "Speaker 0")];
         let s = synth((100.0, 102.0), ev(9, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
-        assert!(synthesize_overlap_rows(&rows, &s, &[(100_000, 102_000)], &cluster_speaker).is_none());
+        assert!(synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_none());
+    }
+
+    #[test]
+    fn manual_row_span_degrades_synthesis() {
+        let rows = vec![seg("src1", "jumbled", 100_000, 102_000, "Speaker 0")];
+        let s = synth((100.0, 102.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")));
+        // Manual span overlapping the overlap span → manual wins, no synthesis.
+        assert!(
+            synthesize_overlap_rows(&rows, &s, &[(101_000, 103_000)], &cluster_speaker)
+                .is_none()
+        );
+        // Manual span elsewhere → synthesis proceeds.
+        let out = synthesize_overlap_rows(&rows, &s, &[(300_000, 301_000)], &cluster_speaker);
+        assert!(out.is_some());
+        // Touching edges (half-open: span end == manual start) is NOT an overlap.
+        let out = synthesize_overlap_rows(&rows, &s, &[(102_000, 103_000)], &cluster_speaker);
+        assert!(out.is_some());
     }
 }

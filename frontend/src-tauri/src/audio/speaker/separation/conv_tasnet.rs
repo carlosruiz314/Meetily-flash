@@ -148,13 +148,18 @@ impl VoiceSeparationPort for ConvTasNetSeparator {
                 let sum: f32 = span_samples.iter().map(|v| v * v).sum();
                 (sum / span_samples.len().max(1) as f32).sqrt()
             };
+            // Recorded BEFORE normalization: the honest silence signal. The
+            // normalization below amplifies residue to clip level, so
+            // downstream RMS reads cannot tell a collapsed stream from a
+            // voice — this ratio can.
+            let pre_rms_ratio = r / clip_rms.max(1e-9);
             if r > 1e-6 {
                 let g = clip_rms / r;
                 for v in span_samples.iter_mut() {
                     *v *= g;
                 }
             }
-            streams.push(SeparatedStream { samples: span_samples });
+            streams.push(SeparatedStream { samples: span_samples, pre_rms_ratio });
         }
         Ok(streams)
     }

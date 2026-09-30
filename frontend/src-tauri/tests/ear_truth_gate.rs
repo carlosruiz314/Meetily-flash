@@ -915,7 +915,7 @@ async fn ear_truth_gate_cde5c264() {
             let separated = separator.as_ref().map(|s| {
                 let embed =
                     |a: &[f32]| extractor.extract_embedding(a, run_engine::SAMPLE_RATE);
-                run_engine::separated_stream_voice_votes(
+                let (v, c, _synthesis_inputs) = run_engine::separated_stream_voice_votes(
                     &samples,
                     &inputs,
                     &embed,
@@ -923,7 +923,8 @@ async fn ear_truth_gate_cde5c264() {
                     &references,
                     s,
                     &out.overlap_spans,
-                )
+                );
+                (v, c)
             });
             eprintln!(
                 "GATE: separation {} ({} spans)",

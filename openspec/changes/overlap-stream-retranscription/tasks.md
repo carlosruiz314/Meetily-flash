@@ -47,23 +47,24 @@ evidence home, never repo-committed).
 
 ## Phase 2 — transcription seam
 
-- [ ] 2.1 `commands.rs` builds the closure over the EXISTING
+- [x] 2.1 `commands.rs` builds the closure over the EXISTING
       `whisper_engine::commands::WHISPER_ENGINE` static (no confidence
       floor — design thread B: the returned confidence is a text-length
       proxy, anti-correlated with hallucination) and passes it as
       `&dyn Fn(&[f32]) -> Option<String>` into the synthesis pass.
-      Panel-corrected split: per-span synthesized CANDIDATES (separation +
-      decode + per-stream vote as `{stream → (cluster, margin, text)}` on
-      the extended vote record) are computed INSIDE the existing
-      commands.rs:645 spawn_blocking; the PURE splice runs after
-      `resolve_duplicate_clusters`. New sync decode method on
-      WhisperEngine (blocking_read over current_context; stats locks
-      skipped/migrated), unit-tested on a plain thread. Language resolved
-      ONCE per run (concrete code or the mixture rows' resolution; never
-      auto-translate, never per-stream detect). Deterministic stream
-      profile: greedy, temperature 0, no token timestamps. RED: language
-      reaches the decode (fake engine records the arg); full run under
-      `#[tokio::test]` does not panic.
+      DONE (2026-09-30): `StreamDecoder` (engine from the static +
+      `resolve_stream_language`: concrete code pins, automatic states
+      DEGRADE — never auto-translate; delta spec aligned) wraps
+      `WhisperEngine::transcribe_span_blocking` (sync strict profile,
+      `blocking_read`, stats locks skipped; spawn_blocking-safety pinned
+      by `#[tokio::test]`); per-span candidates
+      (`SpanSynthesisInput`: span-level identity, decode-ready streams,
+      covered atoms, pre-normalization RMS ratios via the new
+      `SeparatedStream.pre_rms_ratio`) computed INSIDE the existing
+      spawn_blocking; pure splice after `resolve_duplicate_clusters` with
+      `list_manual_spans` stand-down; hallucination audit in the decoder.
+      Eligibility floor `SYNTH_STREAM_MIN_RMS_RATIO = 0.1` implemented
+      (panel finding 7). Lib 732/732.
 - [ ] 2.2 RED: whisper unavailable / separation model missing → render
       byte-identical to today's, verified by the structural signature
       comparator (count/text/span/badge, generated ids excepted) —
