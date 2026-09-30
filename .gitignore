@@ -117,3 +117,8 @@ openspec/changes/**/fixture-answers.md
 openspec/changes/**/fixture-offsets.json
 openspec/changes/**/design-notes-banter.md
 .local/
+
+# Live-gate recorded output (carries meeting-derived text when the gate
+# runs against real audio; token-only census lines still never belong in
+# the repo).
+openspec/changes/**/gate-runs/

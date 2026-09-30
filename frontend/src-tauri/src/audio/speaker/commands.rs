@@ -1566,7 +1566,7 @@ fn resolve_label(speaker: &str, label_map: &std::collections::HashMap<u32, Strin
 /// row, margin miss, same-badge collapse, junk text), leaves the input
 /// byte-identical — the degrade channel, pinned from here (task 2.2).
 /// Returns the row list plus how many spans synthesized.
-pub(crate) fn apply_overlap_synthesis(
+pub fn apply_overlap_synthesis(
     aligned: Vec<crate::audio::speaker::alignment::AlignedSegment>,
     synthesis: &[crate::audio::speaker::run_assembly::SpanSynthesis],
     manual_spans: &[(i64, i64)],
