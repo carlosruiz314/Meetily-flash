@@ -119,6 +119,15 @@ evidence home, never repo-committed).
       see it."). Harness fixes that made it land: sqlx::migrate! before
       the run, WHISPER_ENGINE static populated from the production model
       store + discover_models.
+      AMENDMENT (same day, post-verification word audit): the word-loss
+      diagnostic caught a P0 in the surgery — head AND tail pieces each
+      carried the row's FULL text (single-share split_words_proportional
+      returns one usize::MAX chunk), rendering 12031 non-synth words over
+      11902 source words. Fixed in 51648648 with an exact-partition test
+      (the old containment assertions were satisfied BY the bug); live
+      persist re-run re-persists the corrected render. Lesson: the
+      adversarial test asserted words-present, not words-once —
+      multiplicity assertions are mandatory for split/merge code.
 - [x] 3.5 DONE (2026-09-30): re-pin resolved to a NO-OP, verified not
       assumed. Design finding 4 ("snapshot must be re-pinned after the
       live persist") predates the align-from-immutable-source pivot: the
