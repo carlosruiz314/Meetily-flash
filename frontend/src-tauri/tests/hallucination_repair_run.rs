@@ -547,7 +547,8 @@ async fn repair_write_lands_in_both_tables_and_regeneration_rederives_repaired_t
             summary TEXT, action_items TEXT, key_points TEXT, speaker TEXT,
             audio_start_time REAL, audio_end_time REAL, duration REAL,
             token_timestamps TEXT,
-            speaker_label TEXT, speaker_source TEXT, previous_label TEXT
+            speaker_label TEXT, speaker_source TEXT, previous_label TEXT,
+            synth_atom INTEGER, continues_previous INTEGER, synth_parent TEXT
         )",
     )
     .execute(&pool)
