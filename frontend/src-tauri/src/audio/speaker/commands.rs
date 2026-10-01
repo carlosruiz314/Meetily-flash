@@ -576,7 +576,7 @@ pub async fn run_diarization_for_meeting(
     let t0 = std::time::Instant::now();
     let decoded = crate::audio::decoder::decode_audio_file(&audio_path)
         .map_err(|e| format!("Audio decode failed: {}", e))?;
-    let samples = decoded.to_whisper_format();
+    let samples = std::sync::Arc::new(decoded.to_whisper_format());
     let audio_duration = decoded.duration_seconds;
     log::warn!(
         "DIARIZATION: audio decode + sinc resample: {:.2}s ({}Hz → 16kHz, {:.1}s)",
@@ -641,9 +641,15 @@ pub async fn run_diarization_for_meeting(
     let transcripts_for_engine = transcripts.clone();
     let segmentation_path_for_pya = segmentation_path.clone();
     let embedding_path_for_engine = embedding_path.clone();
+    // The phrase-loop repair pass (a second spawn_blocking after alignment)
+    // re-uses samples, source rows, references, and centroids — the first
+    // block consumes its own clones by move.
+    let samples_for_repair = samples.clone();
+    let references_for_repair = references.clone();
+    let transcripts_for_repair = transcripts.clone();
+    let embedding_path_for_repair = embedding_path.clone();
     let (segments, centroids, engine_turns, rescue_seams, voice_votes, span_synthesis) =
-        tokio::task::spawn_blocking(move || {
-        // SUCCESS PATH (design D5): the run-assembly engine derives the final
+        tokio::task::spawn_blocking(move || {        // SUCCESS PATH (design D5): the run-assembly engine derives the final
         // turns from ONE full-meeting pyannote pass. The chunk grid, temporal
         // smoothing, and refine_pass2 are NOT invoked here. Runs only when
         // both models load; any load failure falls through to the legacy
@@ -1018,13 +1024,81 @@ pub async fn run_diarization_for_meeting(
     // synthesis down); a span whose gates fail anywhere keeps today's
     // mixture rows.
     let manual_spans = SpeakerRepository::list_manual_spans(pool, meeting_id).await;
-    let (aligned, synthesized) =
+    let (mut aligned, synthesized) =
         apply_overlap_synthesis(aligned, &span_synthesis, &manual_spans, &label_map);
     if synthesized > 0 {
         log::warn!(
             "DIARIZATION: synthesized {synthesized}/{} overlap span(s) per-voice",
             span_synthesis.len()
         );
+    }
+
+    // Phrase-loop repair (ear round 2026-10-01, S18): rows that repeat a
+    // full phrase back-to-back are decode-fabrication suspects. Their
+    // whole-row windows re-run the SAME separation + per-voice synthesis —
+    // same gates, same degrade: any failure keeps today's rows.
+    let mass_spans: Vec<(f64, f64)> = span_synthesis.iter().map(|s| s.span).collect();
+    let repair_candidates = crate::audio::speaker::run_assembly::loop_repair_candidates(
+        &aligned,
+        &manual_spans,
+        &mass_spans,
+        crate::audio::speaker::run_assembly::OVERLAP_MAX_SPAN_SECS,
+    );
+    if !repair_candidates.is_empty() {
+        let repair_spans: Vec<(f64, f64)> = repair_candidates
+            .iter()
+            .map(|c| (c.span.0 as f64 / 1000.0, c.span.1 as f64 / 1000.0))
+            .collect();
+        log::warn!(
+            "DIARIZATION: {} phrase-loop repair window(s) → re-synthesis",
+            repair_candidates.len()
+        );
+        let centroids_for_repair = centroids.clone();
+        let repairs = tokio::task::spawn_blocking(
+            move || -> Vec<super::run_assembly::SpanSynthesis> {
+                let Some(separator) = super::separation::ConvTasNetSeparator::from_models_dir()
+                else {
+                    return Vec::new();
+                };
+                let Ok(extractor) = super::nemo_extractor::NemoEmbeddingExtractor::new(
+                    embedding_path_for_repair.to_str().unwrap_or(""),
+                ) else {
+                    return Vec::new();
+                };
+                let cent_pairs: Vec<(u32, Vec<f32>)> = centroids_for_repair
+                    .iter()
+                    .map(|(k, v)| (*k, v.clone()))
+                    .collect();
+                let embed = |audio: &[f32]| {
+                    extractor.extract_embedding(audio, super::run_engine::SAMPLE_RATE)
+                };
+                let (_, _, inputs) = super::run_engine::separated_stream_voice_votes(
+                    &samples_for_repair,
+                    &transcripts_for_repair,
+                    &embed,
+                    &cent_pairs,
+                    &references_for_repair,
+                    &separator,
+                    &repair_spans,
+                );
+                let decoder = StreamDecoder::from_static();
+                decode_span_synthesis(inputs, &decoder)
+            },
+        )
+        .await
+        .unwrap_or_default();
+        let cluster_speaker = |c: u32| -> Option<String> {
+            Some(resolve_label(&format!("Speaker {c}"), &label_map))
+        };
+        let (next, applied) =
+            crate::audio::speaker::run_assembly::apply_loop_repairs(aligned, &repairs, &cluster_speaker);
+        if applied > 0 {
+            log::warn!(
+                "DIARIZATION: repaired {applied}/{} phrase-loop window(s) per-voice",
+                repairs.len()
+            );
+        }
+        aligned = next;
     }
     let segments_labeled =
         SpeakerRepository::persist_regenerated_rendering(pool, meeting_id, aligned, manual_rederive)
@@ -1566,6 +1640,42 @@ fn resolve_label(speaker: &str, label_map: &std::collections::HashMap<u32, Strin
 /// row, margin miss, same-badge collapse, junk text), leaves the input
 /// byte-identical — the degrade channel, pinned from here (task 2.2).
 /// Returns the row list plus how many spans synthesized.
+/// Decode per-stream synthesis inputs into SpanSynthesis candidates. The
+/// identity pair must be both-streams-decisive; a stream that fails the
+/// decoder's gates keeps None text and the splice's vetting handles it.
+fn decode_span_synthesis(
+    inputs: Vec<super::run_engine::SpanSynthesisInput>,
+    decoder: &StreamDecoder,
+) -> Vec<super::run_assembly::SpanSynthesis> {
+    let mut out = Vec::new();
+    for input in inputs {
+        let [Some((c0, m0)), Some((c1, m1))] = input.identity else {
+            continue;
+        };
+        let t0 = decoder.decode(&input.streams[0]);
+        let t1 = decoder.decode(&input.streams[1]);
+        out.push(super::run_assembly::SpanSynthesis {
+            span: input.span,
+            streams: [
+                super::run_assembly::StreamEvidence {
+                    cluster: c0,
+                    margin: m0,
+                    rms_ratio: input.rms_ratio[0],
+                    text: t0,
+                },
+                super::run_assembly::StreamEvidence {
+                    cluster: c1,
+                    margin: m1,
+                    rms_ratio: input.rms_ratio[1],
+                    text: t1,
+                },
+            ],
+            covered_atoms: input.covered_atoms,
+        });
+    }
+    out
+}
+
 pub fn apply_overlap_synthesis(
     aligned: Vec<crate::audio::speaker::alignment::AlignedSegment>,
     synthesis: &[crate::audio::speaker::run_assembly::SpanSynthesis],
