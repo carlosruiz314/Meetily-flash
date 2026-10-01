@@ -28,7 +28,7 @@ SNAPSHOT = os.path.join(
     REPO, "frontend", "src-tauri", "tests", "fixtures", "cde5c264_transcripts.json"
 )
 GATE_RUNS = os.path.join(REPO, "openspec", "changes", "overlap-stream-retranscription", "gate-runs")
-CONTEXT_S = 6.0
+CONTEXT_S = 15.0
 SR = 16_000
 
 
@@ -131,16 +131,16 @@ def main():
         write_wav(cache, s0 - CONTEXT_S, s1 + CONTEXT_S, os.path.join(CLIPS_DIR, wav))
 
         before = con.execute(
-            "SELECT audio_start_time, transcript FROM transcript_sources "
+            "SELECT audio_start_time, audio_end_time, transcript FROM transcript_sources "
             "WHERE meeting_id=? AND audio_start_time < ? AND audio_end_time > ? "
             "ORDER BY audio_start_time",
-            (meeting, s1 + 2, s0 - 2),
+            (meeting, s1 + 12, s0 - 12),
         ).fetchall()
         after = con.execute(
-            "SELECT audio_start_time, audio_end_time, speaker_label, transcript "
-            "FROM transcripts WHERE meeting_id=? AND synth_atom IS NULL "
+            "SELECT audio_start_time, audio_end_time, speaker_label, synth_atom, transcript "
+            "FROM transcripts WHERE meeting_id=? "
             "AND audio_start_time < ? AND audio_end_time > ? ORDER BY audio_start_time",
-            (meeting, s1 + 2, s0 - 2),
+            (meeting, s1 + 12, s0 - 12),
         ).fetchall()
 
         flag = "WORD-LOSS-FLAG" if r["loss"] else "ok"
@@ -149,12 +149,13 @@ def main():
             f"- parent source row ...{parent[-6:]} | census verdict={ev.get('verdict', '?')} "
             f"margins={ev.get('margins', '?')} rms={ev.get('rms', '?')} stream_words={ev.get('words', '?')} "
             f"mixture_words_in_span≈{r['mixture_in_span']}",
-            "- BEFORE (mixture rows):",
+            "- BEFORE (old mixed rows):",
         ]
-        lines += [f"  [{t:8.2f}] {txt}" for t, txt in before]
-        lines.append("- AFTER (persisted render):")
+        lines += [f"  [{t:8.2f}-{b:8.2f}] {txt}" for t, b, txt in before]
+        lines.append("- AFTER (new render, SYNTH = the two machine lines):")
         lines += [
-            f"  [{a:8.2f}-{b:8.2f}] {lab!r}: {txt}" for a, b, lab, txt in after
+            f"  [{a:8.2f}-{b:8.2f}] {lab!r}{' <<SYNTH' if atom else ''}: {txt}"
+            for a, b, lab, atom, txt in after
         ]
         lines.append("")
 

@@ -159,6 +159,18 @@ evidence home, never repo-committed).
 
 ## Phase 4 — the ear
 
+- [ ] DEFERRED (ear round 2026-09-30, clip 01): split pieces INHERIT the old
+      row's badge; the user's ear attests the inherited badge can be wrong
+      ("point. We'll figure it out..." under Participant A; ear says the speaker is
+      the other participant). Pre-existing attribution error, not introduced
+      by surgery — the parent link keeps it reconstructable. Candidate fix:
+      re-attest piece badges with the wall-atom voice-vote machinery.
+      File as a GitHub issue at archive time.
+- [x] RULING (ear round 2026-09-30): a stuttering stream decode (a repeated
+      n-gram ≥2 words, e.g. the clip-01 line "that's the hope ×4" for a real
+      utterance, or clip-02 "the world, the world") stands its SPAN down —
+      the span keeps the old mixed rows. General dial, never per-span.
+
 - [ ] 4.1 Ear-calibration clip loop (user-ruled protocol, design thread C):
       the agent reads the full rerun transcript against the original and
       reports whether it makes more or less sense; then hands the user a
