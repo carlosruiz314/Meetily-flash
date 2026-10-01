@@ -1668,11 +1668,13 @@ pub fn synthesize_overlap_rows(
         return None;
     }
     // Last text gate: guard-dropped (None), whitespace- or punctuation-only
-    // stream text is no synthesis — garbage may abstain, never render.
+    // stream text is no synthesis — garbage may abstain, never render. A
+    // stuttering decode (repeated n-gram, ear round 2026-09-30) is a decode
+    // failure of separated audio, not speech: the span stands down.
     let mut texts: [String; 2] = [String::new(), String::new()];
     for (i, st) in synthesis.streams.iter().enumerate() {
         let t = st.text.as_ref()?;
-        if !t.chars().any(|c| c.is_alphanumeric()) {
+        if !t.chars().any(|c| c.is_alphanumeric()) || is_stuttering_decode(t) {
             return None;
         }
         texts[i] = t.clone();
@@ -1888,6 +1890,31 @@ enum RowKind {
 fn proportional_share(row: &AlignedSegment, wall_ms: i64) -> f64 {
     let dur = (row.audio_end_ms - row.audio_start_ms).max(1);
     ((wall_ms - row.audio_start_ms).clamp(0, dur) as f64 / dur as f64)
+}
+
+/// True when the decode repeats any n-gram (n ≥ 2 words) back-to-back —
+/// the signature of Whisper failing on separated audio ("x y z x y z …").
+/// Single-word disfluencies ("yeah, yeah, yeah") are human speech and pass.
+pub fn is_stuttering_decode(text: &str) -> bool {
+    let words: Vec<String> = text
+        .split_whitespace()
+        .map(|w| {
+            w.chars()
+                .filter(|c| c.is_alphanumeric())
+                .collect::<String>()
+                .to_lowercase()
+        })
+        .filter(|w| !w.is_empty())
+        .collect();
+    if words.len() < 4 {
+        return false;
+    }
+    for n in 2..=(words.len() / 2) {
+        if words.windows(n * 2).any(|w| w[..n] == w[n..n * 2]) {
+            return true;
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -3435,6 +3462,48 @@ mod tests {
         // until its char count reaches the proportional target)
         assert_eq!(head_words, ["alpha", "bravo", "charlie"]);
         assert_eq!(tail_words, ["india", "juliet"]);
+    }
+
+    #[test]
+    fn stuttering_stream_decode_stands_the_span_down() {
+        // Ear round 2026-09-30 (clip 01): the separated-stream decode of a
+        // real utterance came back as a repeated n-gram ("x y z x y z x y
+        // z ..."). A stuttering decode is a decode failure, not speech —
+        // the span must keep the old mixed rows.
+        let rows = vec![seg("src1", "ordinary speech around it", 100_000, 102_000, "Speaker 0")];
+        let s = synth(
+            (100.5, 101.5),
+            ev(1, 0.30, Some("alpha bravo alpha bravo alpha bravo")),
+            ev(3, 0.20, Some("delta echo foxtrot golf")),
+        );
+        assert!(
+            synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_none(),
+            "a stuttering stream must stand the span down"
+        );
+        // the other stream stuttering instead is symmetric
+        let s2 = synth(
+            (100.5, 101.5),
+            ev(1, 0.30, Some("delta echo foxtrot golf")),
+            ev(3, 0.20, Some("the sun the sun the sun")),
+        );
+        assert!(
+            synthesize_overlap_rows(&rows, &s2, &[], &cluster_speaker).is_none(),
+            "either stream stuttering stands the span down"
+        );
+    }
+
+    #[test]
+    fn short_disfluency_repetition_still_synthesizes() {
+        // Human disfluencies ("yeah, yeah, yeah") are single-word repeats —
+        // they must NOT read as decode stutter, or real talk-overs would
+        // stand down everywhere.
+        let rows = vec![seg("src1", "ordinary speech around it", 100_000, 102_000, "Speaker 0")];
+        let s = synth(
+            (100.5, 101.5),
+            ev(1, 0.30, Some("yeah, yeah, yeah, tell me the plan")),
+            ev(3, 0.20, Some("delta echo foxtrot golf")),
+        );
+        assert!(synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_some());
     }
 
     #[test]
