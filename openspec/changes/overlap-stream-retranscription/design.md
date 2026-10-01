@@ -60,6 +60,44 @@
   exemption (thread A below) or its own overlap scan will fail the render
   this change creates.
 
+## Phrase-loop repair extension (ear round 2026-10-01, S18 window)
+
+The user's clip-01 adjudication proved a second fabrication class the
+overlap-mass trigger cannot reach: the August mixture decode invented
+"I think it's a good idea" ×3 over 184–192.9s (S18 fixture entry —
+nobody says it; real words attested around it), while the RMS profile
+shows real speech bursts there. The stutter stand-down keeps those
+mixture rows by design, so the fabrication renders. Probe evidence
+(`span_decode_probe.rs`, 2026-10-01): fresh decodes with adjusted walls
+recover the attested words, and separation over [183.2–194.2] yields
+TWO CLEAN PER-VOICE streams matching the ear truth (stream0: Participant B's
+full sentence "…Okay, so, well, I mean, it's one or the other. That's
+the whole point."; stream1: Participant A's "On hybrid, it would have been
+Participant E. I'll figure it out."). The synthesis pipeline can render this
+window correctly; only the TRIGGER is missing.
+
+Design: extend the same synthesis path with a phrase-loop trigger.
+1. **Candidate**: post-alignment, any non-manual render row whose text
+   `is_stuttering_decode` (repeated n-gram ≥2 words, already built for
+   stream gates) is a repair candidate.
+2. **Window = whole-row absorption**: expand the candidate ±1.3s
+   (SEPARATION_CONTEXT_SECS parity), absorb every non-manual row the
+   window touches WHOLLY (no straddling pieces — partial coverage
+   duplicates the absorbed words into the streams), recompute the window
+   as the union, iterate to fixpoint. The gate census word-delta and the
+   provenance-scoped duplicate scan police residual boundary duplication.
+3. **Synthesis**: the existing machinery — separate(window), per-stream
+   decode, margin/RMS/distinct-cluster gates, no-stutter post-gate.
+4. **Splice**: replace the absorbed rows with one row per clean stream
+   at the window walls (same-wall per-voice shape; sequential exchanges
+   render coarser than reality — v1 accepts this, walls not tokens, the
+   recorded v1 trade).
+5. **Degrade**: manual span inside the window wins (no repair); any
+   gate failure → byte-identical keep of today's rows.
+Open items: exact pad/expansion constants; whether the fixpoint union
+should snap to RMS valleys before absorption; S18 end-to-end
+verification via the gate replay before any full re-run.
+
 ## Explore-cycle findings (2026-09-29, pre-apply audit)
 
 1. **Whisper seam resolved to a concrete handle**: `whisper_engine::commands::
