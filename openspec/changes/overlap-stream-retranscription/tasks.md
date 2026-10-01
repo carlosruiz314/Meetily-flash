@@ -170,6 +170,23 @@ evidence home, never repo-committed).
       n-gram ≥2 words, e.g. the clip-01 line "that's the hope ×4" for a real
       utterance, or clip-02 "the world, the world") stands its SPAN down —
       the span keeps the old mixed rows. General dial, never per-span.
+- [x] PHRASE-LOOP REPAIR LANDED (ear round 2026-10-01, user demand: fix
+      clip 01 before any more ear time): rows repeating a ≥5-word phrase
+      back-to-back build whole-row repair windows (chain absorption,
+      gap ≤2.5s, 30s cap; manual + existing mass spans stand down) and
+      re-run the same separation + per-voice synthesis; whole-row splice
+      (no straddling pieces). Live run (attempt 8, 2026-10-01): 2 windows
+      found, 1 repaired (S18 [161.71-191.05]), 1 degraded (2821s —
+      conservative); S18 verification in the PRODUCTION DB: fabricated
+      phrase ABSENT, 6/6 user-attested needles present, interjection
+      badges corrected ("On hybrid, it would have been Participant E" → Participant A;
+      "who would have been working on" → Participant B), word accounting clean.
+      Residual for the ear: "That's the whole point. We'll figure it
+      out..." still one row under Participant A (ear: the first phrase is
+      Participant B's) — the deferred badge-inheritance item. Gate replay
+      matched (fabrication absent; the 6th needle needed the entry's
+      end_s extended to 202.7 — the asserted range now covers the whole
+      dictated exchange).
 
 - [ ] 4.1 Ear-calibration clip loop (user-ruled protocol, design thread C):
       the agent reads the full rerun transcript against the original and
