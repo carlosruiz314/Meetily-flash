@@ -1743,10 +1743,15 @@ async fn ear_truth_gate_cde5c264() {
                 .collect();
             let lowered: Vec<String> =
                 window_rows.iter().map(|t| t.text.to_lowercase()).collect();
+            // The attested truth is about the REGION's text, not row walls:
+            // match against the joined window text so a needle straddling a
+            // row boundary (the consolidation's chop points are not pinned)
+            // still counts.
+            let joined = lowered.join(" ");
             let fabrication: Vec<&String> = s18
                 .absence_needles
                 .iter()
-                .filter(|n| lowered.iter().any(|t| t.contains(&n.to_lowercase())))
+                .filter(|n| joined.contains(&n.to_lowercase()))
                 .collect();
             if !fabrication.is_empty() {
                 render_failures.push(format!(
@@ -1756,7 +1761,12 @@ async fn ear_truth_gate_cde5c264() {
             let present: Vec<&String> = s18
                 .needles
                 .iter()
-                .filter(|n| lowered.iter().any(|t| t.contains(&n.to_lowercase())))
+                .filter(|n| joined.contains(&n.to_lowercase()))
+                .collect();
+            let missing: Vec<&String> = s18
+                .needles
+                .iter()
+                .filter(|n| !joined.contains(&n.to_lowercase()))
                 .collect();
             eprintln!(
                 "GATE: S18 render: fabrication {} ({}/{} absence), {}/{} attested needle(s), {} row(s)",
@@ -1767,6 +1777,9 @@ async fn ear_truth_gate_cde5c264() {
                 s18.needles.len(),
                 window_rows.len()
             );
+            if !missing.is_empty() {
+                eprintln!("GATE: S18 missing attested needle(s): {missing:?}");
+            }
             if present.len() != s18.needles.len() {
                 render_failures.push(format!(
                     "S18 window holds {}/{} attested needle(s) — the repair's per-voice render is missing attested words",
