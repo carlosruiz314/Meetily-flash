@@ -128,6 +128,12 @@ evidence home, never repo-committed).
       persist re-run re-persists the corrected render. Lesson: the
       adversarial test asserted words-present, not words-once —
       multiplicity assertions are mandatory for split/merge code.
+      RESOLVED (attempt 6, same day): live persist re-ran green in 4118s
+      (3 speakers, 439 segments, 10/132, S16 pair intact, sources
+      untouched); render non-synth words 11740 vs 11902 source — surplus
+      −162 (the replaced in-span mixture), duplication gone; split
+      regions read as strict prefix/suffix partitions around the stream
+      pair.
 - [x] 3.5 DONE (2026-09-30): re-pin resolved to a NO-OP, verified not
       assumed. Design finding 4 ("snapshot must be re-pinned after the
       live persist") predates the align-from-immutable-source pivot: the

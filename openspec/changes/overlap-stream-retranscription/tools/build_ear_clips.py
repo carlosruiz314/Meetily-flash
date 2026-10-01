@@ -21,7 +21,7 @@ import struct
 import sys
 import wave
 
-REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", ".."))
 DB = os.path.join(os.environ["APPDATA"], "com.meetily.ai", "meeting_minutes.sqlite")
 CLIPS_DIR = os.path.join(REPO, "fixture_clips")
 SNAPSHOT = os.path.join(
