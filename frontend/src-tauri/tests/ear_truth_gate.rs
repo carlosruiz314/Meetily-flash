@@ -86,6 +86,10 @@ struct Entry {
     /// pin stream text.
     #[serde(default)]
     needles: Vec<String>,
+    /// Text that must NOT appear in the entry's window (S18): the
+    /// fabrication signature the phrase-loop repair exists to remove.
+    #[serde(default)]
+    absence_needles: Vec<String>,
 }
 
 /// One derived turn: label + span + engine continuation fact + aligned text.
@@ -949,7 +953,7 @@ async fn ear_truth_gate_cde5c264() {
             }));
         }
         let mut aligned =
-            align_transcripts_with_diarization(inputs, &diarization_segs, &rescue_segs, &vote_segs);
+            align_transcripts_with_diarization(inputs.clone(), &diarization_segs, &rescue_segs, &vote_segs);
         let fragment_count = aligned.len();
         let unknown_before = aligned
             .iter()
@@ -1095,12 +1099,150 @@ async fn ear_truth_gate_cde5c264() {
             .await
             .expect("synthesis decode join");
         }
-        let (merged, gate_synthesized) = app_lib::audio::speaker::commands::apply_overlap_synthesis(
+        let (mut merged, gate_synthesized) = app_lib::audio::speaker::commands::apply_overlap_synthesis(
             merged,
             &gate_synthesis,
             &gate_manual_spans,
             &Default::default(),
         );
+
+        // Phrase-loop repair replay (S18, ear round 2026-10-01): the same
+        // trigger + windows + gates as the production pass. The mass decode
+        // closure consumed the first engine, so the repair decode builds a
+        // second engine instance; the S18 assertion below makes a silent
+        // degrade a FAILURE, not a skip.
+        {
+            let repair_candidates = app_lib::audio::speaker::run_assembly::loop_repair_candidates(
+                &merged,
+                &gate_manual_spans,
+                &gate_synthesis.iter().map(|s| s.span).collect::<Vec<_>>(),
+                app_lib::audio::speaker::run_assembly::OVERLAP_MAX_SPAN_SECS,
+            );
+            if !repair_candidates.is_empty() {
+                let repair_spans: Vec<(f64, f64)> = repair_candidates
+                    .iter()
+                    .map(|c| (c.span.0 as f64 / 1000.0, c.span.1 as f64 / 1000.0))
+                    .collect();
+                for c in &repair_candidates {
+                    eprintln!(
+                        "CENSUS-REPAIR window=[{:.2}-{:.2}] donor={}",
+                        c.span.0 as f64 / 1000.0,
+                        c.span.1 as f64 / 1000.0,
+                        c.donor_original_id
+                    );
+                }
+                let model = std::env::var("MEETIFY_GATE_WHISPER_MODEL").unwrap_or_default();
+                let lang = std::env::var("MEETIFY_GATE_LANG").unwrap_or_else(|_| "en".to_string());
+                let embedding_path = format!(
+                    "{models_dir}/{}",
+                    app_lib::audio::speaker::model_download::embedding_filename()
+                );
+                let centroids_for_repair: Vec<(u32, Vec<f32>)> = out
+                    .centroids
+                    .iter()
+                    .map(|(k, v)| (*k, v.clone()))
+                    .collect();
+                let repair_samples = samples.clone();
+                let repair_inputs = inputs.clone();
+                let repair_refs = references.clone();
+                // The mass decode closure consumed the first engine; the
+                // repair decode loads its own instance (same store, same
+                // model — the load happens on the async surface, the decode
+                // inside spawn_blocking).
+                let whisper_dir = std::path::Path::new(&home)
+                    .join("AppData/Roaming/com.meetily.ai/models");
+                let mut engine2 = app_lib::whisper_engine::WhisperEngine::new_with_models_dir(
+                    Some(whisper_dir),
+                )
+                .expect("repair whisper engine");
+                engine2.discover_models().await.expect("repair discover models");
+                engine2.load_model(&model).await.expect("repair load model");
+                let repairs = tokio::task::spawn_blocking(
+                    move || -> Vec<app_lib::audio::speaker::run_assembly::SpanSynthesis> {
+                        let Some(separator) =
+                            app_lib::audio::speaker::separation::ConvTasNetSeparator::from_models_dir()
+                        else {
+                            return Vec::new();
+                        };
+                        let Ok(extractor2) =
+                            NemoEmbeddingExtractor::new(&embedding_path)
+                        else {
+                            return Vec::new();
+                        };
+                        let embed = |audio: &[f32]| {
+                            extractor2.extract_embedding(
+                                audio,
+                                app_lib::audio::speaker::run_engine::SAMPLE_RATE,
+                            )
+                        };
+                        let (_, _, repair_inputs) =
+                            app_lib::audio::speaker::run_engine::separated_stream_voice_votes(
+                                &repair_samples,
+                                &repair_inputs,
+                                &embed,
+                                &centroids_for_repair,
+                                &repair_refs,
+                                &separator,
+                                &repair_spans,
+                            );
+                        let mut out = Vec::new();
+                        for input in repair_inputs {
+                            let [Some((c0, m0)), Some((c1, m1))] = input.identity else {
+                                continue;
+                            };
+                            let decode = |s: &[f32]| -> Option<String> {
+                                let text = engine2.transcribe_span_blocking(s.to_vec(), &lang)?;
+                                let trimmed = text.trim();
+                                if !trimmed.chars().any(|c| c.is_alphanumeric()) {
+                                    return None;
+                                }
+                                let end_ms =
+                                    s.len() as f64 / app_lib::audio::speaker::run_engine::SAMPLE_RATE as f64 * 1000.0;
+                                let report = app_lib::audio::hallucination::audit(trimmed, 0.0, end_ms);
+                                if report.is_garbage {
+                                    None
+                                } else {
+                                    Some(trimmed.to_string())
+                                }
+                            };
+                            let t0 = decode(&input.streams[0]);
+                            let t1 = decode(&input.streams[1]);
+                            out.push(app_lib::audio::speaker::run_assembly::SpanSynthesis {
+                                span: input.span,
+                                streams: [
+                                    app_lib::audio::speaker::run_assembly::StreamEvidence {
+                                        cluster: c0,
+                                        margin: m0,
+                                        rms_ratio: input.rms_ratio[0],
+                                        text: t0,
+                                    },
+                                    app_lib::audio::speaker::run_assembly::StreamEvidence {
+                                        cluster: c1,
+                                        margin: m1,
+                                        rms_ratio: input.rms_ratio[1],
+                                        text: t1,
+                                    },
+                                ],
+                                covered_atoms: input.covered_atoms,
+                            });
+                        }
+                        out
+                    },
+                )
+                .await
+                .expect("repair decode join");
+                let cluster_speaker = |c: u32| -> Option<String> {
+                    Some(format!("Speaker {c}"))
+                };
+                let (next, applied) =
+                    app_lib::audio::speaker::run_assembly::apply_loop_repairs(merged, &repairs, &cluster_speaker);
+                eprintln!(
+                    "GATE: phrase-loop repair applied {applied}/{} window(s)",
+                    repairs.len()
+                );
+                merged = next;
+            }
+        }
         // Token-only census over every candidate span (walls, identities,
         // margins, RMS ratios, word counts, text sha256) — the ear-
         // calibration inventory. Verbatim stream text prints ONLY under
@@ -1577,6 +1719,60 @@ async fn ear_truth_gate_cde5c264() {
                 } else {
                     render_failures.push(format!("S16 stream render: {msg}"));
                 }
+            }
+        }
+
+        // overlap-stream-retranscription: the S18 fabrication window. The
+        // phrase-loop repair MUST fire here — a degrade re-renders the
+        // fabricated mixture rows, which is exactly the failure the user's
+        // ear round demanded fixed. No waiver path: the fabrication is a
+        // hard absence, and the attested words are a hard presence.
+        {
+            let s18 = fixture
+                .entries
+                .iter()
+                .find(|e| e.id == "S18_clip01_talkover_192s")
+                .expect("S18 entry present");
+            let window_rows: Vec<&app_lib::audio::speaker::turns::SpeakerTurn> = groups
+                .iter()
+                .map(|g| &g.turn)
+                .filter(|t| {
+                    t.start_ms < (s18.end_s * 1000.0) as i64
+                        && ((s18.start_s * 1000.0) as i64) < t.end_ms
+                })
+                .collect();
+            let lowered: Vec<String> =
+                window_rows.iter().map(|t| t.text.to_lowercase()).collect();
+            let fabrication: Vec<&String> = s18
+                .absence_needles
+                .iter()
+                .filter(|n| lowered.iter().any(|t| t.contains(&n.to_lowercase())))
+                .collect();
+            if !fabrication.is_empty() {
+                render_failures.push(format!(
+                    "S18 window still renders the fabricated phrase {fabrication:?} — phrase-loop repair did not fire or degraded"
+                ));
+            }
+            let present: Vec<&String> = s18
+                .needles
+                .iter()
+                .filter(|n| lowered.iter().any(|t| t.contains(&n.to_lowercase())))
+                .collect();
+            eprintln!(
+                "GATE: S18 render: fabrication {} ({}/{} absence), {}/{} attested needle(s), {} row(s)",
+                if fabrication.is_empty() { "absent" } else { "PRESENT" },
+                s18.absence_needles.len() - fabrication.len(),
+                s18.absence_needles.len(),
+                present.len(),
+                s18.needles.len(),
+                window_rows.len()
+            );
+            if present.len() != s18.needles.len() {
+                render_failures.push(format!(
+                    "S18 window holds {}/{} attested needle(s) — the repair's per-voice render is missing attested words",
+                    present.len(),
+                    s18.needles.len()
+                ));
             }
         }
 

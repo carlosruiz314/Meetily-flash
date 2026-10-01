@@ -1667,38 +1667,7 @@ pub fn synthesize_overlap_rows(
     {
         return None;
     }
-    // Last text gate: guard-dropped (None), whitespace- or punctuation-only
-    // stream text is no synthesis — garbage may abstain, never render. A
-    // stuttering decode (repeated n-gram, ear round 2026-09-30) is a decode
-    // failure of separated audio, not speech: the span stands down.
-    let mut texts: [String; 2] = [String::new(), String::new()];
-    for (i, st) in synthesis.streams.iter().enumerate() {
-        let t = st.text.as_ref()?;
-        if !t.chars().any(|c| c.is_alphanumeric()) || is_stuttering_decode(t) {
-            return None;
-        }
-        texts[i] = t.clone();
-    }
-    if synthesis.streams.iter().any(|st| st.margin < SUBTURN_VOTE_MARGIN) {
-        return None;
-    }
-    if synthesis
-        .streams
-        .iter()
-        .any(|st| st.rms_ratio < SYNTH_STREAM_MIN_RMS_RATIO)
-    {
-        // Collapsed (residue-only) stream: normalization made it loud, the
-        // ratio says it carried no voice.
-        return None;
-    }
-    let (c0, c1) = (synthesis.streams[0].cluster, synthesis.streams[1].cluster);
-    if c0 == c1 {
-        // Separation collapse: two rows, one voice — the jumble this change
-        // exists to kill, reintroduced through a degenerate vote.
-        return None;
-    }
-    let badge0 = cluster_speaker(c0)?;
-    let badge1 = cluster_speaker(c1)?;
+    let (texts, [badge0, badge1]) = vetted_stream_pair(synthesis, cluster_speaker)?;
 
     let covered_time = |row: &AlignedSegment| -> i64 {
         let mut total = 0i64;
@@ -1877,6 +1846,96 @@ fn place_streams(
     *placed = true;
 }
 
+/// Whole-row repair splice (phrase-loop repair): every row overlapping the
+/// window is REPLACED by the two per-voice stream rows — no head/tail
+/// pieces, because a partially-covered row's words would resurface inside
+/// the stream decodes and render twice. Untouched rows pass through
+/// byte-identical. Manual stand-down lives at candidate-build time; the
+/// stream acceptance gates are the shared ones (any failure → None → the
+/// caller keeps today's rows byte-identical).
+pub fn repair_overlap_rows(
+    rows: &[AlignedSegment],
+    synthesis: &SpanSynthesis,
+    cluster_speaker: &dyn Fn(u32) -> Option<String>,
+) -> Option<Vec<AlignedSegment>> {
+    let (s0, s1) = synthesis.span;
+    if s1 <= s0 || s1 - s0 > OVERLAP_MAX_SPAN_SECS {
+        return None;
+    }
+    let span_ms = ((s0 * 1000.0) as i64, (s1 * 1000.0) as i64);
+    let (texts, [badge0, badge1]) = vetted_stream_pair(synthesis, cluster_speaker)?;
+    let absorbed: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| r.audio_start_ms < span_ms.1 && span_ms.0 < r.audio_end_ms)
+        .map(|(i, _)| i)
+        .collect();
+    if absorbed.is_empty() {
+        return None;
+    }
+    // The donor (provenance for the replacement rows) is the absorbed row
+    // with the largest window overlap — the same rule the overlap-span
+    // splice uses.
+    let donor = absorbed
+        .iter()
+        .map(|&i| &rows[i])
+        .max_by_key(|r| r.audio_end_ms.min(span_ms.1) - r.audio_start_ms.max(span_ms.0))?;
+    let make_stream = |text: String, badge: String| AlignedSegment {
+        original_id: donor.original_id.clone(),
+        text,
+        audio_start_ms: span_ms.0,
+        audio_end_ms: span_ms.1,
+        speaker: badge,
+        speaker_source: SpeakerSource::Auto,
+        synth_atom: true,
+        synth_parent: Some(donor.original_id.clone()),
+    };
+    let mut stream0 = Some(make_stream(texts[0].clone(), badge0));
+    let mut stream1 = Some(make_stream(texts[1].clone(), badge1));
+    let first = absorbed[0];
+    let mut out = Vec::with_capacity(rows.len() + 2);
+    let mut streams_placed = false;
+    for (i, row) in rows.iter().enumerate() {
+        if i == first && !streams_placed {
+            place_streams(&mut out, &mut stream0, &mut stream1, &mut streams_placed);
+        }
+        if absorbed.contains(&i) {
+            continue;
+        }
+        out.push(row.clone());
+    }
+    if !streams_placed {
+        place_streams(&mut out, &mut stream0, &mut stream1, &mut streams_placed);
+    }
+    Some(out)
+}
+
+/// Fold the repair candidates' syntheses over the rendering, the way
+/// `apply_overlap_synthesis` does for overlap spans. A window touching an
+/// existing synth atom is skipped (that region is already per-voice).
+pub fn apply_loop_repairs(
+    rows: Vec<AlignedSegment>,
+    repairs: &[SpanSynthesis],
+    cluster_speaker: &dyn Fn(u32) -> Option<String>,
+) -> (Vec<AlignedSegment>, usize) {
+    let mut applied = 0usize;
+    let mut rows = rows;
+    for s in repairs {
+        let (ws0, ws1) = ((s.span.0 * 1000.0) as i64, (s.span.1 * 1000.0) as i64);
+        let touches_synth = rows
+            .iter()
+            .any(|r| r.synth_atom && r.audio_start_ms < ws1 && ws0 < r.audio_end_ms);
+        if touches_synth {
+            continue;
+        }
+        if let Some(next) = repair_overlap_rows(&rows, s, cluster_speaker) {
+            rows = next;
+            applied += 1;
+        }
+    }
+    (rows, applied)
+}
+
 /// How the span interacts with a row's walls.
 #[derive(Clone, Copy, PartialEq)]
 enum RowKind {
@@ -1896,6 +1955,19 @@ fn proportional_share(row: &AlignedSegment, wall_ms: i64) -> f64 {
 /// the signature of Whisper failing on separated audio ("x y z x y z …").
 /// Single-word disfluencies ("yeah, yeah, yeah") are human speech and pass.
 pub fn is_stuttering_decode(text: &str) -> bool {
+    has_consecutive_repeat(text, 2)
+}
+
+/// True when a FULL phrase (≥ 5 words) repeats back-to-back — the mixture
+/// fabrication signature (S18: an invented sentence rendered twice). Short
+/// repeats are human emphasis; a meeting-wide scan pinned the bar at 5
+/// words (24 rows trip at n≥2, 2 at n≥5, and the n≥5 set is the attested
+/// fabrication plus one ear-round candidate).
+pub fn is_phrase_loop(text: &str) -> bool {
+    has_consecutive_repeat(text, 5)
+}
+
+fn has_consecutive_repeat(text: &str, min_words: usize) -> bool {
     let words: Vec<String> = text
         .split_whitespace()
         .map(|w| {
@@ -1906,15 +1978,138 @@ pub fn is_stuttering_decode(text: &str) -> bool {
         })
         .filter(|w| !w.is_empty())
         .collect();
-    if words.len() < 4 {
+    if words.len() < min_words * 2 {
         return false;
     }
-    for n in 2..=(words.len() / 2) {
+    for n in min_words..=(words.len() / 2) {
         if words.windows(n * 2).any(|w| w[..n] == w[n..n * 2]) {
             return true;
         }
     }
     false
+}
+
+/// Gaps larger than this end a repair chain — beyond it the next row is a
+/// separate conversational episode, not part of the corrupted region.
+pub const REPAIR_CHAIN_GAP_SECS: f64 = 2.5;
+
+/// A phrase-loop repair region: the whole-row window to re-synthesize and
+/// the row that triggered it (provenance donor for the replacement rows).
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoopRepairCandidate {
+    pub span: (i64, i64),
+    pub donor_original_id: String,
+}
+
+/// Whole-row repair windows from phrase-loop rows: the candidate absorbs
+/// every non-synth neighbour reachable through gaps ≤ REPAIR_CHAIN_GAP_SECS
+/// (partial coverage would duplicate the absorbed words into the streams),
+/// trimming before the row that crosses `max_span_secs`. Manual spans stand
+/// their region down entirely, and rows inside existing mass-candidate
+/// spans are left to that path.
+pub fn loop_repair_candidates(
+    rows: &[AlignedSegment],
+    manual_spans: &[(i64, i64)],
+    existing_synth_spans: &[(f64, f64)],
+    max_span_secs: f64,
+) -> Vec<LoopRepairCandidate> {
+    let max_ms = (max_span_secs * 1000.0) as i64;
+    let gap_ms = (REPAIR_CHAIN_GAP_SECS * 1000.0) as i64;
+    let mut out: Vec<LoopRepairCandidate> = Vec::new();
+    for (i, row) in rows.iter().enumerate() {
+        if row.synth_atom || !is_phrase_loop(&row.text) {
+            continue;
+        }
+        if (row.audio_end_ms - row.audio_start_ms) as f64 / 1000.0 > max_span_secs {
+            continue;
+        }
+        let row_secs = |ms: i64| ms as f64 / 1000.0;
+        if existing_synth_spans
+            .iter()
+            .any(|&(a, b)| row_secs(row.audio_start_ms) < b && a < row_secs(row.audio_end_ms))
+        {
+            continue;
+        }
+        let mut lo = i;
+        let mut hi = i;
+        while lo > 0 {
+            let prev = &rows[lo - 1];
+            if prev.synth_atom || rows[lo].audio_start_ms - prev.audio_end_ms > gap_ms {
+                break;
+            }
+            if rows[hi].audio_end_ms - prev.audio_start_ms > max_ms {
+                break;
+            }
+            lo -= 1;
+        }
+        while hi + 1 < rows.len() {
+            let next = &rows[hi + 1];
+            if next.synth_atom || next.audio_start_ms - rows[hi].audio_end_ms > gap_ms {
+                break;
+            }
+            if next.audio_end_ms - rows[lo].audio_start_ms > max_ms {
+                break;
+            }
+            hi += 1;
+        }
+        let span = (rows[lo].audio_start_ms, rows[hi].audio_end_ms);
+        if manual_spans
+            .iter()
+            .any(|&(a, b)| span.0 < b && a < span.1)
+        {
+            continue;
+        }
+        if out
+            .iter()
+            .any(|c| c.span.0 < span.1 && span.0 < c.span.1)
+        {
+            continue;
+        }
+        out.push(LoopRepairCandidate {
+            span,
+            donor_original_id: row.original_id.clone(),
+        });
+    }
+    out
+}
+
+/// The shared synthesis acceptance gates: both streams must decode to real
+/// speech (present, alphanumeric, non-stuttering), clear the vote-margin
+/// and RMS-eligibility floors, resolve to DISTINCT clusters, and map to
+/// known badges. Garbage may abstain, never render.
+fn vetted_stream_pair(
+    synthesis: &SpanSynthesis,
+    cluster_speaker: &dyn Fn(u32) -> Option<String>,
+) -> Option<([String; 2], [String; 2])> {
+    let mut texts: [String; 2] = [String::new(), String::new()];
+    for (i, st) in synthesis.streams.iter().enumerate() {
+        let t = st.text.as_ref()?;
+        if !t.chars().any(|c| c.is_alphanumeric()) || is_stuttering_decode(t) {
+            return None;
+        }
+        texts[i] = t.clone();
+    }
+    if synthesis.streams.iter().any(|st| st.margin < SUBTURN_VOTE_MARGIN) {
+        return None;
+    }
+    if synthesis
+        .streams
+        .iter()
+        .any(|st| st.rms_ratio < SYNTH_STREAM_MIN_RMS_RATIO)
+    {
+        // Collapsed (residue-only) stream: normalization made it loud, the
+        // ratio says it carried no voice.
+        return None;
+    }
+    let (c0, c1) = (synthesis.streams[0].cluster, synthesis.streams[1].cluster);
+    if c0 == c1 {
+        // Separation collapse: two rows, one voice — the jumble this change
+        // exists to kill, reintroduced through a degenerate vote.
+        return None;
+    }
+    let badge0 = cluster_speaker(c0)?;
+    let badge1 = cluster_speaker(c1)?;
+    Some((texts, [badge0, badge1]))
 }
 
 #[cfg(test)]
@@ -3504,6 +3699,134 @@ mod tests {
             ev(3, 0.20, Some("delta echo foxtrot golf")),
         );
         assert!(synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_some());
+    }
+
+    #[test]
+    fn phrase_loop_trigger_needs_five_word_consecutive_repeat() {
+        // Ear round 2026-10-01: the S18 fabrication signature is a FULL
+        // phrase repeated back-to-back. Short-unit repeats ("all good, all
+        // good", "yeah yeah yeah", 4-word emphases) are human speech and
+        // must not trigger a repair — the meeting-wide scan pinned the bar:
+        // 24 rows trip at n>=2 (nearly all natural disfluency), 2 at n>=5.
+        assert!(is_phrase_loop(
+            "I think it's a good idea. I think it's a good idea. It's one or the other."
+        ));
+        assert!(!is_phrase_loop("All good, all good. You?"));
+        assert!(!is_phrase_loop(
+            "So like they're going to ask, they're going to ask for things, I think."
+        ));
+        assert!(!is_phrase_loop("yeah yeah yeah tell me the plan"));
+        assert!(!is_phrase_loop("ordinary speech with no repeats at all"));
+        assert!(!is_phrase_loop(""));
+    }
+
+    #[test]
+    fn loop_repair_candidate_chains_whole_rows_and_stops_at_gaps_and_cap() {
+        // Whole-row absorption: the candidate chains across touching rows,
+        // stops at gaps > CHAIN_GAP_SECS, and trims before the row that
+        // would cross OVERLAP_MAX_SPAN_SECS. Mirrors the live S18 layout:
+        // gaps 0 / 0.4 / 0 / 0 / 0.02 / 0.25 around the candidate.
+        let rows = vec![
+            seg("far", "earlier words", 160_000, 161_550, "Speaker 0"), // gap 13.1s: chain must NOT reach
+            seg("w2", "one two three four five", 174_660, 181_050, "Speaker 0"),
+            seg("w1", "six seven eight", 181_050, 184_050, "Speaker 0"),
+            seg("w0", "nine ten", 184_450, 187_050, "Speaker 0"),
+            seg(
+                "cand",
+                "I think it's a good idea. I think it's a good idea. It's one or the other.",
+                187_050,
+                192_940,
+                "Speaker 0",
+            ),
+            seg("e1", "eleven twelve", 192_940, 199_500, "Speaker 0"),
+            seg("e2", "thirteen fourteen", 199_520, 202_690, "Speaker 0"),
+            seg("e3", "fifteen sixteen", 202_970, 205_740, "Speaker 0"),
+            seg("e4", "seventeen eighteen", 205_800, 209_000, "Speaker 0"),
+        ];
+        let cands = loop_repair_candidates(&rows, &[], &[], OVERLAP_MAX_SPAN_SECS);
+        assert_eq!(cands.len(), 1, "{cands:?}");
+        let c = &cands[0];
+        // west: w2,w1,w0 all chain (gaps 0 / 0.4 / 0); east: e1,e2 chain,
+        // e3 would cross 30s (174.66→205.74 = 31.08) so it is trimmed.
+        assert_eq!((c.span.0, c.span.1), (174_660, 202_690), "{c:?}");
+        assert_eq!(c.donor_original_id, "cand");
+    }
+
+    #[test]
+    fn loop_repair_skips_manual_regions_and_existing_synth_spans() {
+        let rows = vec![seg(
+            "cand",
+            "I think it's a good idea. I think it's a good idea. It's one or the other.",
+            100_000,
+            106_000,
+            "Speaker 0",
+        )];
+        // a manual span overlapping the row stands the repair down entirely
+        let manual = vec![(99_000, 107_000)];
+        assert!(loop_repair_candidates(&rows, &manual, &[], OVERLAP_MAX_SPAN_SECS).is_empty());
+        // an existing mass-candidate span covering the row: the mass path
+        // owns that region, the repair must not double-fire
+        let mass = vec![(99.0_f64, 107.0_f64)];
+        assert!(loop_repair_candidates(&rows, &[], &mass, OVERLAP_MAX_SPAN_SECS).is_empty());
+        // non-loop rows never trigger
+        let plain = vec![seg("ok", "All good, all good. You?", 100_000, 102_000, "Speaker 0")];
+        assert!(loop_repair_candidates(&plain, &[], &[], OVERLAP_MAX_SPAN_SECS).is_empty());
+    }
+
+    #[test]
+    fn repair_replaces_absorbed_rows_with_per_voice_streams() {
+        // Whole-row splice: every row overlapping the window is REPLACED by
+        // the two stream rows (no head/tail pieces — partial coverage would
+        // duplicate the absorbed words into the streams). Rows outside are
+        // kept byte-identical.
+        let rows = vec![
+            seg("outside", "before words stay", 170_000, 174_000, "Speaker 0"),
+            seg("abs1", "one two three four five", 174_660, 181_050, "Speaker 0"),
+            seg(
+                "abs2",
+                "I think it's a good idea. I think it's a good idea. It's one or the other.",
+                181_050,
+                192_940,
+                "Speaker 0",
+            ),
+            seg("abs3", "six seven eight", 192_940, 199_500, "Speaker 0"),
+            seg("after", "after words stay", 200_000, 204_000, "Speaker 0"),
+        ];
+        let s = synth((174_660.0 / 1000.0, 199_500.0 / 1000.0), ev(1, 0.30, Some("alpha one two")), ev(3, 0.20, Some("beta three four")));
+        let out = repair_overlap_rows(&rows, &s, &cluster_speaker).expect("vetted streams");
+        let kept: Vec<&str> = out.iter().filter(|r| !r.synth_atom).map(|r| r.original_id.as_str()).collect();
+        assert_eq!(kept, ["outside", "after"], "absorbed rows gone, untouched rows kept: {out:?}");
+        let streams: Vec<&AlignedSegment> = out.iter().filter(|r| r.synth_atom).collect();
+        assert_eq!(streams.len(), 2);
+        assert_eq!(streams[0].text, "alpha one two");
+        assert_eq!(streams[1].text, "beta three four");
+        assert_eq!(streams[0].audio_start_ms, 174_660);
+        assert_eq!(streams[1].audio_end_ms, 199_500);
+        // donor provenance: the largest absorbed overlap donates its id
+        assert!(
+            streams.iter().all(|r| r.synth_parent.is_some()),
+            "stream rows carry the reconstruction link"
+        );
+        let donors: std::collections::HashSet<&str> =
+            streams.iter().map(|r| r.synth_parent.as_deref().unwrap()).collect();
+        assert!(donors.is_subset(&["abs1", "abs2", "abs3"].into()), "{donors:?}");
+        // ordering: streams sit between the kept rows in time order
+        assert_eq!(out[1].audio_start_ms, 174_660);
+        assert_eq!(out[2].audio_start_ms, 174_660);
+        assert_eq!(out[3].original_id, "after");
+    }
+
+    #[test]
+    fn repair_degrades_when_a_stream_stutters() {
+        let rows = vec![seg(
+            "cand",
+            "I think it's a good idea. I think it's a good idea. It's one or the other.",
+            100_000,
+            106_000,
+            "Speaker 0",
+        )];
+        let s = synth((100.0, 106.0), ev(1, 0.30, Some("alpha bravo alpha bravo alpha bravo")), ev(3, 0.20, Some("beta words")));
+        assert!(repair_overlap_rows(&rows, &s, &cluster_speaker).is_none());
     }
 
     #[test]
