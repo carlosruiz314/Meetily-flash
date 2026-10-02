@@ -1141,7 +1141,6 @@ async fn ear_truth_gate_cde5c264() {
                 &merged,
                 &repair_seed_spans,
                 &gate_manual_spans,
-                &gate_synthesis.iter().map(|s| s.span).collect::<Vec<_>>(),
                 app_lib::audio::speaker::run_assembly::OVERLAP_MAX_SPAN_SECS,
             );
             if !repair_candidates.is_empty() {

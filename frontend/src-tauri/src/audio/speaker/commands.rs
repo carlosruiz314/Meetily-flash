@@ -1062,7 +1062,6 @@ pub async fn run_diarization_for_meeting(
     // failure class. Their whole-row windows re-run the SAME separation +
     // per-voice synthesis — same gates, same degrade: any failure keeps
     // today's rows.
-    let mass_spans: Vec<(f64, f64)> = span_synthesis.iter().map(|s| s.span).collect();
     let mut repair_seed_spans: Vec<(i64, i64)> = aligned
         .iter()
         .filter(|r| {
@@ -1078,7 +1077,6 @@ pub async fn run_diarization_for_meeting(
         &aligned,
         &repair_seed_spans,
         &manual_spans,
-        &mass_spans,
         crate::audio::speaker::run_assembly::OVERLAP_MAX_SPAN_SECS,
     );
     if !repair_candidates.is_empty() {
