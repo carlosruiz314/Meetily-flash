@@ -1667,7 +1667,7 @@ pub fn synthesize_overlap_rows(
     {
         return None;
     }
-    let (texts, [badge0, badge1]) = vetted_stream_pair(synthesis, cluster_speaker)?;
+    let (texts, [badge0, badge1]) = vetted_stream_pair(synthesis, cluster_speaker).ok()?;
 
     let covered_time = |row: &AlignedSegment| -> i64 {
         let mut total = 0i64;
@@ -1858,9 +1858,19 @@ pub fn repair_overlap_rows(
     synthesis: &SpanSynthesis,
     cluster_speaker: &dyn Fn(u32) -> Option<String>,
 ) -> Option<Vec<AlignedSegment>> {
+    repair_overlap_rows_checked(rows, synthesis, cluster_speaker).ok()
+}
+
+/// The same splice, naming the vetoing gate — the repair pass records these
+/// per window so a degraded region says WHY in the run log.
+pub fn repair_overlap_rows_checked(
+    rows: &[AlignedSegment],
+    synthesis: &SpanSynthesis,
+    cluster_speaker: &dyn Fn(u32) -> Option<String>,
+) -> Result<Vec<AlignedSegment>, &'static str> {
     let (s0, s1) = synthesis.span;
     if s1 <= s0 || s1 - s0 > OVERLAP_MAX_SPAN_SECS {
-        return None;
+        return Err("span empty or over the 30s cap");
     }
     let span_ms = ((s0 * 1000.0) as i64, (s1 * 1000.0) as i64);
     let (texts, [badge0, badge1]) = vetted_stream_pair(synthesis, cluster_speaker)?;
@@ -1871,7 +1881,7 @@ pub fn repair_overlap_rows(
         .map(|(i, _)| i)
         .collect();
     if absorbed.is_empty() {
-        return None;
+        return Err("no render rows overlap the window");
     }
     // The donor (provenance for the replacement rows) is the absorbed row
     // with the largest window overlap — the same rule the overlap-span
@@ -1879,7 +1889,8 @@ pub fn repair_overlap_rows(
     let donor = absorbed
         .iter()
         .map(|&i| &rows[i])
-        .max_by_key(|r| r.audio_end_ms.min(span_ms.1) - r.audio_start_ms.max(span_ms.0))?;
+        .max_by_key(|r| r.audio_end_ms.min(span_ms.1) - r.audio_start_ms.max(span_ms.0))
+        .ok_or("no donor row")?;
     let make_stream = |text: String, badge: String| AlignedSegment {
         original_id: donor.original_id.clone(),
         text,
@@ -1907,18 +1918,21 @@ pub fn repair_overlap_rows(
     if !streams_placed {
         place_streams(&mut out, &mut stream0, &mut stream1, &mut streams_placed);
     }
-    Some(out)
+    Ok(out)
 }
 
 /// Fold the repair candidates' syntheses over the rendering, the way
 /// `apply_overlap_synthesis` does for overlap spans. A window touching an
 /// existing synth atom is skipped (that region is already per-voice).
+/// Returns the folded rows, the applied count, and per-window rejection
+/// reasons for the run record (an applied window is not listed).
 pub fn apply_loop_repairs(
     rows: Vec<AlignedSegment>,
     repairs: &[SpanSynthesis],
     cluster_speaker: &dyn Fn(u32) -> Option<String>,
-) -> (Vec<AlignedSegment>, usize) {
+) -> (Vec<AlignedSegment>, usize, Vec<((f64, f64), &'static str)>) {
     let mut applied = 0usize;
+    let mut rejected: Vec<((f64, f64), &'static str)> = Vec::new();
     let mut rows = rows;
     for s in repairs {
         let (ws0, ws1) = ((s.span.0 * 1000.0) as i64, (s.span.1 * 1000.0) as i64);
@@ -1926,14 +1940,18 @@ pub fn apply_loop_repairs(
             .iter()
             .any(|r| r.synth_atom && r.audio_start_ms < ws1 && ws0 < r.audio_end_ms);
         if touches_synth {
+            rejected.push((s.span, "region already per-voice (synth atom inside)"));
             continue;
         }
-        if let Some(next) = repair_overlap_rows(&rows, s, cluster_speaker) {
-            rows = next;
-            applied += 1;
+        match repair_overlap_rows_checked(&rows, s, cluster_speaker) {
+            Ok(next) => {
+                rows = next;
+                applied += 1;
+            }
+            Err(reason) => rejected.push((s.span, reason)),
         }
     }
-    (rows, applied)
+    (rows, applied, rejected)
 }
 
 /// How the span interacts with a row's walls.
@@ -2117,17 +2135,23 @@ pub fn repair_windows_from_seeds(
 fn vetted_stream_pair(
     synthesis: &SpanSynthesis,
     cluster_speaker: &dyn Fn(u32) -> Option<String>,
-) -> Option<([String; 2], [String; 2])> {
+) -> Result<([String; 2], [String; 2]), &'static str> {
     let mut texts: [String; 2] = [String::new(), String::new()];
     for (i, st) in synthesis.streams.iter().enumerate() {
-        let t = st.text.as_ref()?;
-        if !t.chars().any(|c| c.is_alphanumeric()) || is_stuttering_decode(t) {
-            return None;
+        let t = match st.text.as_ref() {
+            Some(t) => t,
+            None => return Err("a stream abstained (guard-dropped or empty decode)"),
+        };
+        if !t.chars().any(|c| c.is_alphanumeric()) {
+            return Err("a stream is punctuation-only");
+        }
+        if is_stuttering_decode(t) {
+            return Err("a stream decode stutters (repeated n-gram)");
         }
         texts[i] = t.clone();
     }
     if synthesis.streams.iter().any(|st| st.margin < SUBTURN_VOTE_MARGIN) {
-        return None;
+        return Err("a stream margin is under the vote bar");
     }
     if synthesis
         .streams
@@ -2136,17 +2160,17 @@ fn vetted_stream_pair(
     {
         // Collapsed (residue-only) stream: normalization made it loud, the
         // ratio says it carried no voice.
-        return None;
+        return Err("a stream RMS is under the eligibility floor");
     }
     let (c0, c1) = (synthesis.streams[0].cluster, synthesis.streams[1].cluster);
     if c0 == c1 {
         // Separation collapse: two rows, one voice — the jumble this change
         // exists to kill, reintroduced through a degenerate vote.
-        return None;
+        return Err("separation collapsed to one cluster");
     }
-    let badge0 = cluster_speaker(c0)?;
-    let badge1 = cluster_speaker(c1)?;
-    Some((texts, [badge0, badge1]))
+    let badge0 = cluster_speaker(c0).ok_or("a cluster has no badge")?;
+    let badge1 = cluster_speaker(c1).ok_or("a cluster has no badge")?;
+    Ok((texts, [badge0, badge1]))
 }
 
 #[cfg(test)]

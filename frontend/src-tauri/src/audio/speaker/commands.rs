@@ -1125,8 +1125,16 @@ pub async fn run_diarization_for_meeting(
         let cluster_speaker = |c: u32| -> Option<String> {
             Some(resolve_label(&format!("Speaker {c}"), &label_map))
         };
-        let (next, applied) =
+        let (next, applied, rejected) =
             crate::audio::speaker::run_assembly::apply_loop_repairs(aligned, &repairs, &cluster_speaker);
+        for (span, reason) in &rejected {
+            log::warn!(
+                "DIARIZATION: repair window [{:.2}-{:.2}] degraded: {}",
+                span.0,
+                span.1,
+                reason
+            );
+        }
         if applied > 0 {
             log::warn!(
                 "DIARIZATION: repaired {applied}/{} phrase-loop window(s) per-voice",
@@ -1685,6 +1693,15 @@ fn decode_span_synthesis(
     let mut out = Vec::new();
     for input in inputs {
         let [Some((c0, m0)), Some((c1, m1))] = input.identity else {
+            // Repair diagnostics (ear round 2026-10-02): a window dying
+            // here never reaches the splice — log the identity pair so the
+            // run record names the gate instead of a silent count.
+            log::warn!(
+                "DIARIZATION: repair window [{:.2}-{:.2}] degraded at identity (not both-streams decisive): {:?}",
+                input.span.0,
+                input.span.1,
+                input.identity
+            );
             continue;
         };
         let t0 = decoder.decode(&input.streams[0]);
