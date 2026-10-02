@@ -94,9 +94,38 @@ Design: extend the same synthesis path with a phrase-loop trigger.
    recorded v1 trade).
 5. **Degrade**: manual span inside the window wins (no repair); any
    gate failure → byte-identical keep of today's rows.
-Open items: exact pad/expansion constants; whether the fixpoint union
-should snap to RMS valleys before absorption; S18 end-to-end
-verification via the gate replay before any full re-run.
+## Stutter-retry as repair promotion (ear ruling 2026-10-02)
+
+The user attested the mixed row [192.94-199.50] ("That's the whole point."
+= Participant B / "We'll figure it out..." = Participant A; fixture S18 amendment).
+The crosstalk span covering her phrase [192.91-193.76] stood down because
+its SHORT-window separated decode stuttered. Probe ladder (2026-10-02):
+span ±1.3s (3.45s total) decodes clean but GARBLED ("binders", "little
+wolves") — wrong trade; span ±4.5s (9.85s) and the 11s window decode
+BOTH streams clean AND correct ("That's the whole point." in Participant B's
+stream; "We'll figure it out. Yeah, we'll have to figure it out. But
+worst case..." in Participant A's). Decode quality grows with context; the
+retry needs a ~9-12s MINIMUM window, not a fixed ±1.3s.
+
+Converged design: a stuttering mass-candidate span PROMOTES to a repair
+window — the same machinery as the phrase-loop repair, seeded from the
+stutter span instead of a loop row:
+1. Refactor `loop_repair_candidates` into `repair_windows_from_seeds`
+   (chain absorption from arbitrary seed spans; loop rows remain one
+   seed source; stutter spans become the second).
+2. Retry flow: stutter detected at decode → seed = the span (ms) →
+   chain window (gap ≤2.5s, cap 30s, synth atoms block the chain) →
+   re-separate + re-decode the FULL window → gates → whole-row splice.
+   The wider decode's words are exactly the absorbed rows' region, so
+   no duplication and no slicing.
+3. The repair pass runs once, carrying BOTH seed kinds (loop rows +
+   stutter spans); windows touching existing synth atoms are skipped
+   only for LOOP seeds (a stutter seed's window may need to overlap the
+   stood-down region's neighbours — but never re-absorb another seed's
+   already-repaired synth rows: chain stops there, which the live layout
+   satisfies).
+Open: whether the promoted window's stream identity re-votes cleanly on
+the live layout (the probes say the voice content is there).
 
 ## Explore-cycle findings (2026-09-29, pre-apply audit)
 
