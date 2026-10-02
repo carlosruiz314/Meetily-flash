@@ -1259,8 +1259,14 @@ async fn ear_truth_gate_cde5c264() {
                 let cluster_speaker = |c: u32| -> Option<String> {
                     Some(format!("Speaker {c}"))
                 };
-                let (next, applied) =
+                let (next, applied, rejected) =
                     app_lib::audio::speaker::run_assembly::apply_loop_repairs(merged, &repairs, &cluster_speaker);
+                for (span, reason) in &rejected {
+                    eprintln!(
+                        "CENSUS-REPAIR-DEGRADED window=[{:.2}-{:.2}] {}",
+                        span.0, span.1, reason
+                    );
+                }
                 eprintln!(
                     "GATE: phrase-loop repair applied {applied}/{} window(s)",
                     repairs.len()
