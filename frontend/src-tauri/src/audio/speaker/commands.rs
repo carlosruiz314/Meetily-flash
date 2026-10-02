@@ -648,7 +648,7 @@ pub async fn run_diarization_for_meeting(
     let references_for_repair = references.clone();
     let transcripts_for_repair = transcripts.clone();
     let embedding_path_for_repair = embedding_path.clone();
-    let (segments, centroids, engine_turns, rescue_seams, voice_votes, span_synthesis) =
+    let (segments, centroids, engine_turns, rescue_seams, voice_votes, span_synthesis, stutter_seeds) =
         tokio::task::spawn_blocking(move || {        // SUCCESS PATH (design D5): the run-assembly engine derives the final
         // turns from ONE full-meeting pyannote pass. The chunk grid, temporal
         // smoothing, and refine_pass2 are NOT invoked here. Runs only when
@@ -779,7 +779,30 @@ pub async fn run_diarization_for_meeting(
                     );
                 }
             }
-            return Ok::<_, anyhow::Error>((segments, centroids, Some(turns), seams, votes, span_synthesis));
+            // Stutter seeds (ear ruling 2026-10-02): a span whose separated
+            // decode stuttered stands down at the splice — and PROMOTES to
+            // a repair seed, re-synthesized over a wider whole-row window
+            // (probe evidence: decode quality grows with context; ~9-12s
+            // minimum).
+            let stutter_seeds: Vec<(i64, i64)> = span_synthesis
+                .iter()
+                .filter(|s| {
+                    s.streams.iter().any(|st| {
+                        st.text
+                            .as_deref()
+                            .map(|t| super::run_assembly::is_stuttering_decode(t))
+                            .unwrap_or(false)
+                    })
+                })
+                .map(|s| ((s.span.0 * 1000.0) as i64, (s.span.1 * 1000.0) as i64))
+                .collect();
+            if !stutter_seeds.is_empty() {
+                log::warn!(
+                    "DIARIZATION: {} stutter span(s) → repair seeds",
+                    stutter_seeds.len()
+                );
+            }
+            return Ok::<_, anyhow::Error>((segments, centroids, Some(turns), seams, votes, span_synthesis, stutter_seeds));
         }
 
         // FALLBACK (only on model-load failure): legacy grid path, unchanged.
@@ -841,7 +864,7 @@ pub async fn run_diarization_for_meeting(
             }
         }
         let turns: Option<Vec<super::run_engine::EngineTurn>> = None;
-        Ok::<_, anyhow::Error>((segments, centroids, turns, Vec::new(), Vec::new(), Vec::new()))
+        Ok::<_, anyhow::Error>((segments, centroids, turns, Vec::new(), Vec::new(), Vec::new(), Vec::new()))
     })
     .await
     .map_err(|e| format!("Diarization blocking task failed: {}", e))?
@@ -1033,13 +1056,27 @@ pub async fn run_diarization_for_meeting(
         );
     }
 
-    // Phrase-loop repair (ear round 2026-10-01, S18): rows that repeat a
-    // full phrase back-to-back are decode-fabrication suspects. Their
-    // whole-row windows re-run the SAME separation + per-voice synthesis —
-    // same gates, same degrade: any failure keeps today's rows.
+    // Phrase-loop repair (ear round 2026-10-01, S18) + stutter promotion
+    // (ear ruling 2026-10-02): rows that repeat a full phrase back-to-back
+    // AND spans whose separated decode stuttered are the same decode-
+    // failure class. Their whole-row windows re-run the SAME separation +
+    // per-voice synthesis — same gates, same degrade: any failure keeps
+    // today's rows.
     let mass_spans: Vec<(f64, f64)> = span_synthesis.iter().map(|s| s.span).collect();
-    let repair_candidates = crate::audio::speaker::run_assembly::loop_repair_candidates(
+    let mut repair_seed_spans: Vec<(i64, i64)> = aligned
+        .iter()
+        .filter(|r| {
+            !r.synth_atom
+                && crate::audio::speaker::run_assembly::is_phrase_loop(&r.text)
+                && (r.audio_end_ms - r.audio_start_ms) as f64 / 1000.0
+                    <= crate::audio::speaker::run_assembly::OVERLAP_MAX_SPAN_SECS
+        })
+        .map(|r| (r.audio_start_ms, r.audio_end_ms))
+        .collect();
+    repair_seed_spans.extend(stutter_seeds.iter().copied());
+    let repair_candidates = crate::audio::speaker::run_assembly::repair_windows_from_seeds(
         &aligned,
+        &repair_seed_spans,
         &manual_spans,
         &mass_spans,
         crate::audio::speaker::run_assembly::OVERLAP_MAX_SPAN_SECS,
