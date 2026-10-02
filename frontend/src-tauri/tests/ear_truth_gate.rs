@@ -1112,8 +1112,34 @@ async fn ear_truth_gate_cde5c264() {
         // second engine instance; the S18 assertion below makes a silent
         // degrade a FAILURE, not a skip.
         {
-            let repair_candidates = app_lib::audio::speaker::run_assembly::loop_repair_candidates(
+            let mut repair_seed_spans: Vec<(i64, i64)> = merged
+                .iter()
+                .filter(|r| {
+                    !r.synth_atom
+                        && app_lib::audio::speaker::run_assembly::is_phrase_loop(&r.text)
+                        && (r.audio_end_ms - r.audio_start_ms) as f64 / 1000.0
+                            <= app_lib::audio::speaker::run_assembly::OVERLAP_MAX_SPAN_SECS
+                })
+                .map(|r| (r.audio_start_ms, r.audio_end_ms))
+                .collect();
+            // stutter promotion (ear ruling 2026-10-02): stood-down spans
+            // whose separated decode stuttered re-seed the repair
+            repair_seed_spans.extend(
+                gate_synthesis
+                    .iter()
+                    .filter(|s| {
+                        s.streams.iter().any(|st| {
+                            st.text
+                                .as_deref()
+                                .map(|t| app_lib::audio::speaker::run_assembly::is_stuttering_decode(t))
+                                .unwrap_or(false)
+                        })
+                    })
+                    .map(|s| ((s.span.0 * 1000.0) as i64, (s.span.1 * 1000.0) as i64)),
+            );
+            let repair_candidates = app_lib::audio::speaker::run_assembly::repair_windows_from_seeds(
                 &merged,
+                &repair_seed_spans,
                 &gate_manual_spans,
                 &gate_synthesis.iter().map(|s| s.span).collect::<Vec<_>>(),
                 app_lib::audio::speaker::run_assembly::OVERLAP_MAX_SPAN_SECS,

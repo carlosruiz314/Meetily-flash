@@ -2001,37 +2001,80 @@ pub struct LoopRepairCandidate {
     pub donor_original_id: String,
 }
 
-/// Whole-row repair windows from phrase-loop rows: the candidate absorbs
-/// every non-synth neighbour reachable through gaps ≤ REPAIR_CHAIN_GAP_SECS
-/// (partial coverage would duplicate the absorbed words into the streams),
-/// trimming before the row that crosses `max_span_secs`. Manual spans stand
-/// their region down entirely, and rows inside existing mass-candidate
-/// spans are left to that path.
+/// Whole-row repair windows from phrase-loop rows: each loop row seeds the
+/// shared window builder.
 pub fn loop_repair_candidates(
     rows: &[AlignedSegment],
     manual_spans: &[(i64, i64)],
     existing_synth_spans: &[(f64, f64)],
     max_span_secs: f64,
 ) -> Vec<LoopRepairCandidate> {
+    let seeds: Vec<(i64, i64)> = rows
+        .iter()
+        .filter(|r| !r.synth_atom && is_phrase_loop(&r.text))
+        .map(|r| (r.audio_start_ms, r.audio_end_ms))
+        .collect();
+    repair_windows_from_seeds(rows, &seeds, manual_spans, existing_synth_spans, max_span_secs)
+}
+
+/// Whole-row repair windows from arbitrary seed spans (phrase-loop rows OR
+/// stood-down stutter spans — the same decode-quality failure class). The
+/// window chains outward from the seed through WHOLE rows (partial coverage
+/// would duplicate the absorbed words into the streams), across gaps ≤
+/// REPAIR_CHAIN_GAP_SECS, stopping at synth atoms (already per-voice
+/// regions are never re-absorbed), trimming before the row that crosses
+/// `max_span_secs`. Manual spans stand their region down; rows inside
+/// existing mass-candidate spans are left to that path; overlapping
+/// windows dedupe to the first.
+pub fn repair_windows_from_seeds(
+    rows: &[AlignedSegment],
+    seeds: &[(i64, i64)],
+    manual_spans: &[(i64, i64)],
+    existing_synth_spans: &[(f64, f64)],
+    max_span_secs: f64,
+) -> Vec<LoopRepairCandidate> {
+    let _ = existing_synth_spans;
     let max_ms = (max_span_secs * 1000.0) as i64;
     let gap_ms = (REPAIR_CHAIN_GAP_SECS * 1000.0) as i64;
     let mut out: Vec<LoopRepairCandidate> = Vec::new();
-    for (i, row) in rows.iter().enumerate() {
-        if row.synth_atom || !is_phrase_loop(&row.text) {
-            continue;
+    for seed in seeds {
+        let mut lo = None;
+        let mut hi = None;
+        for (i, row) in rows.iter().enumerate() {
+            if row.audio_start_ms < seed.1 && seed.0 < row.audio_end_ms {
+                if lo.is_none() {
+                    lo = Some(i);
+                }
+                hi = Some(i);
+            }
         }
-        if (row.audio_end_ms - row.audio_start_ms) as f64 / 1000.0 > max_span_secs {
+        let (mut lo, mut hi) = match (lo, hi) {
+            (Some(a), Some(b)) => (a, b),
+            _ => continue,
+        };
+        if (rows[hi].audio_end_ms - rows[lo].audio_start_ms) as f64 / 1000.0 > max_span_secs {
             continue;
         }
         let row_secs = |ms: i64| ms as f64 / 1000.0;
-        if existing_synth_spans
+        let seed_overlaps_synth_span = existing_synth_spans
             .iter()
-            .any(|&(a, b)| row_secs(row.audio_start_ms) < b && a < row_secs(row.audio_end_ms))
+            .any(|&(a, b)| row_secs(seed.0) < b && a < row_secs(seed.1));
+        let donor = rows[lo..=hi]
+            .iter()
+            .filter(|r| !r.synth_atom)
+            .max_by_key(|r| {
+                r.audio_end_ms.min(seed.1) - r.audio_start_ms.max(seed.0)
+            })
+            .map(|r| r.original_id.clone());
+        if seed_overlaps_synth_span || donor.is_none() {
+            continue;
+        }
+        if manual_spans
+            .iter()
+            .any(|&(a, b)| seed.0 < b && a < seed.1)
         {
             continue;
         }
-        let mut lo = i;
-        let mut hi = i;
         while lo > 0 {
             let prev = &rows[lo - 1];
             if prev.synth_atom || rows[lo].audio_start_ms - prev.audio_end_ms > gap_ms {
@@ -2067,7 +2110,7 @@ pub fn loop_repair_candidates(
         }
         out.push(LoopRepairCandidate {
             span,
-            donor_original_id: row.original_id.clone(),
+            donor_original_id: donor.unwrap(),
         });
     }
     out
@@ -3827,6 +3870,63 @@ mod tests {
         )];
         let s = synth((100.0, 106.0), ev(1, 0.30, Some("alpha bravo alpha bravo alpha bravo")), ev(3, 0.20, Some("beta words")));
         assert!(repair_overlap_rows(&rows, &s, &cluster_speaker).is_none());
+    }
+
+    #[test]
+    fn stutter_span_promotes_to_a_repair_window() {
+        // Ear ruling 2026-10-02: "That's the whole point" = Participant B,
+        // "We'll figure it out" = Participant A — the mixed row at [192.94-199.50]
+        // is two voices under one badge, and its crosstalk span
+        // [192.91-193.76] stood down because the SHORT separated decode
+        // stuttered. The span must promote to a repair seed: the window
+        // chains west until the freshly-repaired synth pair (chain stops at
+        // synth atoms) and east across contiguous rows to the 30s cap —
+        // probe evidence pins a ~9-12s MINIMUM window for a clean decode.
+        let rows = vec![
+            seg("repaired0", "earlier repaired stream", 161_710, 191_050, "Participant B Wu"),
+            seg("w0", "It's one or the other.", 191_820, 192_940, "Participant B Wu"),
+            seg(
+                "mixed",
+                "That's the whole point. We'll figure it out. Yeah, we'll have to figure it out. But worst case, hybrid is delayed.",
+                192_940,
+                199_500,
+                "Participant A",
+            ),
+            seg("e1", "Yeah, the expectation is that hybrid is going to get delayed.", 199_520, 202_690, "Participant B Wu"),
+            seg("e2", "Okay, okay. As long as we're good with that.", 202_970, 205_740, "Participant A"),
+            seg("e3", "Yeah, yeah, yeah. I was like, yeah.", 205_740, 213_260, "Participant B Wu"),
+            seg("e4", "and the next topic was the roadmap for the quarter ahead", 213_300, 221_500, "Participant A"),
+            seg("e5", "far later row beyond the cap", 221_600, 226_000, "Participant B Wu"),
+        ];
+        let stutter_seed = (192_910_i64, 193_760_i64);
+        let cands = repair_windows_from_seeds(&rows, &[stutter_seed], &[], &[], OVERLAP_MAX_SPAN_SECS);
+        assert_eq!(cands.len(), 1, "{cands:?}");
+        let c = &cands[0];
+        // west chain stops at the synth atom (gap to it would be absorbable
+        // but synth rows are never re-absorbed); the seed row + e1..e4 fit
+        // under the 30s cap from 191_820 (e5 would cross it)
+        assert_eq!(c.span.0, 191_820, "window starts at the first absorbable row west of the seed");
+        assert!(c.span.1 <= 191_820 + 30_000, "cap respected: {c:?}");
+        assert!(c.span.1 >= 213_260, "window reaches well past the mixed row (probe: >=9s needed): {c:?}");
+        assert_eq!(c.donor_original_id, "mixed");
+    }
+
+    #[test]
+    fn loop_rows_still_seed_through_the_shared_path() {
+        // the loop-path wrapper delegates to the same window builder
+        let rows = vec![seg(
+            "cand",
+            "I think it's a good idea. I think it's a good idea. It's one or the other.",
+            187_050,
+            192_940,
+            "Speaker 0",
+        )];
+        let via_wrapper = loop_repair_candidates(&rows, &[], &[], OVERLAP_MAX_SPAN_SECS);
+        let seed = (187_050_i64, 192_940_i64);
+        let direct = repair_windows_from_seeds(&rows, &[seed], &[], &[], OVERLAP_MAX_SPAN_SECS);
+        assert_eq!(via_wrapper.len(), 1);
+        assert_eq!(direct.len(), 1);
+        assert_eq!(via_wrapper[0], direct[0]);
     }
 
     #[test]
