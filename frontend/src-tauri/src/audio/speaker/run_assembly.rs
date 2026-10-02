@@ -3935,6 +3935,46 @@ mod tests {
     }
 
     #[test]
+    fn stutter_seed_wins_the_region_over_the_earlier_loop_window() {
+        // Live production miss (attempt 10, ear ruling 2026-10-02): the loop
+        // seed's window built FIRST, chained 25s west, and its cap-trimmed
+        // wall (~191s) sat on top of the whole-point stutter seed's range —
+        // the dedupe then dropped the stutter window silently. Stutter
+        // seeds are EAR-ATTESTED evidence and must claim the region before
+        // loop-row seeds (the fabrication row falls inside the stutter
+        // window anyway, so the loop fix still happens).
+        let rows = vec![
+            seg("west0", "earlier words one", 161_710, 174_660, "Speaker 0"),
+            seg("w1", "words two three", 174_660, 181_050, "Speaker 0"),
+            seg("w2", "words four five", 181_050, 184_050, "Speaker 0"),
+            seg("w3", "words six seven", 184_450, 187_050, "Speaker 0"),
+            seg(
+                "fab",
+                "I think it's a good idea. I think it's a good idea. It's one or the other.",
+                187_050,
+                192_940,
+                "Speaker 0",
+            ),
+            seg(
+                "mixed",
+                "That's the whole point. We'll figure it out. Yeah, we'll have to figure it out. But worst case, hybrid is delayed.",
+                192_940,
+                199_500,
+                "Speaker 0",
+            ),
+            seg("e1", "Yeah, the expectation is that hybrid is going to get delayed.", 199_520, 202_690, "Speaker 0"),
+            seg("e2", "Okay, okay. As long as we're good with that.", 202_970, 205_740, "Speaker 0"),
+        ];
+        // caller order: stutter seeds FIRST, loop seeds after
+        let seeds = vec![(192_920_i64, 193_760_i64), (187_050_i64, 192_940_i64)];
+        let cands = repair_windows_from_seeds(&rows, &seeds, &[], OVERLAP_MAX_SPAN_SECS);
+        assert_eq!(cands.len(), 1, "the loop seed must dedupe into the stutter window: {cands:?}");
+        let c = &cands[0];
+        assert_eq!((c.span.0, c.span.1), (174_660, 202_690), "{c:?}");
+        assert_eq!(c.donor_original_id, "mixed", "the stutter seed's row donates");
+    }
+
+    #[test]
     fn loop_rows_still_seed_through_the_shared_path() {
         // the loop-path wrapper delegates to the same window builder
         let rows = vec![seg(

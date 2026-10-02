@@ -1062,17 +1062,22 @@ pub async fn run_diarization_for_meeting(
     // failure class. Their whole-row windows re-run the SAME separation +
     // per-voice synthesis — same gates, same degrade: any failure keeps
     // today's rows.
-    let mut repair_seed_spans: Vec<(i64, i64)> = aligned
-        .iter()
-        .filter(|r| {
-            !r.synth_atom
-                && crate::audio::speaker::run_assembly::is_phrase_loop(&r.text)
-                && (r.audio_end_ms - r.audio_start_ms) as f64 / 1000.0
-                    <= crate::audio::speaker::run_assembly::OVERLAP_MAX_SPAN_SECS
-        })
-        .map(|r| (r.audio_start_ms, r.audio_end_ms))
-        .collect();
-    repair_seed_spans.extend(stutter_seeds.iter().copied());
+    // Seed order IS priority: stutter seeds (ear-attested spans) claim
+    // their region before loop-row seeds — the attempt-10 miss had the
+    // loop window build first and dedupe the whole-point stutter window
+    // away.
+    let mut repair_seed_spans: Vec<(i64, i64)> = stutter_seeds.clone();
+    repair_seed_spans.extend(
+        aligned
+            .iter()
+            .filter(|r| {
+                !r.synth_atom
+                    && crate::audio::speaker::run_assembly::is_phrase_loop(&r.text)
+                    && (r.audio_end_ms - r.audio_start_ms) as f64 / 1000.0
+                        <= crate::audio::speaker::run_assembly::OVERLAP_MAX_SPAN_SECS
+            })
+            .map(|r| (r.audio_start_ms, r.audio_end_ms)),
+    );
     let repair_candidates = crate::audio::speaker::run_assembly::repair_windows_from_seeds(
         &aligned,
         &repair_seed_spans,
