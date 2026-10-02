@@ -2006,7 +2006,6 @@ pub struct LoopRepairCandidate {
 pub fn loop_repair_candidates(
     rows: &[AlignedSegment],
     manual_spans: &[(i64, i64)],
-    existing_synth_spans: &[(f64, f64)],
     max_span_secs: f64,
 ) -> Vec<LoopRepairCandidate> {
     let seeds: Vec<(i64, i64)> = rows
@@ -2014,7 +2013,7 @@ pub fn loop_repair_candidates(
         .filter(|r| !r.synth_atom && is_phrase_loop(&r.text))
         .map(|r| (r.audio_start_ms, r.audio_end_ms))
         .collect();
-    repair_windows_from_seeds(rows, &seeds, manual_spans, existing_synth_spans, max_span_secs)
+    repair_windows_from_seeds(rows, &seeds, manual_spans, max_span_secs)
 }
 
 /// Whole-row repair windows from arbitrary seed spans (phrase-loop rows OR
@@ -2022,18 +2021,17 @@ pub fn loop_repair_candidates(
 /// window chains outward from the seed through WHOLE rows (partial coverage
 /// would duplicate the absorbed words into the streams), across gaps ≤
 /// REPAIR_CHAIN_GAP_SECS, stopping at synth atoms (already per-voice
-/// regions are never re-absorbed), trimming before the row that crosses
-/// `max_span_secs`. Manual spans stand their region down; rows inside
-/// existing mass-candidate spans are left to that path; overlapping
-/// windows dedupe to the first.
+/// regions are never re-absorbed — this, not a span list, is what keeps a
+/// fired region from double-rendering; a STOOD-DOWN mass span carries no
+/// synth rows and must stay promotable), trimming before the row that
+/// crosses `max_span_secs`. Manual spans stand their region down;
+/// overlapping windows dedupe to the first.
 pub fn repair_windows_from_seeds(
     rows: &[AlignedSegment],
     seeds: &[(i64, i64)],
     manual_spans: &[(i64, i64)],
-    existing_synth_spans: &[(f64, f64)],
     max_span_secs: f64,
 ) -> Vec<LoopRepairCandidate> {
-    let _ = existing_synth_spans;
     let max_ms = (max_span_secs * 1000.0) as i64;
     let gap_ms = (REPAIR_CHAIN_GAP_SECS * 1000.0) as i64;
     let mut out: Vec<LoopRepairCandidate> = Vec::new();
@@ -2055,10 +2053,6 @@ pub fn repair_windows_from_seeds(
         if (rows[hi].audio_end_ms - rows[lo].audio_start_ms) as f64 / 1000.0 > max_span_secs {
             continue;
         }
-        let row_secs = |ms: i64| ms as f64 / 1000.0;
-        let seed_overlaps_synth_span = existing_synth_spans
-            .iter()
-            .any(|&(a, b)| row_secs(seed.0) < b && a < row_secs(seed.1));
         let donor = rows[lo..=hi]
             .iter()
             .filter(|r| !r.synth_atom)
@@ -2066,7 +2060,7 @@ pub fn repair_windows_from_seeds(
                 r.audio_end_ms.min(seed.1) - r.audio_start_ms.max(seed.0)
             })
             .map(|r| r.original_id.clone());
-        if seed_overlaps_synth_span || donor.is_none() {
+        if donor.is_none() {
             continue;
         }
         if manual_spans
@@ -3786,7 +3780,7 @@ mod tests {
             seg("e3", "fifteen sixteen", 202_970, 205_740, "Speaker 0"),
             seg("e4", "seventeen eighteen", 205_800, 209_000, "Speaker 0"),
         ];
-        let cands = loop_repair_candidates(&rows, &[], &[], OVERLAP_MAX_SPAN_SECS);
+        let cands = loop_repair_candidates(&rows, &[], OVERLAP_MAX_SPAN_SECS);
         assert_eq!(cands.len(), 1, "{cands:?}");
         let c = &cands[0];
         // west: w2,w1,w0 all chain (gaps 0 / 0.4 / 0); east: e1,e2 chain,
@@ -3796,7 +3790,7 @@ mod tests {
     }
 
     #[test]
-    fn loop_repair_skips_manual_regions_and_existing_synth_spans() {
+    fn loop_repair_skips_manual_regions() {
         let rows = vec![seg(
             "cand",
             "I think it's a good idea. I think it's a good idea. It's one or the other.",
@@ -3806,14 +3800,10 @@ mod tests {
         )];
         // a manual span overlapping the row stands the repair down entirely
         let manual = vec![(99_000, 107_000)];
-        assert!(loop_repair_candidates(&rows, &manual, &[], OVERLAP_MAX_SPAN_SECS).is_empty());
-        // an existing mass-candidate span covering the row: the mass path
-        // owns that region, the repair must not double-fire
-        let mass = vec![(99.0_f64, 107.0_f64)];
-        assert!(loop_repair_candidates(&rows, &[], &mass, OVERLAP_MAX_SPAN_SECS).is_empty());
+        assert!(loop_repair_candidates(&rows, &manual, OVERLAP_MAX_SPAN_SECS).is_empty());
         // non-loop rows never trigger
         let plain = vec![seg("ok", "All good, all good. You?", 100_000, 102_000, "Speaker 0")];
-        assert!(loop_repair_candidates(&plain, &[], &[], OVERLAP_MAX_SPAN_SECS).is_empty());
+        assert!(loop_repair_candidates(&plain, &[], OVERLAP_MAX_SPAN_SECS).is_empty());
     }
 
     #[test]
@@ -3899,7 +3889,12 @@ mod tests {
             seg("e5", "far later row beyond the cap", 221_600, 226_000, "Participant B Wu"),
         ];
         let stutter_seed = (192_910_i64, 193_760_i64);
-        let cands = repair_windows_from_seeds(&rows, &[stutter_seed], &[], &[], OVERLAP_MAX_SPAN_SECS);
+        let cands = repair_windows_from_seeds(
+            &rows,
+            &[stutter_seed],
+            &[],
+            OVERLAP_MAX_SPAN_SECS,
+        );
         assert_eq!(cands.len(), 1, "{cands:?}");
         let c = &cands[0];
         // west chain stops at the synth atom (gap to it would be absorbable
@@ -3909,6 +3904,10 @@ mod tests {
         assert!(c.span.1 <= 191_820 + 30_000, "cap respected: {c:?}");
         assert!(c.span.1 >= 213_260, "window reaches well past the mixed row (probe: >=9s needed): {c:?}");
         assert_eq!(c.donor_original_id, "mixed");
+        // The seed overlaps its own STOOD-DOWN mass span — irrelevant by
+        // construction now: no span-list exclusion exists (the 2026-10-02
+        // gate run proved it ate every stutter seed); the only fired-region
+        // protection is the synth-atom chain stop, asserted above.
     }
 
     #[test]
@@ -3921,9 +3920,9 @@ mod tests {
             192_940,
             "Speaker 0",
         )];
-        let via_wrapper = loop_repair_candidates(&rows, &[], &[], OVERLAP_MAX_SPAN_SECS);
+        let via_wrapper = loop_repair_candidates(&rows, &[], OVERLAP_MAX_SPAN_SECS);
         let seed = (187_050_i64, 192_940_i64);
-        let direct = repair_windows_from_seeds(&rows, &[seed], &[], &[], OVERLAP_MAX_SPAN_SECS);
+        let direct = repair_windows_from_seeds(&rows, &[seed], &[], OVERLAP_MAX_SPAN_SECS);
         assert_eq!(via_wrapper.len(), 1);
         assert_eq!(direct.len(), 1);
         assert_eq!(via_wrapper[0], direct[0]);
