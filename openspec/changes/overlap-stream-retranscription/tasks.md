@@ -187,6 +187,26 @@ evidence home, never repo-committed).
       matched (fabrication absent; the 6th needle needed the entry's
       end_s extended to 202.7 — the asserted range now covers the whole
       dictated exchange).
+- [x] STUTTER PROMOTION RESOLVED THE RESIDUAL (2026-10-02, attempts
+      9-11): the user's follow-up ruling ("Participant B does say 'That's the
+      whole point' and I say 'We'll figure it out'") drove the
+      stutter-seed promotion (design: Stutter-retry as repair
+      promotion). Two silent-kill bugs found and fixed on the way:
+      (1) the mass-span exclusion ate every stutter seed (8acc4417);
+      (2) the dedupe dropped the whole-point window because the loop
+      window built first with its cap-trimmed wall on top of it —
+      stutter seeds now seed FIRST (294db986, contract test pinned).
+      Diagnostics (f7d09d9e) cleared the other 9 windows: all legit
+      gates (5 decode stutters, 2 collapses, 2 thin margins) — the
+      conservative degrade working as designed. FINAL RENDER (attempt
+      11): the mixed row is GONE; [172.01-199.50] renders two per-voice
+      rows — Participant B: "...it's one or the other. That's the whole
+      point." / Participant A: "...On hybrid, it would have been Participant E.
+      We'll figure it out. Yeah, we'll have to figure it out. But worst
+      case, hybrid is delayed." — exactly the user's ruling; 6/6
+      attested needles, fabrication absent. 12 per-voice regions total
+      (6 mass + 6 repair); 6 word-loss flags carried to the ear round
+      (172s, 367s, 1362s, 2535s, 4602s, 4860s).
 
 - [ ] 4.1 Ear-calibration clip loop (user-ruled protocol, design thread C):
       the agent reads the full rerun transcript against the original and
