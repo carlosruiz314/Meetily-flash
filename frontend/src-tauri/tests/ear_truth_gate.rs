@@ -1083,13 +1083,34 @@ async fn ear_truth_gate_cde5c264() {
                         let report = app_lib::audio::hallucination::audit(trimmed, 0.0, end_ms);
                         if report.is_garbage { None } else { Some(trimmed.to_string()) }
                     };
-                    let t0 = decode(&input.streams[0]);
-                    let t1 = decode(&input.streams[1]);
+                    // Production parity: per-utterance decode (clip-02
+                    // ruling) — the join feeds the gates, the walls feed
+                    // the splice.
+                    let decode_utts = |samples: &[f32]| {
+                        app_lib::audio::speaker::run_assembly::decode_stream_utterances(
+                            samples,
+                            &decode,
+                        )
+                    };
+                    let utts0 = decode_utts(&input.streams[0]);
+                    let utts1 = decode_utts(&input.streams[1]);
                     out.push(SpanSynthesis {
                         span: input.span,
                         streams: [
-                            StreamEvidence { cluster: c0, margin: m0, rms_ratio: input.rms_ratio[0], text: t0 },
-                            StreamEvidence { cluster: c1, margin: m1, rms_ratio: input.rms_ratio[1], text: t1 },
+                            StreamEvidence {
+                                cluster: c0,
+                                margin: m0,
+                                rms_ratio: input.rms_ratio[0],
+                                text: app_lib::audio::speaker::run_assembly::join_utterance_texts(&utts0),
+                                utterances: utts0,
+                            },
+                            StreamEvidence {
+                                cluster: c1,
+                                margin: m1,
+                                rms_ratio: input.rms_ratio[1],
+                                text: app_lib::audio::speaker::run_assembly::join_utterance_texts(&utts1),
+                                utterances: utts1,
+                            },
                         ],
                         covered_atoms: input.covered_atoms.clone(),
                     });
@@ -1230,8 +1251,16 @@ async fn ear_truth_gate_cde5c264() {
                                     Some(trimmed.to_string())
                                 }
                             };
-                            let t0 = decode(&input.streams[0]);
-                            let t1 = decode(&input.streams[1]);
+                            // Production parity: per-utterance decode
+                            // (clip-02 ruling) for the repair path too.
+                            let decode_utts = |s: &[f32]| {
+                                app_lib::audio::speaker::run_assembly::decode_stream_utterances(
+                                    s,
+                                    &decode,
+                                )
+                            };
+                            let utts0 = decode_utts(&input.streams[0]);
+                            let utts1 = decode_utts(&input.streams[1]);
                             out.push(app_lib::audio::speaker::run_assembly::SpanSynthesis {
                                 span: input.span,
                                 streams: [
@@ -1239,13 +1268,15 @@ async fn ear_truth_gate_cde5c264() {
                                         cluster: c0,
                                         margin: m0,
                                         rms_ratio: input.rms_ratio[0],
-                                        text: t0,
+                                        text: app_lib::audio::speaker::run_assembly::join_utterance_texts(&utts0),
+                                        utterances: utts0,
                                     },
                                     app_lib::audio::speaker::run_assembly::StreamEvidence {
                                         cluster: c1,
                                         margin: m1,
                                         rms_ratio: input.rms_ratio[1],
-                                        text: t1,
+                                        text: app_lib::audio::speaker::run_assembly::join_utterance_texts(&utts1),
+                                        utterances: utts1,
                                     },
                                 ],
                                 covered_atoms: input.covered_atoms,

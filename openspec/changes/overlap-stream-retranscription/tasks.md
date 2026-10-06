@@ -221,3 +221,44 @@ evidence home, never repo-committed).
 - [ ] 4.2 S16 graduation: on the user's confirmation, remove the S16
       waiver from the fixture's known_limitations (amendment record
       stays), making the window a hard pin.
+- [x] 4.3 DONE (2026-10-06): utterance-real walls landed. Live gate
+      20261006-utterance-walls4.log GREEN: 20 passed + 1 amended, 0
+      failed; S18 fabrication absent with 6/6 needles; 0 fractures / 0
+      duplicate clusters; 418 persisted rows = the baseline's 417 +
+      Participant B's split utterance row in the clip-02 window (probe-verified:
+      her stream 2 chunks [367.4-368.9, 395.3-395.8], his 1). Iteration
+      record: per-chunk decode broke the ~9-12s context floor (gate
+      utterance-walls FAILED); proportional word fallback scattered
+      fragments (gate utterance-walls2 FAILED); p90 floor sat inside the
+      bleed at low duty cycle (gate utterance-walls3 green but
+      byte-identical, no split) → decode-once + sentence-match-or-legacy
+      + peak-anchored floor. 762 lib tests green. Ear round: clip 01
+      PASS (class closed); clip 02 re-check pending on the new render.
+- [ ] 4.3 original plan, kept for the record (clip-02 ear
+      ruling 2026-10-05; design: "Utterance-real walls"). RED first:
+      `stream_utterance_spans` splits a stream at internal silences
+      > 3.0s (PEAK-anchored frame RMS — p90 sat inside the other voice's
+      bleed at low duty cycle; probe + duty-cycle test pinned — two
+      utterances + 26s silence → two spans; sub-3s pause → one; all-silent
+      → empty); the repair splice renders one synth row per utterance with
+      real walls (clip-02 shape: Participant B's two rows, Participant A whole, mixed
+      rows gone, interleaved wall order, no overlap/duplicate false trip);
+      a None chunk renders no row while the window still splices; walls
+      clamp inside the span; legacy `utterances: vec![]` keeps the
+      whole-row shape. GREEN: p90 RMS splitter + DECODE-ONCE text
+      assignment in run_assembly (first cut decoded per chunk — live gate
+      20261005-utterance-walls FAILED: short chunks broke the ~9-12s
+      context floor, the 172s window stuttered and stood down, the S18
+      fabrication resurfaced; decode inputs must never change),
+      `StreamDecoder::decode_utterances` in commands.rs (one full-stream
+      decode; split fires ONLY on sentence-count == chunk-count, else the
+      legacy whole-row shape — the second cut's proportional fallback
+      scattered fragments on wrong walls: gate 20261005-utterance-walls2
+      failed with a 1361s duplicate cluster, an S18 needle lost, a 4304s
+      fracture), both splices place per-utterance rows, gate replay
+      mirrors it. Verify:
+      `cargo test --lib` green; live gate re-run — S18 back to 6/6
+      needles with fabrication absent AND the clip-2 window splitting.
+      Ear-round record: clip 01 PASS (stutter-promotion class closed);
+      clip 02 FAIL = gap-erasure (rulings in
+      fixture_clips/clips_manifest.md).

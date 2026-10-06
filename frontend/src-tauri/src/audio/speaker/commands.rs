@@ -751,8 +751,8 @@ pub async fn run_diarization_for_meeting(
                     let [Some((c0, m0)), Some((c1, m1))] = input.identity else {
                         continue;
                     };
-                    let t0 = decoder.decode(&input.streams[0]);
-                    let t1 = decoder.decode(&input.streams[1]);
+                    let utts0 = decoder.decode_utterances(&input.streams[0]);
+                    let utts1 = decoder.decode_utterances(&input.streams[1]);
                     span_synthesis.push(super::run_assembly::SpanSynthesis {
                         span: input.span,
                         streams: [
@@ -760,13 +760,15 @@ pub async fn run_diarization_for_meeting(
                                 cluster: c0,
                                 margin: m0,
                                 rms_ratio: input.rms_ratio[0],
-                                text: t0,
+                                text: super::run_assembly::join_utterance_texts(&utts0),
+                                utterances: utts0,
                             },
                             super::run_assembly::StreamEvidence {
                                 cluster: c1,
                                 margin: m1,
                                 rms_ratio: input.rms_ratio[1],
-                                text: t1,
+                                text: super::run_assembly::join_utterance_texts(&utts1),
+                                utterances: utts1,
                             },
                         ],
                         covered_atoms: input.covered_atoms,
@@ -1709,8 +1711,8 @@ fn decode_span_synthesis(
             );
             continue;
         };
-        let t0 = decoder.decode(&input.streams[0]);
-        let t1 = decoder.decode(&input.streams[1]);
+        let utts0 = decoder.decode_utterances(&input.streams[0]);
+        let utts1 = decoder.decode_utterances(&input.streams[1]);
         out.push(super::run_assembly::SpanSynthesis {
             span: input.span,
             streams: [
@@ -1718,13 +1720,15 @@ fn decode_span_synthesis(
                     cluster: c0,
                     margin: m0,
                     rms_ratio: input.rms_ratio[0],
-                    text: t0,
+                    text: super::run_assembly::join_utterance_texts(&utts0),
+                    utterances: utts0,
                 },
                 super::run_assembly::StreamEvidence {
                     cluster: c1,
                     margin: m1,
                     rms_ratio: input.rms_ratio[1],
-                    text: t1,
+                    text: super::run_assembly::join_utterance_texts(&utts1),
+                    utterances: utts1,
                 },
             ],
             covered_atoms: input.covered_atoms,
@@ -1812,6 +1816,18 @@ impl StreamDecoder {
             return None;
         }
         Some(trimmed.to_string())
+    }
+
+    /// Per-utterance decode: the stream splits at internal silences >
+    /// UTTERANCE_SPLIT_SECS (clip-02 ruling — a whole-span decode erases
+    /// the gaps between a voice's utterances), each chunk decodes with the
+    /// full audit. The join feeds the acceptance gates; the utterance walls
+    /// feed the splice's per-utterance rows.
+    pub fn decode_utterances(
+        &self,
+        samples: &[f32],
+    ) -> Vec<super::run_assembly::StreamUtterance> {
+        super::run_assembly::decode_stream_utterances(samples, &|s| self.decode(s))
     }
 }
 
@@ -2003,12 +2019,14 @@ mod tests {
                     margin: 0.3,
                     rms_ratio: 1.0,
                     text: Some("alpha".into()),
+                    utterances: Vec::new(),
                 },
                 crate::audio::speaker::run_assembly::StreamEvidence {
                     cluster: 1,
                     margin: 0.2,
                     rms_ratio: 1.0,
                     text: Some("gamma".into()),
+                    utterances: Vec::new(),
                 },
             ],
             covered_atoms: vec![(0, 2000)],
@@ -2025,12 +2043,14 @@ mod tests {
                     margin: 0.3,
                     rms_ratio: 1.0,
                     text: Some("alpha".into()),
+                    utterances: Vec::new(),
                 },
                 crate::audio::speaker::run_assembly::StreamEvidence {
                     cluster: 2,
                     margin: 0.2,
                     rms_ratio: 1.0,
                     text: Some("gamma".into()),
+                    utterances: Vec::new(),
                 },
             ],
             covered_atoms: vec![(0, 2000)],

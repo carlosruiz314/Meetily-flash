@@ -1612,6 +1612,19 @@ pub struct StreamEvidence {
     /// Per-stream decode AFTER the hallucination lane: None = engine
     /// unavailable, quarantined, or guard-dropped.
     pub text: Option<String>,
+    /// Per-utterance decodes with REAL walls (seconds from the span start).
+    /// Empty = the legacy whole-span row shape (the caller fell back).
+    /// Clip-02 ear ruling (2026-10-05): a whole-row splice erases internal
+    /// silence, so a stream that spoke twice 26s apart rendered as one
+    /// continuous line — each utterance gets its own row instead.
+    pub utterances: Vec<StreamUtterance>,
+}
+
+/// One utterance chunk of a separated stream: walls relative to the span
+/// start (seconds) and the chunk's post-audit decode (None = dropped).
+pub struct StreamUtterance {
+    pub offset_s: (f64, f64),
+    pub text: Option<String>,
 }
 
 /// A stream is synthesis-eligible only if it carried at least this share of
@@ -1634,6 +1647,154 @@ pub struct SpanSynthesis {
 /// Spans longer than one Whisper window are render-hostile mega-rows and
 /// unbounded inferences — the oversized-span guard.
 pub const OVERLAP_MAX_SPAN_SECS: f64 = 30.0;
+/// Internal silence that splits a stream into utterances. Aligned with the
+/// consolidation merge cap (3s): a split row's gap is strictly larger, so
+/// consolidation can never re-merge it back into the erased-gap shape.
+pub const UTTERANCE_SPLIT_SECS: f64 = 3.0;
+
+/// Split a separated stream at internal silences strictly greater than
+/// `UTTERANCE_SPLIT_SECS`. Frame RMS against a p90-anchored threshold —
+/// separated streams are level-normalized, so an absolute floor is
+/// meaningless; the p90 frame is the speech level. Returns sub-spans in
+/// seconds relative to the stream start; an all-silent stream yields an
+/// empty vector (the caller falls back to one whole-span utterance).
+pub fn stream_utterance_spans(samples: &[f32]) -> Vec<(f64, f64)> {
+    let sr = crate::audio::speaker::run_engine::SAMPLE_RATE as f64;
+    let frame = (sr * 0.1) as usize; // 100ms non-overlapping frames
+    if samples.len() < frame {
+        return Vec::new();
+    }
+    let frame_s = frame as f64 / sr;
+    let mut rms: Vec<f32> = samples
+        .chunks_exact(frame)
+        .map(|c| (c.iter().map(|v| v * v).sum::<f32>() / frame as f32).sqrt())
+        .collect();
+    // The p90 anchor reads a sorted COPY — the frame ORDER below is the
+    // signal; sorting in place here silently turns the run scan into one
+    // tail run (the (26.0, 30.0) probe catch).
+    // The floor anchors on the stream's PEAK frame, not a percentile: the
+    // port RMS-normalizes its streams, and a voice with a low duty cycle
+    // (clip-02 stream: ~23% speech) puts the p90 INSIDE the other voice's
+    // bleed — the probe measured speech at 0.13-0.24 vs bleed <=0.02, with
+    // p90 = 0.0103. Peak * 0.25 sits between them at any duty cycle.
+    let peak = rms.iter().cloned().fold(f32::MIN, f32::max);
+    let floor = (peak * 0.25).max(1e-5);
+    let speech = |r: f32| r > floor;
+
+    let mut runs: Vec<(usize, usize)> = Vec::new();
+    let mut i = 0;
+    while i < rms.len() {
+        if !speech(rms[i]) {
+            i += 1;
+            continue;
+        }
+        let s = i;
+        while i < rms.len() && speech(rms[i]) {
+            i += 1;
+        }
+        runs.push((s, i));
+    }
+    let max_gap_frames = (UTTERANCE_SPLIT_SECS / frame_s).ceil() as usize;
+    let mut merged: Vec<(usize, usize)> = Vec::new();
+    for r in runs {
+        match merged.last_mut() {
+            Some(last) if r.0 - last.1 <= max_gap_frames => last.1 = r.1,
+            _ => merged.push(r),
+        }
+    }
+    merged
+        .into_iter()
+        .map(|(s, e)| (s as f64 * frame_s, e as f64 * frame_s))
+        .collect()
+}
+
+/// Decode a stream ONCE (full context — the probe ladder pins a ~9-12s
+/// minimum window for a clean decode; per-chunk decodes stutter where the
+/// whole-span decode is clean and stand repairs down), then SPLIT THE ROW
+/// SHAPE only when the structure supports it: the stream has ≥2 energy
+/// chunks AND the decoded sentence count matches the chunk count —
+/// sentences map 1:1 onto the walls (clip-02: "But Participant D's out all of
+/// August." / "That's out."). ANY other case — one chunk, count mismatch,
+/// a None decode — yields ONE whole-stream utterance: the exact pre-fix
+/// row shape. Forcing words onto mismatched walls scattered fragments
+/// that duplicated neighbouring rows (live gate 20261005-utterance-walls2,
+/// 1361s cluster); the aligned cases change only walls, never words.
+pub fn decode_stream_utterances(
+    samples: &[f32],
+    decode: &dyn Fn(&[f32]) -> Option<String>,
+) -> Vec<StreamUtterance> {
+    let whole = (0.0, samples.len() as f64 / crate::audio::speaker::run_engine::SAMPLE_RATE as f64);
+    let single = |t: Option<String>| vec![StreamUtterance { offset_s: whole, text: t }];
+    let Some(text) = decode(samples) else {
+        return single(None);
+    };
+    let spans = stream_utterance_spans(samples);
+    if spans.len() <= 1 {
+        return single(Some(text));
+    }
+    let sentences = split_sentences(&text);
+    if sentences.len() != spans.len() {
+        return single(Some(text));
+    }
+    spans
+        .into_iter()
+        .zip(sentences)
+        .map(|(offset_s, piece)| StreamUtterance {
+            offset_s,
+            text: piece.chars().any(|c| c.is_alphanumeric()).then_some(piece),
+        })
+        .collect()
+}
+
+/// Sentence split for utterance assignment: a run of `.?!…` terminals
+/// ("!", "..." as three dots, "?!") is ONE boundary, followed by
+/// whitespace or end-of-text. Decimal points ("3.5") do not split — the
+/// terminal run must not be followed by an alphanumeric.
+fn split_sentences(text: &str) -> Vec<String> {
+    let mut sentences: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        current.push(c);
+        if matches!(c, '.' | '!' | '?' | '…') {
+            // Consume the rest of the terminal run ("..." / "?!").
+            while chars
+                .peek()
+                .map(|n| matches!(n, '.' | '!' | '?' | '…'))
+                .unwrap_or(false)
+            {
+                current.push(chars.next().unwrap());
+            }
+            // A following alphanumeric ("3.5", "e.g.") stays inside.
+            if chars.peek().map(|n| n.is_alphanumeric()).unwrap_or(false) {
+                continue;
+            }
+            // The whitespace after the terminal belongs to the gap, not
+            // the sentence — skip it.
+            while chars.peek().map(|n| n.is_whitespace()).unwrap_or(false) {
+                chars.next();
+            }
+            sentences.push(current.clone());
+            current.clear();
+        }
+    }
+    if current.chars().any(|c| c.is_alphanumeric()) {
+        sentences.push(current);
+    }
+    sentences
+}
+
+/// The stream's joined decode — the text the acceptance gates and the
+/// census read, byte-equivalent to a whole-stream decode's text. None when
+/// every chunk abstained (the stream abstains with it).
+pub fn join_utterance_texts(utterances: &[StreamUtterance]) -> Option<String> {
+    let parts: Vec<&str> = utterances.iter().filter_map(|u| u.text.as_deref()).collect();
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" "))
+    }
+}
 /// Fraction of a row's duration that must be separation-covered for the
 /// row to be replaced whole. Mirrors run_engine's SEPARATION_ATOM_COVERAGE
 /// (atom-level bar); the row-level bar may diverge later, which is why it
@@ -1667,7 +1828,6 @@ pub fn synthesize_overlap_rows(
     {
         return None;
     }
-    let (texts, [badge0, badge1]) = vetted_stream_pair(synthesis, cluster_speaker).ok()?;
 
     let covered_time = |row: &AlignedSegment| -> i64 {
         let mut total = 0i64;
@@ -1742,37 +1902,25 @@ pub fn synthesize_overlap_rows(
         })
     };
 
-    let mut stream0 = piece(
-        texts[0].clone(),
-        span_ms.0,
-        span_ms.1,
-        &source_id,
-        Some(badge0),
-        true,
-    );
-    let mut stream1 = piece(
-        texts[1].clone(),
-        span_ms.0,
-        span_ms.1,
-        &source_id,
-        Some(badge1),
-        true,
-    );
+    let vetted = vetted_stream_pair(synthesis, cluster_speaker).ok()?;
+    let mut stream_rows = synth_rows_for_streams(synthesis, span_ms, &source_id, vetted.1);
 
-    let mut out = Vec::with_capacity(rows.len() + 4);
+    let mut out = Vec::with_capacity(rows.len() + stream_rows.len());
     let mut streams_placed = false;
 
     for (i, row) in rows.iter().enumerate() {
         match kind[i] {
             RowKind::Outside => {
                 if Some(i) == first_touched && !streams_placed {
-                    place_streams(&mut out, &mut stream0, &mut stream1, &mut streams_placed);
+                    out.append(&mut stream_rows);
+                    streams_placed = true;
                 }
                 out.push(row.clone())
             }
             RowKind::Covered => {
                 if Some(i) == first_touched && !streams_placed {
-                    place_streams(&mut out, &mut stream0, &mut stream1, &mut streams_placed);
+                    out.append(&mut stream_rows);
+                    streams_placed = true;
                 }
             }
             RowKind::Straddling => {
@@ -1816,7 +1964,8 @@ pub fn synthesize_overlap_rows(
                     out.push(h);
                 }
                 if Some(i) == first_touched && !streams_placed {
-                    place_streams(&mut out, &mut stream0, &mut stream1, &mut streams_placed);
+                    out.append(&mut stream_rows);
+                    streams_placed = true;
                 }
                 if let Some(t) = tail.filter(|_| tail_dur > 0) {
                     out.push(t);
@@ -1825,25 +1974,67 @@ pub fn synthesize_overlap_rows(
         }
     }
     if !streams_placed {
-        place_streams(&mut out, &mut stream0, &mut stream1, &mut streams_placed);
+        out.append(&mut stream_rows);
     }
     Some(out)
 }
 
-/// Insert the two stream rows once, at the span's position in time order.
-fn place_streams(
-    out: &mut Vec<AlignedSegment>,
-    stream0: &mut Option<AlignedSegment>,
-    stream1: &mut Option<AlignedSegment>,
-    placed: &mut bool,
-) {
-    if let Some(r) = stream0.take() {
-        out.push(r);
+/// One synth row per utterance with real walls (span start + offset,
+/// clamped into the span), sorted by wall with the stream index breaking
+/// ties — both streams' rows interleave in time order. The legacy shape
+/// (empty `utterances`) is one whole-span row per stream. After vetting,
+/// each stream renders at least one row: the joined `text` passed the
+/// gates, and that text is exactly the Some chunks' join. A None or
+/// punctuation-only chunk renders no row — dropped words are the
+/// word-loss class the ear round tracks, never a fabrication.
+fn synth_rows_for_streams(
+    synthesis: &SpanSynthesis,
+    span_ms: (i64, i64),
+    donor_id: &str,
+    badges: [String; 2],
+) -> Vec<AlignedSegment> {
+    let mut rows: Vec<(i64, usize, AlignedSegment)> = Vec::new();
+    for (si, st) in synthesis.streams.iter().enumerate() {
+        let pieces: Vec<(i64, i64, String)> = if st.utterances.is_empty() {
+            match st.text.as_deref() {
+                Some(t) => vec![(span_ms.0, span_ms.1, t.to_string())],
+                None => Vec::new(),
+            }
+        } else {
+            st.utterances
+                .iter()
+                .filter_map(|u| {
+                    let text = u.text.as_deref()?;
+                    let a = ((span_ms.0 as f64 + u.offset_s.0 * 1000.0) as i64)
+                        .clamp(span_ms.0, span_ms.1);
+                    let b = ((span_ms.0 as f64 + u.offset_s.1 * 1000.0) as i64)
+                        .clamp(span_ms.0, span_ms.1);
+                    (b > a).then_some((a, b, text.to_string()))
+                })
+                .collect()
+        };
+        for (a, b, text) in pieces {
+            if !text.chars().any(|c| c.is_alphanumeric()) {
+                continue;
+            }
+            rows.push((
+                a,
+                si,
+                AlignedSegment {
+                    original_id: donor_id.to_string(),
+                    text,
+                    audio_start_ms: a,
+                    audio_end_ms: b,
+                    speaker: badges[si].clone(),
+                    speaker_source: SpeakerSource::Auto,
+                    synth_atom: true,
+                    synth_parent: Some(donor_id.to_string()),
+                },
+            ));
+        }
     }
-    if let Some(r) = stream1.take() {
-        out.push(r);
-    }
-    *placed = true;
+    rows.sort_by_key(|(start, si, _)| (*start, *si));
+    rows.into_iter().map(|(_, _, r)| r).collect()
 }
 
 /// Whole-row repair splice (phrase-loop repair): every row overlapping the
@@ -1873,7 +2064,7 @@ pub fn repair_overlap_rows_checked(
         return Err("span empty or over the 30s cap");
     }
     let span_ms = ((s0 * 1000.0) as i64, (s1 * 1000.0) as i64);
-    let (texts, [badge0, badge1]) = vetted_stream_pair(synthesis, cluster_speaker)?;
+    let (_, badges) = vetted_stream_pair(synthesis, cluster_speaker)?;
     let absorbed: Vec<usize> = rows
         .iter()
         .enumerate()
@@ -1891,24 +2082,15 @@ pub fn repair_overlap_rows_checked(
         .map(|&i| &rows[i])
         .max_by_key(|r| r.audio_end_ms.min(span_ms.1) - r.audio_start_ms.max(span_ms.0))
         .ok_or("no donor row")?;
-    let make_stream = |text: String, badge: String| AlignedSegment {
-        original_id: donor.original_id.clone(),
-        text,
-        audio_start_ms: span_ms.0,
-        audio_end_ms: span_ms.1,
-        speaker: badge,
-        speaker_source: SpeakerSource::Auto,
-        synth_atom: true,
-        synth_parent: Some(donor.original_id.clone()),
-    };
-    let mut stream0 = Some(make_stream(texts[0].clone(), badge0));
-    let mut stream1 = Some(make_stream(texts[1].clone(), badge1));
+    let mut stream_rows =
+        synth_rows_for_streams(synthesis, span_ms, &donor.original_id, badges);
     let first = absorbed[0];
-    let mut out = Vec::with_capacity(rows.len() + 2);
+    let mut out = Vec::with_capacity(rows.len() + stream_rows.len());
     let mut streams_placed = false;
     for (i, row) in rows.iter().enumerate() {
         if i == first && !streams_placed {
-            place_streams(&mut out, &mut stream0, &mut stream1, &mut streams_placed);
+            out.append(&mut stream_rows);
+            streams_placed = true;
         }
         if absorbed.contains(&i) {
             continue;
@@ -1916,7 +2098,7 @@ pub fn repair_overlap_rows_checked(
         out.push(row.clone());
     }
     if !streams_placed {
-        place_streams(&mut out, &mut stream0, &mut stream1, &mut streams_placed);
+        out.append(&mut stream_rows);
     }
     Ok(out)
 }
@@ -3466,11 +3648,11 @@ mod tests {
     }
 
     fn ev(cluster: u32, margin: f32, text: Option<&str>) -> StreamEvidence {
-        StreamEvidence { cluster, margin, rms_ratio: 1.0, text: text.map(str::to_string) }
+        StreamEvidence { cluster, margin, rms_ratio: 1.0, text: text.map(str::to_string), utterances: Vec::new() }
     }
 
     fn ev_quiet(cluster: u32, margin: f32, ratio: f32) -> StreamEvidence {
-        StreamEvidence { cluster, margin, rms_ratio: ratio, text: Some("alpha".into()) }
+        StreamEvidence { cluster, margin, rms_ratio: ratio, text: Some("alpha".into()), utterances: Vec::new() }
     }
 
     fn synth(span: (f64, f64), a: StreamEvidence, b: StreamEvidence) -> SpanSynthesis {
@@ -3884,6 +4066,346 @@ mod tests {
         )];
         let s = synth((100.0, 106.0), ev(1, 0.30, Some("alpha bravo alpha bravo alpha bravo")), ev(3, 0.20, Some("beta words")));
         assert!(repair_overlap_rows(&rows, &s, &cluster_speaker).is_none());
+    }
+
+    // ---- utterance-real walls (4.3, clip-02 ear ruling 2026-10-05) ----
+
+    #[test]
+    fn utterance_decode_runs_once_per_stream() {
+        // The 172s regression: per-chunk decoding breaks the probe-ladder
+        // context floor (~9-12s minimum for a clean decode) — short chunks
+        // stutter where the whole-span decode was clean, standing repairs
+        // down. The decode must run ONCE on the full stream.
+        let sr = crate::audio::speaker::run_engine::SAMPLE_RATE as usize;
+        let mut samples = vec![0.0f32; 30 * sr];
+        for i in 0..2 * sr {
+            samples[i] = ((i as f32) * 0.05).sin() * 0.5;
+        }
+        for i in (28 * sr)..(30 * sr) {
+            samples[i] = ((i as f32) * 0.05).sin() * 0.5;
+        }
+        let calls = std::rc::Rc::new(std::cell::Cell::new(0usize));
+        let c = calls.clone();
+        let decode = move |_s: &[f32]| {
+            c.set(c.get() + 1);
+            Some("Alpha beta. Gamma delta.".to_string())
+        };
+        let utts = decode_stream_utterances(&samples, &decode);
+        assert_eq!(calls.get(), 1, "one whole-stream decode, never per chunk");
+        assert_eq!(utts.len(), 2);
+    }
+
+    #[test]
+    fn utterance_text_splits_by_sentence_when_counts_match() {
+        // Clip-02 shape: two energy chunks, two sentences — 1:1 mapping puts
+        // "That's out." in the 394s chunk, not glued to the 367s utterance.
+        let sr = crate::audio::speaker::run_engine::SAMPLE_RATE as usize;
+        let mut samples = vec![0.0f32; 30 * sr];
+        for i in 0..2 * sr {
+            samples[i] = ((i as f32) * 0.05).sin() * 0.5;
+        }
+        for i in (28 * sr)..(30 * sr) {
+            samples[i] = ((i as f32) * 0.05).sin() * 0.5;
+        }
+        let utts = decode_stream_utterances(&samples, &|_| {
+            Some("But Participant D's out all of August. That's out.".to_string())
+        });
+        assert_eq!(utts.len(), 2);
+        assert_eq!(utts[0].text.as_deref(), Some("But Participant D's out all of August."));
+        assert_eq!(utts[1].text.as_deref(), Some("That's out."));
+    }
+
+    #[test]
+    fn utterance_count_mismatch_falls_back_to_one_whole_utterance() {
+        // The 1361s lesson: forcing text onto mismatched walls scatters
+        // fragments that duplicate neighbouring rows. One sentence, two
+        // energy chunks -> NO split: one whole-span utterance holding the
+        // full decode (the exact pre-fix row shape).
+        let sr = crate::audio::speaker::run_engine::SAMPLE_RATE as usize;
+        let mut samples = vec![0.0f32; 30 * sr];
+        for i in 0..2 * sr {
+            samples[i] = ((i as f32) * 0.05).sin() * 0.5;
+        }
+        for i in (28 * sr)..(30 * sr) {
+            samples[i] = ((i as f32) * 0.05).sin() * 0.5;
+        }
+        let utts = decode_stream_utterances(&samples, &|_| {
+            Some("one two three four five six seven eight nine ten eleven twelve.".to_string())
+        });
+        assert_eq!(utts.len(), 1, "mismatch -> legacy whole-stream shape");
+        assert_eq!((utts[0].offset_s.0, utts[0].offset_s.1), (0.0, 30.0));
+        assert_eq!(
+            utts[0].text.as_deref(),
+            Some("one two three four five six seven eight nine ten eleven twelve."),
+            "the full decode is kept intact"
+        );
+    }
+
+    #[test]
+    fn utterance_split_needs_two_energy_chunks() {
+        // A short stream (0.54s — the 4304s class) has one energy chunk:
+        // no split, one whole utterance, decode input untouched.
+        let sr = crate::audio::speaker::run_engine::SAMPLE_RATE as usize;
+        let mut samples = vec![0.0f32; 5 * sr / 10];
+        for (i, s) in samples.iter_mut().enumerate() {
+            *s = ((i as f32) * 0.05).sin() * 0.5;
+        }
+        let utts = decode_stream_utterances(&samples, &|_| {
+            Some("Okay.".to_string())
+        });
+        assert_eq!(utts.len(), 1);
+        assert_eq!(utts[0].text.as_deref(), Some("Okay."));
+    }
+
+    #[test]
+    fn utterance_none_decode_marks_every_chunk_none() {
+        let sr = crate::audio::speaker::run_engine::SAMPLE_RATE as usize;
+        let mut samples = vec![0.0f32; 30 * sr];
+        for i in 0..2 * sr {
+            samples[i] = ((i as f32) * 0.05).sin() * 0.5;
+        }
+        for i in (28 * sr)..(30 * sr) {
+            samples[i] = ((i as f32) * 0.05).sin() * 0.5;
+        }
+        let utts = decode_stream_utterances(&samples, &|_| None);
+        assert_eq!(utts.len(), 1, "a None decode keeps the legacy single shape");
+        assert_eq!((utts[0].offset_s.0, utts[0].offset_s.1), (0.0, 30.0));
+        assert!(utts[0].text.is_none());
+    }
+
+    /// A stream evidence carrying per-utterance decodes; `text` is the join
+    /// the gates and census read, exactly as the decode adapter produces.
+    fn ev_utt(cluster: u32, margin: f32, utts: Vec<(f64, f64, Option<&str>)>) -> StreamEvidence {
+        let text = utts
+            .iter()
+            .filter_map(|(_, _, t)| *t)
+            .collect::<Vec<_>>()
+            .join(" ");
+        StreamEvidence {
+            cluster,
+            margin,
+            rms_ratio: 1.0,
+            text: Some(text),
+            utterances: utts
+                .into_iter()
+                .map(|(a, b, t)| StreamUtterance {
+                    offset_s: (a, b),
+                    text: t.map(str::to_string),
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn utterance_spans_survive_low_duty_cycle_with_bleed() {
+        // Probe-measured clip-02 stream (2026-10-05): speech frames at
+        // 0.13-0.24 (~23% duty), the other voice's bleed at <=0.02 between
+        // utterances. A p90 anchor sat INSIDE the bleed (0.0103) and merged
+        // the utterances away; the peak anchor must split at the real gap.
+        let sr = crate::audio::speaker::run_engine::SAMPLE_RATE as usize;
+        let frame = sr / 10;
+        let mut samples = vec![0.0f32; 30 * sr];
+        let mut set = |sec0: usize, sec1: usize, amp: f32, seed: f32| {
+            for f in (sec0 * 10)..(sec1 * 10) {
+                for k in 0..frame {
+                    let i = f * frame + k;
+                    samples[i] = ((i as f32) * 0.05 + seed).sin() * amp;
+                }
+            }
+        };
+        set(0, 2, 0.20, 0.0); // her first utterance (367.4-369.4)
+        set(9, 11, 0.015, 1.0); // bleed burst (his speech leaking)
+        set(15, 19, 0.018, 2.0); // bleed burst
+        set(27, 29, 0.15, 3.0); // her "That's out."
+        let spans = stream_utterance_spans(&samples);
+        assert_eq!(spans.len(), 2, "peak anchor ignores the bleed: {spans:?}");
+        assert!(spans[0].1 < 3.0 && spans[1].0 > 26.0, "runs at the speech: {spans:?}");
+    }
+
+    #[test]
+    fn utterance_spans_split_only_at_silences_over_three_secs() {
+        // The clip-02 shape: speech, ~26s of the other voice (silence in
+        // this stream), speech again — two utterances, not one line.
+        let sr = crate::audio::speaker::run_engine::SAMPLE_RATE as usize;
+        let mut samples = vec![0.0f32; 30 * sr];
+        for i in 0..2 * sr {
+            samples[i] = ((i as f32) * 0.05).sin() * 0.5;
+        }
+        for i in (28 * sr)..(30 * sr) {
+            samples[i] = ((i as f32) * 0.05).sin() * 0.5;
+        }
+        let spans = stream_utterance_spans(&samples);
+        assert_eq!(spans.len(), 2, "one split at the long silence: {spans:?}");
+        assert!(spans[0].0 < 0.2 && spans[0].1 < 3.0, "first utterance ends near 2s: {spans:?}");
+        assert!(spans[1].0 > 27.0 && spans[1].1 > 29.5, "second starts near 28s: {spans:?}");
+    }
+
+    #[test]
+    fn utterance_spans_keep_a_sub_three_sec_pause_whole() {
+        let sr = crate::audio::speaker::run_engine::SAMPLE_RATE as usize;
+        let mut samples = vec![0.0f32; 10 * sr];
+        for i in 0..3 * sr {
+            samples[i] = ((i as f32) * 0.05).sin() * 0.5;
+        }
+        for i in (5 * sr)..(10 * sr) {
+            samples[i] = ((i as f32) * 0.05).sin() * 0.5;
+        }
+        let spans = stream_utterance_spans(&samples);
+        assert_eq!(spans.len(), 1, "a 2s pause is one utterance: {spans:?}");
+    }
+
+    #[test]
+    fn utterance_spans_empty_for_an_all_silent_stream() {
+        let sr = crate::audio::speaker::run_engine::SAMPLE_RATE as usize;
+        let samples = vec![0.0f32; 10 * sr];
+        assert!(stream_utterance_spans(&samples).is_empty());
+    }
+
+    #[test]
+    fn utterance_spans_fall_back_to_whole_for_a_flat_noisy_stream() {
+        // A residue stream is amplified noise: flat envelope → no confident
+        // split → one whole-stream utterance (the decode's audit decides).
+        let sr = crate::audio::speaker::run_engine::SAMPLE_RATE as usize;
+        let mut samples = vec![0.0f32; 10 * sr];
+        for (i, s) in samples.iter_mut().enumerate() {
+            *s = (((i * 7919) % 2000) as f32 / 2000.0 - 0.5) * 0.002;
+        }
+        let spans = stream_utterance_spans(&samples);
+        assert_eq!(spans.len(), 1, "flat noise cannot anchor a split: {spans:?}");
+    }
+
+    #[test]
+    fn repair_splice_renders_one_row_per_utterance_with_real_walls() {
+        // Clip-02: Participant B's stream spoke at 0s and 27s of the window — the
+        // whole-row shape read "That's out" as if said right after the first
+        // utterance. Real walls: two rows for her, one for the continuous
+        // stream, mixed rows gone, rows in wall order.
+        let rows = vec![
+            seg("abs1", "mixed words one", 100_000, 115_000, "Speaker 0"),
+            seg("abs2", "mixed words two", 115_000, 130_000, "Speaker 0"),
+            seg("after", "after words stay", 200_000, 204_000, "Speaker 0"),
+        ];
+        let s = SpanSynthesis {
+            span: (100.0, 130.0),
+            streams: [
+                ev_utt(
+                    1,
+                    0.30,
+                    vec![
+                        (0.0, 2.0, Some("But Participant D's out all of August.")),
+                        (27.0, 29.5, Some("That's out.")),
+                    ],
+                ),
+                ev_utt(3, 0.20, vec![(0.0, 30.0, Some("Yeah we'll have to figure it out"))]),
+            ],
+            covered_atoms: vec![(100_000, 130_000)],
+        };
+        let out = repair_overlap_rows(&rows, &s, &cluster_speaker).expect("vetted streams");
+        let kept: Vec<&str> = out
+            .iter()
+            .filter(|r| !r.synth_atom)
+            .map(|r| r.original_id.as_str())
+            .collect();
+        assert_eq!(kept, ["after"], "absorbed rows gone, untouched rows kept: {out:?}");
+        let streams: Vec<&AlignedSegment> = out.iter().filter(|r| r.synth_atom).collect();
+        assert_eq!(streams.len(), 3, "two utterances + one continuous stream: {out:?}");
+        assert_eq!(
+            (streams[0].audio_start_ms, streams[0].audio_end_ms),
+            (100_000, 102_000),
+            "first utterance at its real wall"
+        );
+        assert_eq!(streams[0].text, "But Participant D's out all of August.");
+        assert_eq!(
+            (streams[1].audio_start_ms, streams[1].audio_end_ms),
+            (100_000, 130_000),
+            "the continuous stream keeps the whole-window row"
+        );
+        assert_eq!(
+            (streams[2].audio_start_ms, streams[2].audio_end_ms),
+            (127_000, 129_500),
+            "second utterance at its real wall — not glued to the first"
+        );
+        assert_eq!(streams[2].text, "That's out.");
+        let starts: Vec<i64> = streams.iter().map(|r| r.audio_start_ms).collect();
+        let mut sorted = starts.clone();
+        sorted.sort_unstable();
+        assert_eq!(starts, sorted, "synth rows render in wall order: {starts:?}");
+        assert!(streams.iter().all(|r| r.synth_parent.is_some()));
+    }
+
+    #[test]
+    fn repair_splice_drops_a_none_chunk_but_still_splices() {
+        let rows = vec![seg("abs1", "mixed words", 100_000, 130_000, "Speaker 0")];
+        let s = SpanSynthesis {
+            span: (100.0, 130.0),
+            streams: [
+                ev_utt(1, 0.30, vec![(0.0, 2.0, Some("alpha")), (27.0, 29.5, None)]),
+                ev_utt(3, 0.20, vec![(0.0, 30.0, Some("beta gamma"))]),
+            ],
+            covered_atoms: vec![(100_000, 130_000)],
+        };
+        let out = repair_overlap_rows(&rows, &s, &cluster_speaker)
+            .expect("joined text passes the gates; a dropped chunk is word-loss, not a veto");
+        let streams: Vec<&AlignedSegment> = out.iter().filter(|r| r.synth_atom).collect();
+        assert_eq!(streams.len(), 2, "the audit-dropped chunk renders no row: {out:?}");
+        assert!(
+            out.iter().all(|r| r.original_id != "abs1" || r.synth_atom),
+            "the mixed row is still replaced whole"
+        );
+    }
+
+    #[test]
+    fn legacy_synthesis_without_utterances_keeps_the_whole_row_shape() {
+        let rows = vec![seg("abs1", "mixed words", 100_000, 106_000, "Speaker 0")];
+        let s = synth((100.0, 106.0), ev(1, 0.30, Some("alpha beta")), ev(3, 0.20, Some("gamma delta")));
+        let out = repair_overlap_rows(&rows, &s, &cluster_speaker).expect("vetted");
+        let streams: Vec<&AlignedSegment> = out.iter().filter(|r| r.synth_atom).collect();
+        assert_eq!(streams.len(), 2);
+        assert_eq!((streams[0].audio_start_ms, streams[0].audio_end_ms), (100_000, 106_000));
+    }
+
+    #[test]
+    fn utterance_walls_clamp_inside_the_span() {
+        let rows = vec![seg("abs1", "mixed words", 100_000, 130_000, "Speaker 0")];
+        let s = SpanSynthesis {
+            span: (100.0, 130.0),
+            streams: [
+                ev_utt(1, 0.30, vec![(-1.0, 31.0, Some("alpha"))]),
+                ev_utt(3, 0.20, vec![(0.0, 30.0, Some("beta"))]),
+            ],
+            covered_atoms: vec![(100_000, 130_000)],
+        };
+        let out = repair_overlap_rows(&rows, &s, &cluster_speaker).expect("vetted");
+        let streams: Vec<&AlignedSegment> = out.iter().filter(|r| r.synth_atom).collect();
+        assert_eq!(
+            (streams[0].audio_start_ms, streams[0].audio_end_ms),
+            (100_000, 130_000),
+            "out-of-span offsets clamp to the window"
+        );
+    }
+
+    #[test]
+    fn mass_splice_also_renders_per_utterance_rows() {
+        let rows = vec![
+            seg("head", "prefix words stay here", 90_000, 105_000, "Speaker 0"),
+            seg("cov", "covered mixed words", 105_000, 125_000, "Speaker 0"),
+        ];
+        let s = SpanSynthesis {
+            span: (100.0, 130.0),
+            streams: [
+                ev_utt(1, 0.30, vec![(0.0, 2.0, Some("alpha")), (27.0, 29.5, Some("gamma"))]),
+                ev_utt(3, 0.20, vec![(0.0, 30.0, Some("beta"))]),
+            ],
+            covered_atoms: vec![(100_000, 130_000)],
+        };
+        let out = synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).expect("vetted");
+        let streams: Vec<&AlignedSegment> = out.iter().filter(|r| r.synth_atom).collect();
+        assert_eq!(streams.len(), 3, "per-utterance rows in the mass path too: {out:?}");
+        let head: Vec<&AlignedSegment> = out
+            .iter()
+            .filter(|r| r.original_id == "head" && !r.synth_atom)
+            .collect();
+        assert_eq!(head.len(), 1, "the straddler keeps its prefix piece");
     }
 
     #[test]
