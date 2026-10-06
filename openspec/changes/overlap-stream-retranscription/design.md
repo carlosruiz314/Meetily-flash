@@ -546,3 +546,84 @@ overlap-separation-prepass 3.3). The render change is pinned by the offline
 ear gate (assertion class above) + the persistence round-trip test; if apply
 touches a Tauri command surface, the smoke spec is added in that task per
 the standing rule.
+
+## Explore-stage adversarial panel (2026-10-06, 5 reviewers) — synthesis
+
+Panels over the ear-round defect classes. Full outputs in session history;
+converged findings recorded here (PII-light; evidence in
+fixture_clips/clips_manifest.md and gate-runs/).
+
+TAXONOMY (P1): the four ear classes are NOT independent — two root axes:
+(1) decode CONTENT (bleed transcription, decode hallucination, decode word
+loss); (2) splice GEOMETRY (wall placement/edge-cuts, chronology erasure).
+The 1362s boundary was one event double-counted as leak-fragment + edge
+leftover. NEW CLASS E surfaced: six sub-second synth pairs (0.4-1.0s walls)
+carry 3-14x word inflation vs their walls (one ~35 words/s vs a ~5 w/s human
+ceiling) — physically impossible decodes rendering green, marked [ok],
+never ear-checked (clips 07-12 exist for them). Also: 4 plain rows carry
+dangling synth_parent links; one synth span's parent walls don't overlap it
+at all; needle assertions are presence-only (a leak under the wrong badge
+satisfies them); the fracture/overlap scans exempt same-donor synth pairs
+BY CONSTRUCTION — partly vacuous exactly where the new machinery operates.
+
+DIALS (P2, reshaped): (1) boundary-fragment DETECTION only — never an
+automatic stand-down (the 172s window already carries a word-loss flag; one
+false trip there re-renders the attested fabrication); trim later, only
+with phrase-onset evidence. (2) word-accounting KILLED as a veto (un-fixes
+S18: 172s is word-loss-flagged TODAY; the mixture denominator is
+echo-inflated; it contradicts the clip-02 ruling) — per-wall deficit FLAG
+keyed to dial-3 data, graduated to veto per ear-ruled class. (3)
+token-timestamp walls DATA-FIRST: extraction as census-only evidence, ear
+validation of wall reliability before ANY shape change; S18 stays out of
+the first shape-changing cohort; the 4.3 alignment-or-nothing lesson needs
+an intra-row analogue. (4) edge absorption: whole-row only, a SEPARATE
+repair-chain cap constant (the mass-span 30s guard stays), sequenced after
+dial 1 detection (else the cap raise re-leaks).
+
+ARCHITECTURE (P3): dials 1/2/4 are pure run_assembly fns called by BOTH
+production census and gate — never gate-only (divergence) and never
+decoder-side (no row context). PREREQUISITE: generalize
+`decode_span_synthesis` to take the decode closure so the gate's two inline
+decode loops collapse — today any synthesis change is a three-way lockstep
+hazard. Dial 3 phase A: a NEW adapter method (byte-stable
+`transcribe_span_blocking` untouched — flipping timestamp params changes
+decode text and violates decode-inputs-never-change), sha256 cross-check in
+census, spawn_blocking preserved; walls land as optional data on
+`StreamUtterance` (ONE wall source, never two parallel representations).
+Census-replay harness: SYNTHETIC token-only fixtures in tests/ (verbatim
+text cannot enter the repo) driving the REAL pure fns; the live gate stays
+the real-model parity pin.
+
+PROCESS (P4): primary root cause — the gate validates synthesis DECISIONS,
+not render FIDELITY: needles are order-free and multiplicity-free
+(`joined.contains`), the duplicate bar is relative to the shorter row, no
+word-conservation assertion, neighbours checked only for wall overlap.
+Every fix raised trigger RECALL while the splice shape stayed lossy, so
+defects moved from trigger space into shape space. Gate recall on the ear
+round: 0/4. Fix set: multiplicity- and badge-aware needles; boundary-token
+scan (>=3 shared tokens at boundaries, dropping the 80% bar, calibrated on
+the census corpus before gating); turn-sequence fixture kind (ear-dictated
+ordered needle pairs asserted per-ROW); word accounting as visible
+near-miss flags; parent-link integrity scan. Fast-fail ladder: unit -> warm
+census replay -> span probe -> cold gate; no cold run until the probe
+reproduces the target shape. Ear protocol: agent pre-triage predicts the
+class per clip; class-stratified clip sets; every dictation becomes a
+fixture pin; NO FIX LANDS without a mechanical pin for its class.
+
+MINING (P5): class A: exactly 1 strong candidate meeting-wide (the 1362s
+5-token run across a seamless wall); class B: exactly the 6 long repair
+windows; class C: 0 measurable deficit (dropped interjection is ~4% of
+window words; 172s borderline at 0.73 due to estimator overshoot); class D:
+0 strict, but 4 dangling synth_parent rows and one span (..ddfdee) whose
+parent walls sit 11.8s away — provenance misalignment to repair. Data gaps:
+ear truth for clips 07-12 (the six sub-second pairs); census-vs-live yield
+mismatch.
+
+CONVERGED NEXT-CHANGE SHAPE (propose stage): a new change
+(`diarization-render-fidelity`) in four milestones — M1 gate fidelity
+upgrades + data repairs (dangling parents, ..ddfdee, parent-link scan,
+multiplicity/badge-aware needles, boundary-token flag, class-E words/sec
+scan) + the decode-closure generalization + census-replay harness; M2 dial 3
+phase A (token census) + ear round on clips 07-12 and wall reliability; M3
+dial 4 cap raise + whole-row edge absorption; M4 shape changes only where
+ear-ruled (dial 1 trim, dial 2 graduation, dial 3 phase B).
