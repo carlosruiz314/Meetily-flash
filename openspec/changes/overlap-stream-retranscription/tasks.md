@@ -234,6 +234,24 @@ evidence home, never repo-committed).
       byte-identical, no split) → decode-once + sentence-match-or-legacy
       + peak-anchored floor. 762 lib tests green. Ear round: clip 01
       PASS (class closed); clip 02 re-check pending on the new render.
+- [ ] 4.4 DEFERRED (user ruling 2026-10-06): token-timestamp walls inside
+      synth rows. Clip-02 residual: Participant A's whole-window row carries his
+      "Oh, that's out." textually last with no internal wall (ear: it
+      starts ~0.1-0.3s AFTER Participant B's "That's out." at 395.29 — the split
+      rows' walls carry the true order, but the flat list reads his tail
+      before her row because rows sort by start wall). The energy splitter
+      cannot cut his stream: the probe shows CONTINUOUS energy at the
+      phrase boundary (no silence to split on), and the split threshold
+      must stay above consolidation's 3s merge cap for plain rows anyway.
+      Mechanism: extend the span decode to return token timestamps (the
+      main pipeline already captures them; `transcribe_span_blocking` does
+      not) and split synth rows at intra-row token gaps >= 1.5s (synth
+      rows are consolidation-isolated —
+      `consolidation_never_merges_a_synth_row_into_a_same_speaker_neighbor`
+      — so no re-merge). RISK to resolve before wiring: whisper walls
+      under separation noise come back DTW-smeared (fixture S2/S7c
+      evidence) — validate token-wall reliability on separated streams
+      with an ear round first.
 - [ ] 4.3 original plan, kept for the record (clip-02 ear
       ruling 2026-10-05; design: "Utterance-real walls"). RED first:
       `stream_utterance_spans` splits a stream at internal silences

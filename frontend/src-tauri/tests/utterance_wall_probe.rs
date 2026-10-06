@@ -119,5 +119,19 @@ async fn probe_utterance_envelope_clip02() {
             spans.len(),
             walls.join(" ")
         );
+        // Frame-level tail trace (the attested order: Participant B ~rel 27.0,
+        // Participant A ~rel 28.0-28.4) — 100ms frames from rel 26.0s, with the
+        // candidate floors marked.
+        if i == 0 {
+            let start = (26.0 * 10.0) as usize;
+            let trace: Vec<String> = rms[start..rms.len().min(start + 36)]
+                .iter()
+                .map(|v| {
+                    let m = *v;
+                    format!("{:.3}", m)
+                })
+                .collect();
+            eprintln!("PROBE stream{} tail frames (rel 26.0s+, 100ms each): {}", i, trace.join(" "));
+        }
     }
 }
