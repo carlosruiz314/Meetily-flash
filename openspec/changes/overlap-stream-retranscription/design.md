@@ -127,6 +127,71 @@ stutter span instead of a loop row:
 Open: whether the promoted window's stream identity re-votes cleanly on
 the live layout (the probes say the voice content is there).
 
+## Utterance-real walls for synthesized stream rows (ear ruling 2026-10-05, clip-02)
+
+The clip-02 ear ruling (367.39-396.99 window): Participant B's "That's out" is
+attested at ≈394.4s (clip 0:42), but her stream row renders it attached to
+her 367s utterance — the whole-row splice erases the ~26s of internal
+silence, so two utterances read as one continuous line. Whisper's token
+ORDER inside the decode is correct (the phrase is last); the defect is the
+ROW SHAPE. (Participant A's tail "Oh, that's out" at ≈395.5s is attested real —
+near-simultaneous speech, not bleed.)
+
+Dial (general rule, never per-span): a synthesized stream row must not
+span internal silence. Split each separated stream at internal silences
+> `UTTERANCE_SPLIT_SECS` (3.0s — exactly the consolidation merge cap, so
+a split row can never be re-merged into the erased-gap shape). The
+stream decodes ONCE on its full samples — the probe ladder pins a
+~9-12s MINIMUM window for a clean decode, and the first cut (per-chunk
+decodes, live gate 20261005-utterance-walls) broke that floor: short
+chunks stuttered where the whole-span decode was clean, standing the
+S18 window down and resurfacing the fabrication. The energy splitter
+places WALLS only, and the split fires ONLY when the decoded sentence
+count matches the energy chunk count — sentences map 1:1 onto the walls
+(clip-02: "But Participant D's out all of August." / "That's out."). EVERY other
+case — one chunk, count mismatch, a None decode — keeps the legacy
+single whole-span row: the second cut's proportional word fallback
+scattered fragments onto wrong walls (live gate 20261005-utterance-walls2:
+a 1361s duplicate cluster, an S18 needle lost to a dropped tail piece,
+a 4304s fracture), so alignment-or-nothing is the rule; the mismatch
+shape is byte-identical to the pre-fix green run. Gates are unchanged:
+accept/reject is decided on the whole-stream decode text — identical
+gate semantics and decode inputs to the pre-fix green run; only aligned
+cases change row shape. A degenerate envelope (all-silent stream, flat
+RMS) falls back to one whole-span utterance — today's shape.
+
+Boundary placement: the splitter and the decode-once/assignment helper
+are pure domain code in `run_assembly` (`stream_utterance_spans` — frame
+RMS vs a PEAK-anchored threshold; the first cut's p90 anchor sat INSIDE
+the other voice's bleed when the voice's duty cycle was low — the
+utterance_wall_probe measured clip-02 stream0 at speech 0.13-0.24, bleed
+<=0.02, p90 0.0103, so p90*0.15 merged the utterances away and gate v4
+came back byte-identical to the pre-fix render; peak*0.25 splits at the
+real gap — probe-verified 2 chunks for her stream, 1 for his;
+`decode_stream_utterances` — one decode call + text assignment); the
+adapter supplies only the engine closure (`StreamDecoder::
+decode_utterances` in `commands.rs`) and the gate replay mirrors it.
+First-cut live-gate regressions recorded: per-chunk decode (context
+floor) → decode-once; tail truncation on sub-frame spans (changed decode
+inputs on 0.5-0.7s spans → a duplicate cluster and a fracture) → decode
+inputs never change. `StreamEvidence` carries `utterances: Vec<StreamUtterance>`
+(offsets + text; empty = legacy single-row shape so existing
+constructors and the census keep working; `text` stays the joined decode
+the gates and CENSUS read). Consumers verified row-generic: persist binds
+per row, duplicate/overlap scans exempt synth pairs sharing the donor id
+(group level), the duplicate token scan skips overlapping spans, and
+consolidation never merges >3s gaps. Interleaved walls from the two
+streams render in time order — the same shape the S18 window already
+persists. Residual accepted: name garbles under separation ("Participant D's" →
+"Travis") stay a decode-quality class for the ear round.
+
+Adversarial tests (RED before GREEN): clip-02 shape (two utterances +
+26s silence → two rows with real walls, mixed rows gone); sub-3s pause
+stays one row; a None chunk renders no row while the window still
+splices; utterance walls clamp inside the span; both streams
+multi-utterance interleave in wall order; the S18 fixture replay stays
+6/6 needles with fabrication absent (live gate).
+
 ## Explore-cycle findings (2026-09-29, pre-apply audit)
 
 1. **Whisper seam resolved to a concrete handle**: `whisper_engine::commands::
