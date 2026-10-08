@@ -1,0 +1,33 @@
+{
+  "id": "split_straddling_row_proportional",
+  "note": "PURELY SYNTHETIC. Regression pin for the 2026-10-05 proportional-scatter burn: a straddling row splits at the span walls with the head taking the first proportional share of words and the tail the remainder — piece texts are pinned byte-exact, so any scatter or drop fails in milliseconds. No word is ever lost or invented.",
+  "rows": [
+    { "id": "src1", "text": "alpha beta gamma delta epsilon zeta", "start_ms": 0, "end_ms": 12000, "speaker": "Speaker 0" }
+  ],
+  "span_s": [4.0, 8.0],
+  "covered_atoms_ms": [[4000, 8000]],
+  "identity": [[1, 0.30], [3, 0.20]],
+  "rms_ratio": [0.6, 0.4],
+  "streams": [
+    {
+      "tone_windows_ms": [[0, 4000]],
+      "decode_text": "one two"
+    },
+    {
+      "tone_windows_ms": [[0, 4000]],
+      "decode_text": "three four"
+    }
+  ],
+  "manual_spans_ms": [],
+  "label_map": { "1": "userA", "3": "userC" },
+  "expected": {
+    "mode": "replace",
+    "rows": [
+      { "id": "src1", "text": "alpha beta gamma", "start_ms": 0, "end_ms": 4000, "speaker": "Speaker 0", "synth_atom": false },
+      { "id": "src1", "text": "one two", "start_ms": 4000, "end_ms": 8000, "speaker": "userA", "synth_atom": true },
+      { "id": "src1", "text": "three four", "start_ms": 4000, "end_ms": 8000, "speaker": "userC", "synth_atom": true },
+      { "id": "src1", "text": "zeta", "start_ms": 8000, "end_ms": 12000, "speaker": "Speaker 0", "synth_atom": false }
+    ],
+    "wall_tol_ms": 0
+  }
+}

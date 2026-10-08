@@ -870,6 +870,7 @@ pub fn overlap_spans(frames: &[FrameMasses], frame_shift: f64) -> Vec<(f64, f64)
 /// and the span's separation-covered atoms (the pure splice's row-coverage
 /// evidence). Stream order is the port's array order — it carries no
 /// meaning; the caller owns the index→stream binding.
+#[derive(Clone)]
 pub struct SpanSynthesisInput {
     pub span: (f64, f64),
     /// Per-stream span-level identity: None when the stream's span slice is
@@ -903,6 +904,17 @@ pub fn separated_stream_voice_votes(
     let rows = wall_vote_token_streams(transcripts);
     let sr = SAMPLE_RATE as f64;
     for &(s0, s1) in spans {
+        // Class E duration floor (diarization-render-fidelity 2.2): the
+        // stand-down fires BEFORE the port — the floor exists to save the
+        // GPU work it gates, and a stood-down span renders the byte-
+        // identical mixture rows, whose text already carries the words.
+        let span_dur = s1 - s0;
+        if span_dur < crate::audio::speaker::run_assembly::MIN_SYNTH_DURATION_SECS {
+            log::warn!(
+                "CENSUS-STANDDOWN span=[{s0:.2},{s1:.2}] floor=MIN_SYNTH_DURATION_SECS dur={span_dur:.2}s"
+            );
+            continue;
+        }
         let streams = match port.separate(samples, (s0, s1)) {
             Ok(v) => v,
             Err(e) => {
@@ -1509,6 +1521,84 @@ mod tests {
         assert_eq!(span_inputs[0].identity[0].map(|(c, _)| c), Some(7));
         assert_eq!(span_inputs[0].identity[1].map(|(c, _)| c), Some(9));
         assert_eq!(span_inputs[0].rms_ratio, [0.7, 0.3]);
+    }
+
+    #[test]
+    fn duration_floor_stands_down_before_separation() {
+        // Class E floor (diarization-render-fidelity 2.2): a below-floor
+        // span must never reach the separator — the floor exists to save
+        // the GPU work it gates, and the stood-down span renders the
+        // mixture rows it would have replaced.
+        use std::sync::Mutex;
+
+        struct CountingSeparator {
+            calls: Mutex<Vec<(f64, f64)>>,
+        }
+        impl VoiceSeparationPort for CountingSeparator {
+            fn separate(
+                &self,
+                _samples: &[f32],
+                span_secs: (f64, f64),
+            ) -> anyhow::Result<Vec<SeparatedStream>> {
+                self.calls.lock().unwrap().push(span_secs);
+                Ok(vec![
+                    SeparatedStream {
+                        samples: vec![0.0; SAMPLE_RATE as usize],
+                        pre_rms_ratio: 0.5,
+                    };
+                    2
+                ])
+            }
+        }
+        let sep = CountingSeparator {
+            calls: Mutex::new(Vec::new()),
+        };
+        let sr = SAMPLE_RATE as usize;
+        let rows = vec![transcript_input(
+            "a",
+            "fee fi",
+            1_200,
+            1_800,
+            vec![token_word("fee", 1_200, 1_500), token_word("fi", 1_500, 1_800)],
+        )];
+        let embed = |a: &[f32]| FakeVoiceprint.extract(a, SAMPLE_RATE).ok().map(|e| e.0);
+        // The short span COVERS the row's atom: the stood-down must leave
+        // the atom's attribution untouched — no separated vote, no covered
+        // entry — so the mixture channel keeps the vote (the render stays
+        // byte-identical to today's mixture render).
+        let (votes, covered, span_inputs) = separated_stream_voice_votes(
+            &vec![0.0f32; 5 * sr],
+            &rows,
+            &embed,
+            &[(7u32, onehot(0)), (9u32, onehot(1))],
+            &[("refa".to_string(), onehot(0)), ("refb".to_string(), onehot(1))],
+            &sep,
+            &[(1.0, 1.9), (2.0, 4.5)], // short stands down; long proceeds
+        );
+        assert_eq!(
+            &*sep.calls.lock().unwrap(),
+            &[(2.0, 4.5)],
+            "below-floor span must never reach the separator"
+        );
+        assert!(
+            span_inputs.iter().all(|i| i.span.0 >= 2.0),
+            "stood-down span produces no synthesis input"
+        );
+        assert!(
+            !covered.contains(&(1_200, 1_800)),
+            "a stood-down span must not mark its atoms separation-covered: {covered:?}"
+        );
+        assert!(
+            !votes.iter().any(|&(a, b, _)| a == 1.2 && b == 1.8),
+            "a stood-down span must not cast separated votes: {votes:?}"
+        );
+        // The mixture vote for the atom survives the merge untouched.
+        let merged = merge_wall_and_separated(vec![(1.2, 1.8, 9u32)], Some((votes, covered)));
+        assert_eq!(
+            merged,
+            vec![(1.2, 1.8, 9)],
+            "mixture attribution survives a stood-down span"
+        );
     }
 
     #[test]

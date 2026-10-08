@@ -1,0 +1,24 @@
+{
+  "id": "degrade_impossible_rate",
+  "note": "PURELY SYNTHETIC (invented template sentence). Class E backstop at the splice: a fluent decode at ~9.4 words/s (15 words) against a 1.6s span exceeds MAX_STREAM_WORDS_PER_SEC (8) — the span degrades byte-identically to its mixture rows. The span is ABOVE the duration floor (1.5s) so this fixture pins the RATE backstop specifically, and the veto field pins that the RATE gate (not any earlier check) is what fired.",
+  "rows": [
+    { "id": "src1", "text": "short jumble", "start_ms": 1000, "end_ms": 2600, "speaker": "Speaker 0" }
+  ],
+  "span_s": [1.0, 2.6],
+  "covered_atoms_ms": [[1000, 2600]],
+  "identity": [[1, 0.30], [3, 0.20]],
+  "rms_ratio": [0.6, 0.4],
+  "streams": [
+    {
+      "tone_windows_ms": [[0, 1600]],
+      "decode_text": "the meeting will now come to order and the first agenda item is budget review"
+    },
+    {
+      "tone_windows_ms": [[0, 1600]],
+      "decode_text": "gamma."
+    }
+  ],
+  "manual_spans_ms": [],
+  "label_map": { "1": "userA", "3": "userC" },
+  "expected": { "mode": "degrade", "veto": "a stream decode exceeds the words-per-second ceiling" }
+}

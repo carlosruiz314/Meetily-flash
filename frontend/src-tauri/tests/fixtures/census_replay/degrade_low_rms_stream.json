@@ -1,0 +1,24 @@
+{
+  "id": "degrade_low_rms_stream",
+  "note": "PURELY SYNTHETIC. Regression pin for the 2026-10-05 p90-floor burn: a stream whose PRE-normalization RMS sits far under the eligibility floor is amplified residue, not a voice (an energy floor measured after normalization sits inside the other voice's bleed and lets this synthesize). The span degrades byte-identically.",
+  "rows": [
+    { "id": "src1", "text": "mixture jumble here", "start_ms": 2000, "end_ms": 10000, "speaker": "Speaker 0" }
+  ],
+  "span_s": [2.0, 10.0],
+  "covered_atoms_ms": [[2000, 10000]],
+  "identity": [[1, 0.30], [3, 0.20]],
+  "rms_ratio": [0.05, 0.4],
+  "streams": [
+    {
+      "tone_windows_ms": [[0, 8000]],
+      "decode_text": "Alpha words."
+    },
+    {
+      "tone_windows_ms": [[0, 8000]],
+      "decode_text": "Gamma words."
+    }
+  ],
+  "manual_spans_ms": [],
+  "label_map": { "1": "userA", "3": "userC" },
+  "expected": { "mode": "degrade", "veto": "a stream RMS is under the eligibility floor" }
+}

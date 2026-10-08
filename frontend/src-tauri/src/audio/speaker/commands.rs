@@ -747,33 +747,9 @@ pub async fn run_diarization_for_meeting(
                 // the WHISPER_ENGINE static; an unresolved language, a
                 // missing engine/model, or flagged text degrades that stream.
                 let decoder = StreamDecoder::from_static();
-                for input in synthesis_inputs {
-                    let [Some((c0, m0)), Some((c1, m1))] = input.identity else {
-                        continue;
-                    };
-                    let utts0 = decoder.decode_utterances(&input.streams[0]);
-                    let utts1 = decoder.decode_utterances(&input.streams[1]);
-                    span_synthesis.push(super::run_assembly::SpanSynthesis {
-                        span: input.span,
-                        streams: [
-                            super::run_assembly::StreamEvidence {
-                                cluster: c0,
-                                margin: m0,
-                                rms_ratio: input.rms_ratio[0],
-                                text: super::run_assembly::join_utterance_texts(&utts0),
-                                utterances: utts0,
-                            },
-                            super::run_assembly::StreamEvidence {
-                                cluster: c1,
-                                margin: m1,
-                                rms_ratio: input.rms_ratio[1],
-                                text: super::run_assembly::join_utterance_texts(&utts1),
-                                utterances: utts1,
-                            },
-                        ],
-                        covered_atoms: input.covered_atoms,
-                    });
-                }
+                span_synthesis.extend(decode_span_synthesis(synthesis_inputs, &|s: &[f32]| {
+                    decoder.decode_utterances(s)
+                }));
                 if !span_synthesis.is_empty() {
                     log::warn!(
                         "DIARIZATION: {} overlap span(s) carry both-stream synthesis candidates",
@@ -788,6 +764,9 @@ pub async fn run_diarization_for_meeting(
             // minimum).
             let stutter_seeds: Vec<(i64, i64)> = span_synthesis
                 .iter()
+                // Class-E fiction is not stutter evidence (cold-gate
+                // finding 2026-10-07): a rate-floor decode seeds nothing.
+                .filter(|s| !super::run_assembly::is_class_e_fiction(s))
                 .filter(|s| {
                     s.streams.iter().any(|st| {
                         st.text
@@ -1124,7 +1103,7 @@ pub async fn run_diarization_for_meeting(
                     &repair_spans,
                 );
                 let decoder = StreamDecoder::from_static();
-                decode_span_synthesis(inputs, &decoder)
+                decode_span_synthesis(inputs, &|s: &[f32]| decoder.decode_utterances(s))
             },
         )
         .await
@@ -1149,6 +1128,81 @@ pub async fn run_diarization_for_meeting(
             );
         }
         aligned = next;
+    }
+    // Fidelity census (diarization-render-fidelity 3.3): the same pure
+    // scans the ear-truth gate replays, over the final pre-persist render.
+    // Findings log token-only — ids, walls, chunk lengths; never text.
+    {
+        #[derive(sqlx::FromRow)]
+        struct SrcWall {
+            id: String,
+            s: Option<f64>,
+            e: Option<f64>,
+        }
+        let srcs = sqlx::query_as::<_, SrcWall>(
+            "SELECT id, audio_start_time AS s, audio_end_time AS e \
+             FROM transcript_sources WHERE meeting_id = ?",
+        )
+        .bind(meeting_id)
+        .fetch_all(pool)
+        .await;
+        let source_walls: Option<Vec<(String, i64, i64)>> = match srcs {
+            Ok(srcs) => Some(
+                srcs.iter()
+                    .filter_map(|r| {
+                        let s = r.s?;
+                        let e = r.e?;
+                        Some((r.id.clone(), (s * 1000.0) as i64, (e * 1000.0) as i64))
+                    })
+                    .collect(),
+            ),
+            Err(e) => {
+                // An empty wall list would turn every link into a false
+                // Dangling — the census abstains loudly instead of lying.
+                log::warn!(
+                    "CENSUS-PARENT: source wall load failed ({e}) — parent-link census abstains"
+                );
+                None
+            }
+        };
+        let leaks = crate::audio::speaker::run_assembly::scan_boundary_leaks(
+            &aligned,
+            crate::audio::speaker::run_assembly::BOUNDARY_LEAK_MIN_CHUNK,
+        );
+        for f in &leaks {
+            log::warn!(
+                "CENSUS-LEAK synth_row={} synth=[{:.2},{:.2}] neighbour=[{:.2},{:.2}] dir={} chunk_len={}",
+                f.synth_row_id,
+                f.synth_span_ms.0 as f64 / 1000.0,
+                f.synth_span_ms.1 as f64 / 1000.0,
+                f.neighbour_span_ms.0 as f64 / 1000.0,
+                f.neighbour_span_ms.1 as f64 / 1000.0,
+                f.direction,
+                f.chunk_len
+            );
+        }
+        let synth_rows = aligned.iter().filter(|r| r.synth_atom).count();
+        log::warn!(
+            "CENSUS-LEAK-SUMMARY synth_rows={} flagged={}",
+            synth_rows,
+            leaks.len()
+        );
+        if let Some(source_walls) = &source_walls {
+            for f in crate::audio::speaker::run_assembly::scan_parent_links(&aligned, source_walls)
+            {
+                log::warn!(
+                    "CENSUS-PARENT row={} parent={} row=[{:.2},{:.2}] parent_span={} defect={:?}",
+                    f.row_id,
+                    f.parent_id,
+                    f.row_span_ms.0 as f64 / 1000.0,
+                    f.row_span_ms.1 as f64 / 1000.0,
+                    f.parent_span_ms
+                        .map(|(a, b)| format!("[{:.2},{:.2}]", a as f64 / 1000.0, b as f64 / 1000.0))
+                        .unwrap_or_else(|| "absent".to_string()),
+                    f.defect
+                );
+            }
+        }
     }
     let segments_labeled =
         SpeakerRepository::persist_regenerated_rendering(pool, meeting_id, aligned, manual_rederive)
@@ -1693,9 +1747,12 @@ fn resolve_label(speaker: &str, label_map: &std::collections::HashMap<u32, Strin
 /// Decode per-stream synthesis inputs into SpanSynthesis candidates. The
 /// identity pair must be both-streams-decisive; a stream that fails the
 /// decoder's gates keeps None text and the splice's vetting handles it.
-fn decode_span_synthesis(
+/// The decode arrives as the utterance-decode closure (diarization-render-
+/// fidelity 1.1): production binds `StreamDecoder::decode_utterances`, the
+/// gate replay binds its own engine closure — one entry, no mirror loops.
+pub fn decode_span_synthesis(
     inputs: Vec<super::run_engine::SpanSynthesisInput>,
-    decoder: &StreamDecoder,
+    decode_utterances: &dyn Fn(&[f32]) -> Vec<super::run_assembly::StreamUtterance>,
 ) -> Vec<super::run_assembly::SpanSynthesis> {
     let mut out = Vec::new();
     for input in inputs {
@@ -1704,15 +1761,15 @@ fn decode_span_synthesis(
             // here never reaches the splice — log the identity pair so the
             // run record names the gate instead of a silent count.
             log::warn!(
-                "DIARIZATION: repair window [{:.2}-{:.2}] degraded at identity (not both-streams decisive): {:?}",
+                "DIARIZATION: synthesis span [{:.2}-{:.2}] degraded at identity (not both-streams decisive): {:?}",
                 input.span.0,
                 input.span.1,
                 input.identity
             );
             continue;
         };
-        let utts0 = decoder.decode_utterances(&input.streams[0]);
-        let utts1 = decoder.decode_utterances(&input.streams[1]);
+        let utts0 = decode_utterances(&input.streams[0]);
+        let utts1 = decode_utterances(&input.streams[1]);
         out.push(super::run_assembly::SpanSynthesis {
             span: input.span,
             streams: [
@@ -2001,6 +2058,63 @@ mod tests {
         .await
         .expect("join");
         assert_eq!(out, None, "no model loaded → degrade, not error");
+    }
+
+    // ── Synthesis entry contract (diarization-render-fidelity 1.1): the
+    // entry takes the utterance-decode closure, not a concrete decoder —
+    // the gate replay must drive the SAME entry with its own closure
+    // instead of re-implementing the decode loop. ──
+    #[test]
+    fn decode_span_synthesis_drives_the_closure_once_per_stream_and_keeps_identity() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use crate::audio::speaker::run_assembly::StreamUtterance;
+        use crate::audio::speaker::run_engine::SpanSynthesisInput;
+
+        let decisive = SpanSynthesisInput {
+            span: (10.0, 14.0),
+            identity: [Some((3, 0.81)), Some((5, 0.77))],
+            rms_ratio: [0.4, 0.6],
+            streams: [vec![0.1f32; 1600], vec![0.2f32; 3200]],
+            covered_atoms: vec![(10_000, 14_000)],
+        };
+        // A stream with no identity never reaches the decoder.
+        let undecided = SpanSynthesisInput {
+            span: (20.0, 22.0),
+            identity: [Some((3, 0.9)), None],
+            rms_ratio: [0.5, 0.5],
+            streams: [vec![0.0f32; 800], vec![0.0f32; 800]],
+            covered_atoms: vec![(20_000, 22_000)],
+        };
+
+        let calls: Rc<RefCell<Vec<usize>>> = Rc::new(RefCell::new(Vec::new()));
+        let calls_c = calls.clone();
+        let fake_decode = move |samples: &[f32]| -> Vec<StreamUtterance> {
+            calls_c.borrow_mut().push(samples.len());
+            vec![StreamUtterance {
+                offset_s: (0.0, samples.len() as f64 / 16_000.0),
+                text: Some(format!("{} words", samples.len())),
+            }]
+        };
+
+        let out = decode_span_synthesis(vec![decisive, undecided], &fake_decode);
+
+        // One call per stream of the decisive input only, in stream order.
+        assert_eq!(&*calls.borrow(), &[1600, 3200]);
+        assert_eq!(out.len(), 1);
+        let s = &out[0];
+        assert_eq!(s.span, (10.0, 14.0));
+        assert_eq!(s.streams[0].cluster, 3);
+        assert_eq!(s.streams[0].margin, 0.81);
+        assert_eq!(s.streams[0].rms_ratio, 0.4);
+        assert_eq!(s.streams[1].cluster, 5);
+        assert_eq!(s.streams[1].margin, 0.77);
+        assert_eq!(s.streams[1].rms_ratio, 0.6);
+        // Text is the joined utterances; the walls feed the splice.
+        assert_eq!(s.streams[0].text.as_deref(), Some("1600 words"));
+        assert_eq!(s.streams[0].utterances.len(), 1);
+        assert_eq!(s.covered_atoms, vec![(10_000, 14_000)]);
     }
 
     #[test]

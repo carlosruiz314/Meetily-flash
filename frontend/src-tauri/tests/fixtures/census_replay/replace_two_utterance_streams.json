@@ -1,0 +1,33 @@
+{
+  "id": "replace_two_utterance_streams",
+  "note": "PURELY SYNTHETIC. Happy path: one whole-covered row replaced by per-utterance stream rows. The decode-once contract is pinned here: the fake decoder must see exactly one call per stream with the FULL stream samples byte-identical (a per-chunk decode re-slice — the 2026-10-05 burned design — fails this fixture in milliseconds).",
+  "rows": [
+    { "id": "src1", "text": "jumbled interleave of two voices", "start_ms": 1000, "end_ms": 11000, "speaker": "Speaker 0" }
+  ],
+  "span_s": [1.0, 11.0],
+  "covered_atoms_ms": [[1000, 11000]],
+  "identity": [[1, 0.30], [3, 0.20]],
+  "rms_ratio": [0.6, 0.4],
+  "streams": [
+    {
+      "tone_windows_ms": [[0, 3000], [7000, 10000]],
+      "decode_text": "Alpha sentence one. Beta sentence two."
+    },
+    {
+      "tone_windows_ms": [[0, 10000]],
+      "decode_text": "Gamma sentence."
+    }
+  ],
+  "manual_spans_ms": [],
+  "label_map": { "1": "userA", "3": "userC" },
+  "expected": {
+    "mode": "replace",
+    "rows": [
+      { "id": "src1", "text": "Alpha sentence one.", "start_ms": 1000, "end_ms": 4000, "speaker": "userA", "synth_atom": true },
+      { "id": "src1", "text": "Gamma sentence.", "start_ms": 1000, "end_ms": 11000, "speaker": "userC", "synth_atom": true },
+      { "id": "src1", "text": "Beta sentence two.", "start_ms": 8000, "end_ms": 11000, "speaker": "userA", "synth_atom": true }
+    ],
+    "wall_tol_ms": 350,
+    "veto": null
+  }
+}
