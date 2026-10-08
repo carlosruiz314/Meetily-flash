@@ -115,6 +115,21 @@ pub struct StrictSegment {
     pub token_timestamps: Option<String>,
 }
 
+/// One token-census segment (diarization-render-fidelity 6.1, phase A):
+/// token-timestamp-chunked decode with span-relative token walls.
+#[derive(Debug, Clone)]
+pub struct SpanTokenSegment {
+    /// The segment's decoded text (the token-timestamp chunking's text —
+    /// EXPECTED to differ from the production decode; see the sibling's
+    /// doc). Never persisted in phase A; the census records its sha256.
+    pub text: String,
+    /// Span-relative token-derived walls; (0, 0) when the segment carried
+    /// no usable token timestamps.
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub words: Vec<TokenWord>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModelStatus {
     Available,
@@ -779,6 +794,66 @@ impl WhisperEngine {
             None
         } else {
             Some(cleaned_result)
+        }
+    }
+
+    /// Token-census sibling of `transcribe_span_blocking` (diarization-
+    /// render-fidelity 6.1, PHASE A ONLY — data, never consumed): the same
+    /// strict blocking profile with token-timestamp chunking ENABLED
+    /// (`no_timestamps(false)`). That flip BY DESIGN changes whisper.cpp's
+    /// chunking, so this decode's text is EXPECTED to differ from the
+    /// production decode's — the census records both texts' sha256 as a
+    /// divergence NOTE and no equality test exists or may exist. Walls are
+    /// span-relative ms. spawn_blocking-only like the production decode.
+    pub fn transcribe_span_blocking_tokens(
+        &self,
+        audio_data: Vec<f32>,
+        pinned_language: &str,
+    ) -> Option<Vec<SpanTokenSegment>> {
+        let ctx_lock = self.current_context.blocking_read();
+        let ctx = ctx_lock.as_ref()?;
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 5 });
+        apply_strict_params(&mut params, pinned_language);
+        params.set_no_timestamps(false); // the census's divergence source (see doc)
+        let audio_ctx = ((audio_data.len() / 320) + 32).min(1500) as i32;
+        params.set_audio_ctx(audio_ctx);
+
+        let (num_segments, state) = {
+            let mut state = ctx.create_state().ok()?;
+            state.full(params, &audio_data).ok()?;
+            let num_segments = state.full_n_segments();
+            (num_segments, state)
+        };
+        let mut out = Vec::new();
+        for i in 0..num_segments {
+            let Some(segment) = state.get_segment(i) else {
+                continue;
+            };
+            let Ok(raw) = segment.to_str_lossy() else {
+                continue;
+            };
+            let text = crate::audio::speaker::token_timestamps::strip_eot_markers(&raw);
+            if text.is_empty() {
+                continue;
+            }
+            let words = segment_token_words(&state, i, 0);
+            let (start_ms, end_ms) = match (words.first(), words.last()) {
+                (Some(first), Some(last)) if first.start_ms < last.end_ms => {
+                    (first.start_ms, last.end_ms)
+                }
+                _ => (0i64, 0i64), // no usable token walls: census records zeros
+            };
+            out.push(SpanTokenSegment {
+                text,
+                start_ms,
+                end_ms,
+                words,
+            });
+        }
+        if out.is_empty() {
+            None
+        } else {
+            Some(out)
         }
     }
 
@@ -1518,3 +1593,57 @@ pub fn transcribe_raw(model_path: &std::path::Path, audio: &[f32], flash_attn: b
     Ok(result)
 }
 
+
+#[cfg(test)]
+mod params_structure_tests {
+    // D5 phase A (diarization-render-fidelity 6.1): the production span
+    // decode's byte-stability is pinned STRUCTURALLY — flipping the
+    // timestamp params changes whisper.cpp chunking, which would silently
+    // change every stream decode's text (decode-inputs-never-change). No
+    // model-backed equality test exists or may exist between the two
+    // decodes: the sibling's text differs BY DESIGN.
+    #[test]
+    fn transcribe_span_blocking_keeps_no_timestamps_true() {
+        let src = include_str!("whisper_engine.rs");
+        // The shared strict profile owns the posture: no_timestamps(true)
+        // is the same chunking posture as the batch decode.
+        let profile_start = src
+            .find("fn apply_strict_params(")
+            .expect("strict params profile present");
+        let profile = &src[profile_start..];
+        let profile = &profile[..profile.find("\n}").expect("profile bounds")];
+        assert!(
+            profile.contains("set_no_timestamps(true)"),
+            "the strict profile must keep no_timestamps(true) — flipping it changes whisper.cpp chunking"
+        );
+        // The production span decode routes through the profile and never
+        // flips timestamps locally.
+        let fn_start = src
+            .find("pub fn transcribe_span_blocking(")
+            .expect("production span decode present");
+        let body = &src[fn_start..];
+        let body = &body[..body
+            [10..]
+            .find("\n    pub ")
+            .map(|i| i + 10)
+            .expect("function bounds")];
+        assert!(
+            body.contains("apply_strict_params("),
+            "the production span decode must use the shared strict profile"
+        );
+        assert!(
+            !body.contains("set_no_timestamps("),
+            "the production span decode must not touch the timestamp posture"
+        );
+        // The sibling's flip is pinned too: census-only, by design.
+        let sib = src
+            .find("pub fn transcribe_span_blocking_tokens(")
+            .expect("token-census sibling present (diarization-render-fidelity 6.1)");
+        let sib_body = &src[sib..];
+        let sib_body = &sib_body[..sib_body.find("\n    pub async fn").unwrap_or(sib_body.len())];
+        assert!(
+            sib_body.contains("set_no_timestamps(false)"),
+            "the sibling flips timestamps LOCALLY — that flip is the census's recorded divergence source"
+        );
+    }
+}

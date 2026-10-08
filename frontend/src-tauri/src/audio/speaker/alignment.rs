@@ -1219,7 +1219,7 @@ fn pin_rescue_seams(
 
 /// Normalized token list: detokenize → lowercase → non-alphanumeric → space →
 /// collapse whitespace.
-fn normalized_tokens(text: &str) -> Vec<String> {
+pub(crate) fn normalized_tokens(text: &str) -> Vec<String> {
     crate::audio::speaker::turns::detokenize(text)
         .to_lowercase()
         .chars()

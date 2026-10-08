@@ -52,10 +52,13 @@ test.describe('speaker-diarization smoke (section 15 backfill)', () => {
     await expect(page.getByText('Detected 3 speakers')).toBeVisible({ timeout: 10_000 });
   });
 
-  // overlap-stream-retranscription 3.6: the new persisted row shape — two
-  // per-voice rows at IDENTICAL walls (the synthesis pair) — must render
-  // under its own badges and survive the post-run refetch (the backend now
-  // persists exactly this shape; the mock fixture mirrors it).
+  // overlap-stream-retranscription 3.6: the persisted row shape when
+  // synthesis is ACCEPTED — two per-voice rows at IDENTICAL walls (the
+  // synthesis pair) — must render under its own badges and survive the
+  // post-run refetch (the backend persists exactly this shape; the mock
+  // fixture mirrors it). Synthesis is conditional since
+  // diarization-render-fidelity: the class-E floors stand down sub-second
+  // spans and every guard degrades byte-identically (15.3f below).
   test('15.3e — overlap-stream pair renders two distinct-badge rows at the same walls and survives refetch', async ({ page }) => {
     await bootstrap(page, [
       { id: 't1', text: 'Mixture jumble line.', timestamp: '00:00:10', audio_start_time: 10, speaker: 'Speaker 0' },
@@ -85,6 +88,42 @@ test.describe('speaker-diarization smoke (section 15 backfill)', () => {
     await expect(page.getByText('Detected 3 speakers')).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText('Alpha stream sentence.')).toBeVisible();
     await expect(page.getByText('Beta stream interjection.')).toBeVisible();
+  });
+
+  // diarization-render-fidelity 2.4: the class-E floors make synthesis
+  // CONDITIONAL — a span below MIN_SYNTH_DURATION_SECS (1.5s) stands down
+  // before separation, and the backend persists NO synth row for it: the
+  // real words already live in the mixture rows the span would have
+  // replaced. The mock fixture mirrors that persist shape (mixture rows
+  // only, no pair at the span's walls) — the post-refetch render must show
+  // the mixture rows, not an empty state or a fabricated pair.
+  test('15.3f — below-floor span persists no synth row: mixture rows survive the post-run refetch', async ({ page }) => {
+    await bootstrap(page, [
+      { id: 't1', text: 'Sub-second mixture jumble.', timestamp: '00:00:10', audio_start_time: 10, speaker: 'Speaker 0' },
+    ]);
+
+    const speakersBtn = page.getByTitle('Re-run speaker detection on this meeting');
+    await expect(speakersBtn).toBeVisible({ timeout: 20_000 });
+    await speakersBtn.click();
+    await expect.poll(async () => {
+      const calls = await speakerCalls(page);
+      return calls.find((c) => c.cmd === 'reset_speaker_labels') ?? null;
+    }, { timeout: 10_000 }).toEqual({ cmd: 'reset_speaker_labels', meetingId: 'meet-summary-001' });
+
+    // Refetch on completion: the stood-down span's mixture row must survive
+    // it, and no per-voice pair may appear at its walls.
+    await page.evaluate(() => {
+      (window as unknown as { __tauriMockEventBus: { emit: (e: string, p: unknown) => void } })
+        .__tauriMockEventBus.emit('diarization-complete', {
+          meeting_id: 'meet-summary-001',
+          speaker_count: 2,
+          segments_labeled: 1,
+        });
+    });
+    await expect(page.getByText('Detected 2 speakers')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText('Sub-second mixture jumble.')).toBeVisible();
+    // No synth pair materialized: the only transcript row is the mixture row.
+    await expect(page.locator('span[role="button"]')).toHaveCount(1);
   });
 
   test('15.2 — inline rename dispatches label_speaker {meetingId, clusterLabel, speakerName}', async ({ page }) => {

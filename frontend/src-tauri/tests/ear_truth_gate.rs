@@ -90,6 +90,34 @@ struct Entry {
     /// fabrication signature the phrase-loop repair exists to remove.
     #[serde(default)]
     absence_needles: Vec<String>,
+    /// Fidelity pins (diarization-render-fidelity 5.1): ordered per-row
+    /// pins — badge selector + ordered tokens + exact count — enforced as
+    /// data over the FINAL replayed render. Multiplicity- and badge-aware:
+    /// a leak fragment under an unattested badge or an extra occurrence
+    /// fails, which the presence-only needle checks passed.
+    #[serde(default)]
+    pins: Vec<RowPin>,
+}
+
+/// One fidelity pin (see Entry::pins).
+#[derive(Deserialize, Clone)]
+struct RowPin {
+    /// Exact rendered-badge match; absent = badge-agnostic (the single-badge
+    /// flattening is itself part of some documented limitations).
+    #[serde(default)]
+    badge: Option<String>,
+    /// Ordered normalized tokens, matched contiguously, non-overlapping.
+    tokens: Vec<String>,
+    /// Exact expected occurrences (0 = the phrase must not appear).
+    count: usize,
+    /// "row": match within one rendered row (default). "joined": match in
+    /// the window's concatenated token stream — chop points are not pinned.
+    #[serde(default)]
+    scope: String,
+    /// Hard pins fail the gate outright (no waiver); waivable pins route
+    /// through the entry's amendment record (KNOWN-LIMITATION).
+    #[serde(default)]
+    hard: bool,
 }
 
 /// One derived turn: label + span + engine continuation fact + aligned text.
@@ -197,6 +225,77 @@ fn check_marker_false(turns: &[Turn], e: &Entry) -> Option<String> {
         )),
         _ => None,
     }
+}
+
+/// Non-overlapping contiguous occurrence count of `run` in `haystack`.
+fn count_token_run(haystack: &[String], run: &[String]) -> usize {
+    if run.is_empty() || run.len() > haystack.len() {
+        return 0;
+    }
+    let mut n = 0usize;
+    let mut i = 0usize;
+    while i + run.len() <= haystack.len() {
+        if haystack[i..i + run.len()] == *run {
+            n += 1;
+            i += run.len();
+        } else {
+            i += 1;
+        }
+    }
+    n
+}
+
+/// Fidelity-pin enforcement over the replayed render groups (pure — the
+/// unit tests below pin the matcher semantics). Returns (hard, message)
+/// failures; empty = every pin passes.
+fn check_row_pins(
+    groups: &[app_lib::audio::speaker::turns::TurnGroup],
+    e: &Entry,
+) -> Vec<(bool, String)> {
+    let s0 = (e.start_s * 1000.0) as i64;
+    let s1 = (e.end_s * 1000.0) as i64;
+    let window: Vec<&app_lib::audio::speaker::turns::SpeakerTurn> = groups
+        .iter()
+        .map(|g| &g.turn)
+        .filter(|t| t.start_ms < s1 && s0 < t.end_ms)
+        .collect();
+    let mut out = Vec::new();
+    for pin in &e.pins {
+        let got = match pin.scope.as_str() {
+            "joined" => {
+                let mut stream: Vec<String> = Vec::new();
+                for t in &window {
+                    stream.extend(norm_tokens(&t.text));
+                }
+                count_token_run(&stream, &pin.tokens)
+            }
+            _ => {
+                let mut n = 0usize;
+                for t in &window {
+                    if pin.badge.as_deref().map(|b| t.speaker == b).unwrap_or(true) {
+                        n += count_token_run(&norm_tokens(&t.text), &pin.tokens);
+                    }
+                }
+                n
+            }
+        };
+        if got != pin.count {
+            let head: Vec<&str> = pin.tokens.iter().take(4).map(String::as_str).collect();
+            out.push((
+                pin.hard,
+                format!(
+                    "pin {:?}… ({}) wanted x{} under badge {:?} — got x{} in {} window row(s)",
+                    head,
+                    pin.scope,
+                    pin.count,
+                    pin.badge,
+                    got,
+                    window.len()
+                ),
+            ));
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +489,12 @@ async fn ear_truth_gate_cde5c264() {
     if std::env::var("MEETIFY_LIVE_DIAG").is_err() {
         return;
     }
+    // Lib census lines (CENSUS-STANDDOWN / CENSUS-SYNTH-DEGRADE) travel the
+    // log crate — without a logger installed they vanish from the recorded
+    // gate log. Default filter warn so the census always lands; RUST_LOG
+    // widens it for debugging.
+    let _ = env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn"))
+        .try_init();
     let home = std::env::var("USERPROFILE").unwrap();
     let fixture: Fixture = serde_json::from_str(
         &std::fs::read_to_string(concat!(
@@ -672,11 +777,22 @@ async fn ear_truth_gate_cde5c264() {
     let mut failed: Vec<String> = Vec::new();
     let mut passed = 0usize;
     let mut limited = 0usize;
+    // Synthesis-stand-down pins assert the FINAL render (post replay +
+    // repairs): the class-E floors act on the span list and the splice
+    // acceptance, so the verdict needs the merged rows (task 2.3).
+    let mut standdown_entries: Vec<&Entry> = Vec::new();
     for e in &fixture.entries {
+        if e.kind == "synthesis_standdown" {
+            standdown_entries.push(e);
+            continue;
+        }
         let mut verdict = match e.kind.as_str() {
             "single_voice" => check_single_voice(&turns, e),
             "voice_change_at" => check_voice_change(&turns, e),
             "multi_voice" => check_multi_voice(&turns, e),
+            // Pin-only entry: the label structure is not attested — the
+            // fidelity pins are enforced post-replay against the render.
+            "row_pins" => Verdict::Pass,
             other => Verdict::Fail(format!("unknown kind {other}")),
         };
         if let Verdict::Pass = verdict {
@@ -1059,7 +1175,6 @@ async fn ear_truth_gate_cde5c264() {
         };
         let mut gate_synthesis: Vec<app_lib::audio::speaker::run_assembly::SpanSynthesis> = Vec::new();
         if let Some((mut engine, model, lang)) = gate_decoder {
-            use app_lib::audio::speaker::run_assembly::{SpanSynthesis, StreamEvidence};
             engine.discover_models().await.expect("discover models");
             engine.load_model(&model).await.expect("load gate whisper model");
             // The blocking decode is spawn_blocking-ONLY (tokio panics on a
@@ -1068,54 +1183,29 @@ async fn ear_truth_gate_cde5c264() {
             // closure.
             let inputs = std::mem::take(&mut gate_synthesis_inputs);
             gate_synthesis = tokio::task::spawn_blocking(move || {
-                let mut out = Vec::new();
-                for input in &inputs {
-                    let [Some((c0, m0)), Some((c1, m1))] = input.identity else { continue };
-                    let decode = |samples: &[f32]| -> Option<String> {
-                        let text = engine.transcribe_span_blocking(samples.to_vec(), &lang)?;
-                        let trimmed = text.trim();
-                        if !trimmed.chars().any(|c| c.is_alphanumeric()) {
-                            return None;
-                        }
-                        let end_ms = samples.len() as f64
-                            / run_engine::SAMPLE_RATE as f64
-                            * 1000.0;
-                        let report = app_lib::audio::hallucination::audit(trimmed, 0.0, end_ms);
-                        if report.is_garbage { None } else { Some(trimmed.to_string()) }
-                    };
-                    // Production parity: per-utterance decode (clip-02
-                    // ruling) — the join feeds the gates, the walls feed
-                    // the splice.
-                    let decode_utts = |samples: &[f32]| {
-                        app_lib::audio::speaker::run_assembly::decode_stream_utterances(
-                            samples,
-                            &decode,
-                        )
-                    };
-                    let utts0 = decode_utts(&input.streams[0]);
-                    let utts1 = decode_utts(&input.streams[1]);
-                    out.push(SpanSynthesis {
-                        span: input.span,
-                        streams: [
-                            StreamEvidence {
-                                cluster: c0,
-                                margin: m0,
-                                rms_ratio: input.rms_ratio[0],
-                                text: app_lib::audio::speaker::run_assembly::join_utterance_texts(&utts0),
-                                utterances: utts0,
-                            },
-                            StreamEvidence {
-                                cluster: c1,
-                                margin: m1,
-                                rms_ratio: input.rms_ratio[1],
-                                text: app_lib::audio::speaker::run_assembly::join_utterance_texts(&utts1),
-                                utterances: utts1,
-                            },
-                        ],
-                        covered_atoms: input.covered_atoms.clone(),
-                    });
-                }
-                out
+                let decode = |samples: &[f32]| -> Option<String> {
+                    let text = engine.transcribe_span_blocking(samples.to_vec(), &lang)?;
+                    let trimmed = text.trim();
+                    if !trimmed.chars().any(|c| c.is_alphanumeric()) {
+                        return None;
+                    }
+                    let end_ms = samples.len() as f64
+                        / run_engine::SAMPLE_RATE as f64
+                        * 1000.0;
+                    let report = app_lib::audio::hallucination::audit(trimmed, 0.0, end_ms);
+                    if report.is_garbage { None } else { Some(trimmed.to_string()) }
+                };
+                // Production parity: per-utterance decode (clip-02
+                // ruling) — the join feeds the gates, the walls feed
+                // the splice. The span loop itself is the production
+                // entry (diarization-render-fidelity 1.2), not a mirror.
+                let decode_utts = |samples: &[f32]| {
+                    app_lib::audio::speaker::run_assembly::decode_stream_utterances(
+                        samples,
+                        &decode,
+                    )
+                };
+                app_lib::audio::speaker::commands::decode_span_synthesis(inputs, &decode_utts)
             })
             .await
             .expect("synthesis decode join");
@@ -1137,6 +1227,9 @@ async fn ear_truth_gate_cde5c264() {
             // their region before loop seeds (attempt-10 dedupe miss).
             let mut repair_seed_spans: Vec<(i64, i64)> = gate_synthesis
                 .iter()
+                // Class-E fiction is not stutter evidence (cold-gate
+                // finding 2026-10-07): a rate-floor decode seeds nothing.
+                .filter(|s| !app_lib::audio::speaker::run_assembly::is_class_e_fiction(s))
                 .filter(|s| {
                     s.streams.iter().any(|st| {
                         st.text
@@ -1231,58 +1324,83 @@ async fn ear_truth_gate_cde5c264() {
                                 &separator,
                                 &repair_spans,
                             );
-                        let mut out = Vec::new();
-                        for input in repair_inputs {
-                            let [Some((c0, m0)), Some((c1, m1))] = input.identity else {
-                                continue;
-                            };
-                            let decode = |s: &[f32]| -> Option<String> {
-                                let text = engine2.transcribe_span_blocking(s.to_vec(), &lang)?;
-                                let trimmed = text.trim();
-                                if !trimmed.chars().any(|c| c.is_alphanumeric()) {
-                                    return None;
-                                }
-                                let end_ms =
-                                    s.len() as f64 / app_lib::audio::speaker::run_engine::SAMPLE_RATE as f64 * 1000.0;
-                                let report = app_lib::audio::hallucination::audit(trimmed, 0.0, end_ms);
-                                if report.is_garbage {
-                                    None
-                                } else {
-                                    Some(trimmed.to_string())
-                                }
-                            };
-                            // Production parity: per-utterance decode
-                            // (clip-02 ruling) for the repair path too.
-                            let decode_utts = |s: &[f32]| {
-                                app_lib::audio::speaker::run_assembly::decode_stream_utterances(
-                                    s,
-                                    &decode,
-                                )
-                            };
-                            let utts0 = decode_utts(&input.streams[0]);
-                            let utts1 = decode_utts(&input.streams[1]);
-                            out.push(app_lib::audio::speaker::run_assembly::SpanSynthesis {
-                                span: input.span,
-                                streams: [
-                                    app_lib::audio::speaker::run_assembly::StreamEvidence {
-                                        cluster: c0,
-                                        margin: m0,
-                                        rms_ratio: input.rms_ratio[0],
-                                        text: app_lib::audio::speaker::run_assembly::join_utterance_texts(&utts0),
-                                        utterances: utts0,
-                                    },
-                                    app_lib::audio::speaker::run_assembly::StreamEvidence {
-                                        cluster: c1,
-                                        margin: m1,
-                                        rms_ratio: input.rms_ratio[1],
-                                        text: app_lib::audio::speaker::run_assembly::join_utterance_texts(&utts1),
-                                        utterances: utts1,
-                                    },
-                                ],
-                                covered_atoms: input.covered_atoms,
-                            });
+                        let decode = |s: &[f32]| -> Option<String> {
+                            let text = engine2.transcribe_span_blocking(s.to_vec(), &lang)?;
+                            let trimmed = text.trim();
+                            if !trimmed.chars().any(|c| c.is_alphanumeric()) {
+                                return None;
+                            }
+                            let end_ms =
+                                s.len() as f64 / app_lib::audio::speaker::run_engine::SAMPLE_RATE as f64 * 1000.0;
+                            let report = app_lib::audio::hallucination::audit(trimmed, 0.0, end_ms);
+                            if report.is_garbage {
+                                None
+                            } else {
+                                Some(trimmed.to_string())
+                            }
+                        };
+                        // Production parity: per-utterance decode
+                        // (clip-02 ruling) for the repair path too, via
+                        // the SAME production entry as the mass loop.
+                        let decode_utts = |s: &[f32]| {
+                            app_lib::audio::speaker::run_assembly::decode_stream_utterances(
+                                s,
+                                &decode,
+                            )
+                        };
+                        let repairs = app_lib::audio::speaker::commands::decode_span_synthesis(
+                            repair_inputs.clone(),
+                            &decode_utts,
+                        );
+                        // Token census (diarization-render-fidelity 6.2,
+                        // phase A — data only, NO shape change, NO wall
+                        // consumption): the sibling token-timestamp decode
+                        // per repair stream. Its text BY DESIGN differs
+                        // from the production decode (the chunking flip) —
+                        // both sha256s are recorded as a divergence NOTE,
+                        // never an equality assertion. Phase B (consuming
+                        // the walls) is ear-gated (6.3 / the runbook).
+                        for (input, repair) in repair_inputs.iter().zip(repairs.iter()) {
+                            for (si, stream) in input.streams.iter().enumerate() {
+                                let tok = engine2.transcribe_span_blocking_tokens(
+                                    stream.clone(),
+                                    &lang,
+                                );
+                                let tok_text: Option<String> = tok.as_ref().map(|segs| {
+                                    segs.iter()
+                                        .map(|s| s.text.trim())
+                                        .filter(|t| !t.is_empty())
+                                        .collect::<Vec<_>>()
+                                        .join(" ")
+                                });
+                                let walls: Vec<String> = tok
+                                    .as_ref()
+                                    .map(|segs| {
+                                        segs.iter()
+                                            .map(|s| format!("({},{})", s.start_ms, s.end_ms))
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                                let sha = |t: &Option<String>| match t {
+                                    Some(t) if !t.is_empty() => {
+                                        use sha2::{Digest, Sha256};
+                                        format!("{:x}", Sha256::digest(t.as_bytes()))
+                                    }
+                                    _ => "none".to_string(),
+                                };
+                                eprintln!(
+                                    "CENSUS-TOKENWALL window=[{:.2}-{:.2}] stream={} segments={} walls=[{}] tok_sha={} prod_sha={}",
+                                    input.span.0,
+                                    input.span.1,
+                                    si,
+                                    tok.as_ref().map(Vec::len).unwrap_or(0),
+                                    walls.join(","),
+                                    sha(&tok_text),
+                                    sha(&repair.streams[si].text)
+                                );
+                            }
                         }
-                        out
+                        repairs
                     },
                 )
                 .await
@@ -1303,6 +1421,115 @@ async fn ear_truth_gate_cde5c264() {
                     repairs.len()
                 );
                 merged = next;
+            }
+        }
+        // Synthesis-stand-down pins (class E, diarization-render-fidelity
+        // 2.3): a pinned span must render MIXTURE rows only — no synth atom
+        // may overlap its walls. The class-E floors stand sub-second spans
+        // down before separation; a wide-context repair window
+        // re-synthesizing here fails the pin and needs a user amendment
+        // (the pin protocol, never a skip list).
+        for e in &standdown_entries {
+            let s0 = (e.start_s * 1000.0) as i64;
+            let s1 = (e.end_s * 1000.0) as i64;
+            let overlaps =
+                |r: &app_lib::audio::speaker::alignment::AlignedSegment| {
+                    r.audio_start_ms < s1 && r.audio_end_ms > s0
+                };
+            let verdict = if !merged.iter().any(overlaps) {
+                Verdict::Fail("no rows overlap the span at all".into())
+            } else {
+                let synth_hits: Vec<String> = merged
+                    .iter()
+                    .filter(|r| r.synth_atom && overlaps(r))
+                    .map(|r| {
+                        format!(
+                            "[{:.2}-{:.2}] {}",
+                            r.audio_start_ms as f64 / 1000.0,
+                            r.audio_end_ms as f64 / 1000.0,
+                            r.speaker
+                        )
+                    })
+                    .collect();
+                if synth_hits.is_empty() {
+                    Verdict::Pass
+                } else {
+                    Verdict::Fail(format!(
+                        "synth rows render inside the stand-down span: {}",
+                        synth_hits.join(", ")
+                    ))
+                }
+            };
+            match verdict {
+                Verdict::Pass => {
+                    passed += 1;
+                    eprintln!("PASS {}", e.id);
+                }
+                Verdict::Fail(reason) => {
+                    let listed = fixture.known_limitations.iter().any(|k| k == &e.id);
+                    let record = fixture.amendments.get(&e.id);
+                    let waived = listed
+                        && record
+                            .map(|a| !a.user_confirmed.is_empty() && !a.reason.is_empty())
+                            .unwrap_or(false);
+                    if waived {
+                        limited += 1;
+                        let a = record.expect("checked");
+                        eprintln!(
+                            "AMENDED({}) {} — {} | {}",
+                            a.user_confirmed, e.id, a.reason, reason
+                        );
+                    } else {
+                        failed.push(e.id.clone());
+                        eprintln!("FAIL {}", e.id,);
+                        eprintln!("  -> {}", reason);
+                    }
+                }
+            }
+        }
+        // Fidelity census (diarization-render-fidelity 3.3): the SAME scan
+        // fns the production census calls, over the replayed render.
+        // Token-only output — ids, walls and chunk lengths, never text.
+        {
+            let source_walls: Vec<(String, i64, i64)> = render_fixture
+                .rows
+                .iter()
+                .map(|r| (r.id.clone(), r.start_ms, r.end_ms))
+                .collect();
+            let leaks = app_lib::audio::speaker::run_assembly::scan_boundary_leaks(
+                &merged,
+                app_lib::audio::speaker::run_assembly::BOUNDARY_LEAK_MIN_CHUNK,
+            );
+            let synth_rows = merged.iter().filter(|r| r.synth_atom).count();
+            for f in &leaks {
+                eprintln!(
+                    "CENSUS-LEAK synth_row={} synth=[{:.2},{:.2}] neighbour=[{:.2},{:.2}] dir={} chunk_len={}",
+                    f.synth_row_id,
+                    f.synth_span_ms.0 as f64 / 1000.0,
+                    f.synth_span_ms.1 as f64 / 1000.0,
+                    f.neighbour_span_ms.0 as f64 / 1000.0,
+                    f.neighbour_span_ms.1 as f64 / 1000.0,
+                    f.direction,
+                    f.chunk_len
+                );
+            }
+            eprintln!(
+                "CENSUS-LEAK-SUMMARY synth_rows={} flagged={}",
+                synth_rows,
+                leaks.len()
+            );
+            for f in app_lib::audio::speaker::run_assembly::scan_parent_links(&merged, &source_walls) {
+                eprintln!(
+                    "CENSUS-PARENT row={} parent={} row=[{:.2},{:.2}] parent_span={} defect={:?}",
+                    f.row_id,
+                    f.parent_id,
+                    f.row_span_ms.0 as f64 / 1000.0,
+                    f.row_span_ms.1 as f64 / 1000.0,
+                    f.parent_span_ms
+                        .map(|(a, b)| format!("[{:.2},{:.2}]", a as f64 / 1000.0, b as f64 / 1000.0))
+                        .unwrap_or_else(|| "absent".to_string()),
+                    f.defect
+                );
             }
         }
         // Token-only census over every candidate span (walls, identities,
@@ -1723,132 +1950,112 @@ async fn ear_truth_gate_cde5c264() {
             render_failures.push(format!("unexpected cross-badge fracture: {f}"));
         }
 
-        // overlap-stream-retranscription 3.3: the attested S16 crosstalk
-        // window must render two distinct-badge rows carrying the attested
-        // per-voice needles (verbatim in THIS local fixture, never code).
-        // While S16 is a KNOWN-LIMITATION this routes through the amendment
-        // path (AMENDED, not a failure); graduation (task 4.2) makes it a
-        // hard pin by removing the waiver.
+        // Fidelity pins (diarization-render-fidelity 5.1/5.2): every
+        // entry's `pins` enforced as data over the FINAL replayed render.
+        // This replaces the hand-coded S16/S18 needle blocks — presence-
+        // only joins that passed leak fragments under wrong badges and
+        // extra occurrences. Hard pins fail outright (S18's fabrication
+        // absence, the clip-04 text truth); waivable pins route through
+        // the entry's amendment record (S16's single-badge limitation).
         {
-            let s16 = fixture
-                .entries
-                .iter()
-                .find(|e| e.id == "S16_ads_overlap_1056")
-                .expect("S16 entry present");
-            let window_rows: Vec<&app_lib::audio::speaker::turns::SpeakerTurn> = groups
-                .iter()
-                .map(|g| &g.turn)
-                .filter(|t| t.start_ms < (s16.end_s * 1000.0) as i64 && ((s16.start_s * 1000.0) as i64) < t.end_ms)
-                .collect();
-            let badges: std::collections::BTreeSet<&str> =
-                window_rows.iter().map(|t| t.speaker.as_str()).collect();
-            let lowered: Vec<String> = window_rows
-                .iter()
-                .map(|t| t.text.to_lowercase())
-                .collect();
-            let needles: Vec<&String> = s16
-                .needles
-                .iter()
-                .filter(|n| lowered.iter().any(|t| t.contains(&n.to_lowercase())))
-                .collect();
-            let ok = badges.len() >= 2 && needles.len() == s16.needles.len();
-            eprintln!(
-                "GATE: S16 stream render: {} row(s), {} distinct badge(s), {}/{} needle(s)",
-                window_rows.len(),
-                badges.len(),
-                needles.len(),
-                s16.needles.len()
-            );
-            if !ok {
-                // Waiver state lives on the ATTRIBUTION fixture (this is the
-                // entry's own amendment; the render snapshot's list is a
-                // different document). While waived: AMENDED, not a failure —
-                // graduation (4.2) removes the waiver and this becomes a
-                // hard pin.
-                let waived = fixture.known_limitations.iter().any(|k| k == "S16_ads_overlap_1056")
-                    && fixture
-                        .amendments
-                        .get("S16_ads_overlap_1056")
-                        .map_or(false, |a| !a.user_confirmed.is_empty() && !a.reason.is_empty());
-                let msg = format!(
-                    "S16 window renders {} distinct badge(s), {}/{} stream needle(s) — per-voice render missing or wrong",
-                    badges.len(),
-                    needles.len(),
-                    s16.needles.len()
-                );
-                if waived {
-                    eprintln!("AMENDED S16_ads_overlap_1056 — stream render not yet per-voice | {msg}");
-                } else {
-                    render_failures.push(format!("S16 stream render: {msg}"));
+            let mut enforced = 0usize;
+            for e in fixture.entries.iter().filter(|e| !e.pins.is_empty()) {
+                enforced += 1;
+                for (hard, msg) in check_row_pins(&groups, e) {
+                    if hard {
+                        render_failures.push(format!("{} (hard pin): {msg}", e.id));
+                    } else {
+                        let waived = fixture.known_limitations.iter().any(|k| k == &e.id)
+                            && fixture
+                                .amendments
+                                .get(&e.id)
+                                .map_or(false, |a| !a.user_confirmed.is_empty() && !a.reason.is_empty());
+                        if waived {
+                            eprintln!("AMENDED {} — {msg}", e.id);
+                        } else {
+                            render_failures.push(format!("{}: {msg}", e.id));
+                        }
+                    }
                 }
             }
+            eprintln!("GATE: fidelity pins enforced on {enforced} pinned window(s)");
         }
 
-        // overlap-stream-retranscription: the S18 fabrication window. The
-        // phrase-loop repair MUST fire here — a degrade re-renders the
-        // fabricated mixture rows, which is exactly the failure the user's
-        // ear round demanded fixed. No waiver path: the fabrication is a
-        // hard absence, and the attested words are a hard presence.
+        // Window fidelity scans (diarization-render-fidelity 5.3, per the
+        // 3.4 calibration: pinned windows only — meeting-wide stays
+        // census-only). For every pinned window: no boundary-leak
+        // findings, no parent-link findings, no synth row above the
+        // words-per-second ceiling. Runs on the replayed render (`merged`)
+        // against the snapshot's source walls.
         {
-            let s18 = fixture
+            let source_walls: Vec<(String, i64, i64)> = render_fixture
+                .rows
+                .iter()
+                .map(|r| (r.id.clone(), r.start_ms, r.end_ms))
+                .collect();
+            let parent_findings = app_lib::audio::speaker::run_assembly::scan_parent_links(&merged, &source_walls);
+            let parent_failures: Vec<String> = parent_findings
+                .iter()
+                .filter(|f| {
+                    fixture.entries.iter().filter(|e| !e.pins.is_empty() || e.kind == "synthesis_standdown").any(|e| {
+                        let s0 = (e.start_s * 1000.0) as i64;
+                        let s1 = (e.end_s * 1000.0) as i64;
+                        f.row_span_ms.0 < s1 && s0 < f.row_span_ms.1
+                    })
+                })
+                .map(|f| format!("parent-link defect in a pinned window: row {} parent {} {:?}", f.row_id, f.parent_id, f.defect))
+                .collect();
+            render_failures.extend(parent_failures);
+            let leak_failures: Vec<String> = fixture
                 .entries
                 .iter()
-                .find(|e| e.id == "S18_clip01_talkover_192s")
-                .expect("S18 entry present");
-            let window_rows: Vec<&app_lib::audio::speaker::turns::SpeakerTurn> = groups
-                .iter()
-                .map(|g| &g.turn)
-                .filter(|t| {
-                    t.start_ms < (s18.end_s * 1000.0) as i64
-                        && ((s18.start_s * 1000.0) as i64) < t.end_ms
+                .filter(|e| !e.pins.is_empty() || e.kind == "synthesis_standdown")
+                .flat_map(|e| {
+                    let s0 = (e.start_s * 1000.0) as i64;
+                    let s1 = (e.end_s * 1000.0) as i64;
+                    app_lib::audio::speaker::run_assembly::scan_boundary_leaks(
+                        &merged,
+                        app_lib::audio::speaker::run_assembly::BOUNDARY_LEAK_MIN_CHUNK,
+                    )
+                    .into_iter()
+                    .filter(|f| f.synth_span_ms.0 < s1 && s0 < f.synth_span_ms.1)
+                    .map(|f| {
+                        format!(
+                            "boundary leak in the {} window: synth row {} vs [{:.2},{:.2}] chunk_len={}",
+                            e.id, f.synth_row_id,
+                            f.neighbour_span_ms.0 as f64 / 1000.0,
+                            f.neighbour_span_ms.1 as f64 / 1000.0,
+                            f.chunk_len
+                        )
+                    })
+                    .collect::<Vec<_>>()
                 })
                 .collect();
-            let lowered: Vec<String> =
-                window_rows.iter().map(|t| t.text.to_lowercase()).collect();
-            // The attested truth is about the REGION's text, not row walls:
-            // match against the joined window text so a needle straddling a
-            // row boundary (the consolidation's chop points are not pinned)
-            // still counts.
-            let joined = lowered.join(" ");
-            let fabrication: Vec<&String> = s18
-                .absence_needles
+            render_failures.extend(leak_failures);
+            let rate_failures: Vec<String> = merged
                 .iter()
-                .filter(|n| joined.contains(&n.to_lowercase()))
+                .filter(|r| r.synth_atom)
+                .filter(|r| {
+                    fixture.entries.iter().filter(|e| !e.pins.is_empty() || e.kind == "synthesis_standdown").any(|e| {
+                        let s0 = (e.start_s * 1000.0) as i64;
+                        let s1 = (e.end_s * 1000.0) as i64;
+                        r.audio_start_ms < s1 && s0 < r.audio_end_ms
+                    })
+                })
+                .filter(|r| {
+                    let dur = ((r.audio_end_ms - r.audio_start_ms).max(1)) as f64 / 1000.0;
+                    r.text.split_whitespace().count() as f64 / dur
+                        > app_lib::audio::speaker::run_assembly::MAX_STREAM_WORDS_PER_SEC
+                })
+                .map(|r| {
+                    format!(
+                        "synth row [{:.2},{:.2}] exceeds the words-per-second ceiling in a pinned window",
+                        r.audio_start_ms as f64 / 1000.0,
+                        r.audio_end_ms as f64 / 1000.0
+                    )
+                })
                 .collect();
-            if !fabrication.is_empty() {
-                render_failures.push(format!(
-                    "S18 window still renders the fabricated phrase {fabrication:?} — phrase-loop repair did not fire or degraded"
-                ));
-            }
-            let present: Vec<&String> = s18
-                .needles
-                .iter()
-                .filter(|n| joined.contains(&n.to_lowercase()))
-                .collect();
-            let missing: Vec<&String> = s18
-                .needles
-                .iter()
-                .filter(|n| !joined.contains(&n.to_lowercase()))
-                .collect();
-            eprintln!(
-                "GATE: S18 render: fabrication {} ({}/{} absence), {}/{} attested needle(s), {} row(s)",
-                if fabrication.is_empty() { "absent" } else { "PRESENT" },
-                s18.absence_needles.len() - fabrication.len(),
-                s18.absence_needles.len(),
-                present.len(),
-                s18.needles.len(),
-                window_rows.len()
-            );
-            if !missing.is_empty() {
-                eprintln!("GATE: S18 missing attested needle(s): {missing:?}");
-            }
-            if present.len() != s18.needles.len() {
-                render_failures.push(format!(
-                    "S18 window holds {}/{} attested needle(s) — the repair's per-voice render is missing attested words",
-                    present.len(),
-                    s18.needles.len()
-                ));
-            }
+            render_failures.extend(rate_failures);
         }
 
         // no-split-sentences task 1.4 — DUPLICATE-CLUSTER scan over a ±10 s
@@ -2024,4 +2231,163 @@ async fn ear_truth_gate_cde5c264() {
         "ear-truth gate FAILED for entries {failed:?}, {violations} invariant violations, {} render failures — resolve by passing the engine or user-signed KNOWN-LIMITATION",
         render_failures.len()
     );
+}
+
+// ── Fidelity-pin matcher unit tests (diarization-render-fidelity 5.1) ──
+// Plain cargo test — the matcher semantics the live gate relies on.
+
+fn pin_group(speaker: &str, start_ms: i64, end_ms: i64, text: &str) -> app_lib::audio::speaker::turns::TurnGroup {
+    app_lib::audio::speaker::turns::TurnGroup {
+        turn: app_lib::audio::speaker::turns::SpeakerTurn {
+            speaker: speaker.to_string(),
+            start_ms,
+            end_ms,
+            text: text.to_string(),
+        },
+        row_indexes: Vec::new(),
+    }
+}
+
+fn pin_entry(pins: Vec<RowPin>) -> Entry {
+    Entry {
+        id: "test_entry".into(),
+        kind: "row_pins".into(),
+        start_s: 0.0,
+        end_s: 100.0,
+        change_at_s: None,
+        tolerance_s: None,
+        hold_out: false,
+        needles: Vec::new(),
+        absence_needles: Vec::new(),
+        pins,
+    }
+}
+
+fn row_pin(badge: Option<&str>, tokens: &[&str], count: usize, scope: &str, hard: bool) -> RowPin {
+    RowPin {
+        badge: badge.map(str::to_string),
+        tokens: tokens.iter().map(|t| t.to_string()).collect(),
+        count,
+        scope: scope.to_string(),
+        hard,
+    }
+}
+
+#[test]
+fn pin_extra_occurrence_fails() {
+    let groups = vec![pin_group(
+        "Speaker 1",
+        0,
+        4_000,
+        "alpha beta. alpha beta again.",
+    )];
+    // Attested once, rendered twice → FAIL.
+    let e = pin_entry(vec![row_pin(
+        Some("Speaker 1"),
+        &["alpha", "beta"],
+        1,
+        "row",
+        true,
+    )]);
+    assert_eq!(check_row_pins(&groups, &e).len(), 1, "extra occurrence must fail");
+    // Attested twice → PASS.
+    let e = pin_entry(vec![row_pin(
+        Some("Speaker 1"),
+        &["alpha", "beta"],
+        2,
+        "row",
+        true,
+    )]);
+    assert!(check_row_pins(&groups, &e).is_empty());
+}
+
+#[test]
+fn pin_leak_fragment_under_unattested_badge_fails() {
+    // The phrase is attested once under Speaker 1; a synth row under
+    // Speaker 2 leaks a full copy of it. The OWNER-badge pin pins the
+    // owner's copy (passes — the leak is invisible to that selector), but
+    // the badge-agnostic multiplicity pin sees 2 occurrences and fails:
+    // the phrase occurs more times than attested, under an unattested
+    // badge.
+    let groups = vec![
+        pin_group("Speaker 1", 0, 4_000, "or IDP rather than search, done"),
+        pin_group("Speaker 2", 4_000, 5_000, "or IDP rather than search"),
+    ];
+    let e = pin_entry(vec![row_pin(
+        Some("Speaker 1"),
+        &["or", "idp", "rather", "than", "search"],
+        1,
+        "row",
+        true,
+    )]);
+    assert!(
+        check_row_pins(&groups, &e).is_empty(),
+        "the owner's copy is exactly once under its badge"
+    );
+    let e = pin_entry(vec![row_pin(
+        None,
+        &["or", "idp", "rather", "than", "search"],
+        1,
+        "row",
+        true,
+    )]);
+    let failures = check_row_pins(&groups, &e);
+    assert_eq!(failures.len(), 1, "the leak doubles the multiplicity: {failures:?}");
+    // A tail fragment SHORTER than the pinned run matches nothing — the
+    // run must appear whole.
+    let groups = vec![
+        pin_group("Speaker 1", 0, 4_000, "or IDP rather than search, done"),
+        pin_group("Speaker 2", 4_000, 5_000, "wait, IDP rather than search"),
+    ];
+    let e = pin_entry(vec![row_pin(
+        None,
+        &["or", "idp", "rather", "than", "search"],
+        1,
+        "row",
+        true,
+    )]);
+    assert!(
+        check_row_pins(&groups, &e).is_empty(),
+        "partial fragment is not a full occurrence"
+    );
+}
+
+#[test]
+fn pin_chop_point_straddles_only_in_joined_scope() {
+    // The phrase is chopped across two rows by consolidation. Row scope
+    // cannot see it; joined scope must.
+    let groups = vec![
+        pin_group("Speaker 1", 0, 4_000, "tell me what skins"),
+        pin_group("Speaker 1", 4_000, 8_000, "are going to cost"),
+    ];
+    let e = pin_entry(vec![row_pin(
+        None,
+        &["what", "skins", "are", "going", "to", "cost"],
+        1,
+        "joined",
+        true,
+    )]);
+    assert!(check_row_pins(&groups, &e).is_empty(), "chop points are not pinned in joined scope");
+    let e = pin_entry(vec![row_pin(
+        None,
+        &["what", "skins", "are", "going", "to", "cost"],
+        1,
+        "row",
+        true,
+    )]);
+    assert_eq!(check_row_pins(&groups, &e).len(), 1, "row scope cannot match across the chop");
+}
+
+#[test]
+fn pin_absence_and_non_overlapping_counts() {
+    // count 0 = hard absence; overlapping matches do not double-count
+    // ("alpha alpha alpha" contains "alpha alpha" exactly ONCE
+    // non-overlapping).
+    let groups = vec![pin_group("Speaker 1", 0, 4_000, "alpha alpha alpha")];
+    let e = pin_entry(vec![row_pin(None, &["gamma", "delta"], 0, "joined", true)]);
+    assert!(check_row_pins(&groups, &e).is_empty(), "absence satisfied");
+    let e = pin_entry(vec![row_pin(None, &["alpha", "alpha"], 1, "row", true)]);
+    assert!(check_row_pins(&groups, &e).is_empty(), "non-overlapping count is 1");
+    let e = pin_entry(vec![row_pin(None, &["alpha", "alpha"], 2, "row", true)]);
+    assert_eq!(check_row_pins(&groups, &e).len(), 1, "overlapping matches do not stack");
 }

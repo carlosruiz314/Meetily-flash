@@ -1633,6 +1633,39 @@ pub struct StreamUtterance {
 /// census records the exact ratios so the bar is retunable from evidence.
 pub const SYNTH_STREAM_MIN_RMS_RATIO: f32 = 0.1;
 
+/// Class E duration floor (ear round 2, 2026-10-06): all six mined fiction
+/// spans sat in 0.37–1.03s — too short for a separated stream to carry a
+/// decodable utterance. A span under this floor stands down BEFORE
+/// separation (run_engine's span loop) and renders the byte-identical
+/// mixture rows, whose text already carries the real words. A general dial
+/// recorded in the census — never a per-span skip list.
+pub const MIN_SYNTH_DURATION_SECS: f64 = 1.5;
+
+/// Class E words/sec ceiling (ear round 2): the post-decode backstop. A
+/// stream decode whose words-per-second rate against its own span exceeds
+/// this is machine fiction regardless of fluency (measured fiction: 14–35
+/// w/s; human bursts top out near 3). The denominator is the stream's own
+/// span duration everywhere — specs, census, gate.
+pub const MAX_STREAM_WORDS_PER_SEC: f64 = 8.0;
+
+/// Class-E fiction test for a synthesis CANDIDATE (cold-gate finding
+/// 2026-10-07): a stream decode exceeding the human speech ceiling against
+/// its own span is machine fiction regardless of any other flag — and
+/// fiction text is not stutter evidence. The clip-04 ruling (the wide
+/// repair was net-worse than the mixed row) traced to exactly this: a
+/// 22 w/s fiction decode ALSO stuttered, and its stutter seeded the
+/// repair the user had ruled against. Class-general dial, never a
+/// per-span skip: fiction candidates seed no repair.
+pub fn is_class_e_fiction(s: &SpanSynthesis) -> bool {
+    let dur = (s.span.1 - s.span.0).max(1e-6);
+    s.streams.iter().any(|st| {
+        st.text
+            .as_deref()
+            .map(|t| t.split_whitespace().count() as f64 / dur > MAX_STREAM_WORDS_PER_SEC)
+            .unwrap_or(false)
+    })
+}
+
 /// A span's both-stream synthesis evidence. Spans are seconds (the
 /// trigger's unit); rows and covered atoms are milliseconds (the
 /// alignment's unit).
@@ -1795,6 +1828,175 @@ pub fn join_utterance_texts(utterances: &[StreamUtterance]) -> Option<String> {
         Some(parts.join(" "))
     }
 }
+
+// ── Fidelity scans (diarization-render-fidelity 3.1/3.2, design D3) ──
+// Shared pure functions over the render rows: the production census AND
+// the ear-truth gate call these — a gate-private scan makes production
+// blind, a production-private scan makes the gate assert something
+// production never computed. Scan outputs are diagnostics: they never
+// drop or revert a row (enforcement happens only through gate pins or
+// ear-ruled acceptance graduation). Finding structs carry NO meeting
+// text — census writers print ids, walls and chunk lengths only.
+
+/// Minimum contiguous shared token chunk for a boundary-leak finding (the
+/// 3.4 calibration checkpoint may retune this dial from census evidence).
+pub const BOUNDARY_LEAK_MIN_CHUNK: usize = 3;
+
+/// The synth row and its neighbour must sit within this gap for their
+/// shared boundary to count — adjacency in the sorted row list alone can
+/// span minutes of silence, and a leak fragment lives at the edge the two
+/// rows actually share (same guard the duplicate scan applies).
+pub const BOUNDARY_LEAK_MAX_GAP_MS: i64 = 2_000;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BoundaryLeakFinding {
+    /// The synth row's `original_id` (provenance).
+    pub synth_row_id: String,
+    pub synth_span_ms: (i64, i64),
+    pub neighbour_span_ms: (i64, i64),
+    pub direction: &'static str,
+    pub chunk_len: usize,
+}
+
+/// Boundary-leak scan, provenance-scoped to the synth row's TOUCHING
+/// edges only: the tail vs the next row's head, and the head vs the
+/// previous row's tail. Non-touching pairings (synth tail vs the
+/// previous row's head, etc.) compare edges temporally far apart and can
+/// only produce false positives — never scanned. The leak fragment is
+/// the shape the 80%-of-shorter duplicate bar structurally misses; that
+/// bar does NOT apply here. Plain/plain pairs are the duplicate scan's
+/// territory and stay unflagged.
+pub fn scan_boundary_leaks(rows: &[AlignedSegment], min_chunk: usize) -> Vec<BoundaryLeakFinding> {
+    let mut order: Vec<&AlignedSegment> = rows.iter().collect();
+    order.sort_by_key(|r| (r.audio_start_ms, r.audio_end_ms));
+    let toks: Vec<Vec<String>> = order
+        .iter()
+        .map(|r| crate::audio::speaker::alignment::normalized_tokens(&r.text))
+        .collect();
+    let span = |r: &AlignedSegment| (r.audio_start_ms, r.audio_end_ms);
+    let mut out = Vec::new();
+    for i in 0..order.len() {
+        if !order[i].synth_atom {
+            continue;
+        }
+        let s = toks[i].as_slice();
+        // Right neighbour: the shared edge is [synth.end → next.start].
+        if let Some(n) = order.get(i + 1) {
+            if n.audio_start_ms - order[i].audio_end_ms <= BOUNDARY_LEAK_MAX_GAP_MS {
+                let t = toks[i + 1].as_slice();
+                // Largest qualifying chunk wins — the most informative witness.
+                for k in (min_chunk..=s.len().min(t.len())).rev() {
+                    if s[s.len() - k..] == t[..k] {
+                        out.push(BoundaryLeakFinding {
+                            synth_row_id: order[i].original_id.clone(),
+                            synth_span_ms: span(order[i]),
+                            neighbour_span_ms: span(order[i + 1]),
+                            direction: "synth_tail_vs_neighbour_head",
+                            chunk_len: k,
+                        });
+                        break;
+                    }
+                }
+            }
+        }
+        // Left neighbour: the mirrored touching edge [prev.end → synth.start].
+        if i > 0
+            && order[i].audio_start_ms - order[i - 1].audio_end_ms <= BOUNDARY_LEAK_MAX_GAP_MS
+        {
+            let t = toks[i - 1].as_slice();
+            for k in (min_chunk..=s.len().min(t.len())).rev() {
+                if s[..k] == t[t.len() - k..] {
+                    out.push(BoundaryLeakFinding {
+                        synth_row_id: order[i].original_id.clone(),
+                        synth_span_ms: span(order[i]),
+                        neighbour_span_ms: span(order[i - 1]),
+                        direction: "synth_head_vs_neighbour_tail",
+                        chunk_len: k,
+                    });
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The splice's veto reason for a synthesis candidate — the SAME checks
+/// `synthesize_overlap_rows` applies, in the same order, exposed so the
+/// census-replay tier can pin WHICH gate fired (a gate reordering fails
+/// the replay, not just the shape). `None` when the candidate passes.
+pub fn synthesis_veto_reason(
+    synthesis: Option<&SpanSynthesis>,
+    cluster_speaker: &dyn Fn(u32) -> Option<String>,
+) -> Option<&'static str> {
+    let Some(s) = synthesis else {
+        return None;
+    };
+    let (s0, s1) = s.span;
+    if s1 <= s0 || s1 - s0 > OVERLAP_MAX_SPAN_SECS {
+        return Some("span empty or over the 30s cap");
+    }
+    if s1 - s0 < MIN_SYNTH_DURATION_SECS {
+        return Some("span under the minimum synthesis duration");
+    }
+    vetted_stream_pair(s, cluster_speaker).err()
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ParentLinkDefect {
+    /// `synth_parent` names no known source row.
+    Dangling,
+    /// The parent exists but its walls never overlap the row's — the
+    /// ..ddfdee provenance-misalignment class (clip 12: 11.8s away).
+    WallMismatch,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParentLinkFinding {
+    pub row_id: String,
+    pub parent_id: String,
+    pub row_span_ms: (i64, i64),
+    pub parent_span_ms: Option<(i64, i64)>,
+    pub defect: ParentLinkDefect,
+}
+
+/// Parent-link integrity scan: every `synth_parent` must name a source row
+/// whose walls overlap the row's. Valid shapes (never flagged): the atom
+/// link (a stream row's donor) and the designed split-piece self-link (a
+/// head/tail piece carries its own source id as parent). `sources` is the
+/// immutable `transcript_sources` wall list in ms.
+pub fn scan_parent_links(
+    rows: &[AlignedSegment],
+    sources: &[(String, i64, i64)],
+) -> Vec<ParentLinkFinding> {
+    let mut out = Vec::new();
+    for r in rows {
+        let Some(parent) = r.synth_parent.as_deref() else {
+            continue;
+        };
+        let found = sources.iter().find(|(id, _, _)| id == parent);
+        let defect = match found {
+            None => Some((ParentLinkDefect::Dangling, None)),
+            Some((_, ps, pe)) => {
+                if r.audio_start_ms < *pe && *ps < r.audio_end_ms {
+                    None
+                } else {
+                    Some((ParentLinkDefect::WallMismatch, Some((*ps, *pe))))
+                }
+            }
+        };
+        if let Some((defect, parent_span)) = defect {
+            out.push(ParentLinkFinding {
+                row_id: r.original_id.clone(),
+                parent_id: parent.to_string(),
+                row_span_ms: (r.audio_start_ms, r.audio_end_ms),
+                parent_span_ms: parent_span,
+                defect,
+            });
+        }
+    }
+    out
+}
 /// Fraction of a row's duration that must be separation-covered for the
 /// row to be replaced whole. Mirrors run_engine's SEPARATION_ATOM_COVERAGE
 /// (atom-level bar); the row-level bar may diverge later, which is why it
@@ -1819,6 +2021,16 @@ pub fn synthesize_overlap_rows(
 ) -> Option<Vec<AlignedSegment>> {
     let (s0, s1) = synthesis.span;
     if s1 <= s0 || s1 - s0 > OVERLAP_MAX_SPAN_SECS {
+        return None;
+    }
+    // Class E duration floor at the ACCEPTANCE layer too: the primary
+    // checkpoint is the pre-separation span filter (run_engine), but the
+    // spec's floor is unconditional — a self-built SpanSynthesis (the
+    // replay harness, any future caller) must not slip past it here.
+    if s1 - s0 < MIN_SYNTH_DURATION_SECS {
+        log::warn!(
+            "CENSUS-STANDDOWN span=[{s0:.2},{s1:.2}] floor=MIN_SYNTH_DURATION_SECS (acceptance)"
+        );
         return None;
     }
     let span_ms = ((s0 * 1000.0) as i64, (s1 * 1000.0) as i64);
@@ -1902,7 +2114,18 @@ pub fn synthesize_overlap_rows(
         })
     };
 
-    let vetted = vetted_stream_pair(synthesis, cluster_speaker).ok()?;
+    let vetted = match vetted_stream_pair(synthesis, cluster_speaker) {
+        Ok(v) => v,
+        Err(reason) => {
+            // Mass-path census: the repair pass names its vetoes through
+            // apply_loop_repairs; the mass splice must name them too, so a
+            // stood-down span says which floor fired in the run record.
+            log::warn!(
+                "CENSUS-SYNTH-DEGRADE span=[{s0:.2},{s1:.2}] {reason}"
+            );
+            return None;
+        }
+    };
     let mut stream_rows = synth_rows_for_streams(synthesis, span_ms, &source_id, vetted.1);
 
     let mut out = Vec::with_capacity(rows.len() + stream_rows.len());
@@ -2060,8 +2283,11 @@ pub fn repair_overlap_rows_checked(
     cluster_speaker: &dyn Fn(u32) -> Option<String>,
 ) -> Result<Vec<AlignedSegment>, &'static str> {
     let (s0, s1) = synthesis.span;
-    if s1 <= s0 || s1 - s0 > OVERLAP_MAX_SPAN_SECS {
-        return Err("span empty or over the 30s cap");
+    if s1 <= s0 || s1 - s0 > REPAIR_CHAIN_CAP_SECS {
+        return Err("span empty or over the repair-chain cap");
+    }
+    if s1 - s0 < MIN_SYNTH_DURATION_SECS {
+        return Err("span under the minimum synthesis duration");
     }
     let span_ms = ((s0 * 1000.0) as i64, (s1 * 1000.0) as i64);
     let (_, badges) = vetted_stream_pair(synthesis, cluster_speaker)?;
@@ -2193,6 +2419,17 @@ fn has_consecutive_repeat(text: &str, min_words: usize) -> bool {
 /// separate conversational episode, not part of the corrupted region.
 pub const REPAIR_CHAIN_GAP_SECS: f64 = 2.5;
 
+/// Edge-absorption cap (design D7): a repair chain may extend PAST the
+/// mass-span cap to absorb a straddling edge row WHOLE — the clip-03
+/// defect (a two-voice plain row just past the window's end wall carried
+/// wrong-badge head words because the chain stopped at the shared cap).
+/// Its own constant, distinct from OVERLAP_MAX_SPAN_SECS: raising it
+/// never weakens mass-span eligibility (the seed-row guard still uses the
+/// mass cap). Absorb-whole-or-stop: a partially covered edge row's words
+/// resurface inside the stream decodes and render twice (the documented
+/// trap), so a cap-exceeding edge row stops the chain before it.
+pub const REPAIR_CHAIN_CAP_SECS: f64 = 35.0;
+
 /// A phrase-loop repair region: the whole-row window to re-synthesize and
 /// the row that triggered it (provenance donor for the replacement rows).
 #[derive(Debug, Clone, PartialEq)]
@@ -2222,8 +2459,7 @@ pub fn loop_repair_candidates(
 /// would duplicate the absorbed words into the streams), across gaps ≤
 /// REPAIR_CHAIN_GAP_SECS, stopping at synth atoms (already per-voice
 /// regions are never re-absorbed — this, not a span list, is what keeps a
-/// fired region from double-rendering; a STOOD-DOWN mass span carries no
-/// synth rows and must stay promotable), trimming before the row that
+/// fired region from double-rendering), trimming before the row that
 /// crosses `max_span_secs`. Manual spans stand their region down;
 /// overlapping windows dedupe to the first.
 pub fn repair_windows_from_seeds(
@@ -2269,12 +2505,23 @@ pub fn repair_windows_from_seeds(
         {
             continue;
         }
+        let chain_cap_ms = (REPAIR_CHAIN_CAP_SECS * 1000.0) as i64;
         while lo > 0 {
             let prev = &rows[lo - 1];
             if prev.synth_atom || rows[lo].audio_start_ms - prev.audio_end_ms > gap_ms {
                 break;
             }
-            if rows[hi].audio_end_ms - prev.audio_start_ms > max_ms {
+            let extended = rows[hi].audio_end_ms - prev.audio_start_ms;
+            if extended > max_ms {
+                // Edge absorption (D7): a row STRADDLING the mass-span cap
+                // (its start is inside the cap window) is absorbed WHOLE
+                // within the separate chain cap — then the chain stops.
+                // Absorb-whole-or-stop: no partial coverage, ever.
+                if extended <= chain_cap_ms
+                    && prev.audio_start_ms < rows[hi].audio_end_ms - max_ms
+                {
+                    lo -= 1;
+                }
                 break;
             }
             lo -= 1;
@@ -2284,7 +2531,14 @@ pub fn repair_windows_from_seeds(
             if next.synth_atom || next.audio_start_ms - rows[hi].audio_end_ms > gap_ms {
                 break;
             }
-            if next.audio_end_ms - rows[lo].audio_start_ms > max_ms {
+            let extended = next.audio_end_ms - rows[lo].audio_start_ms;
+            if extended > max_ms {
+                // Edge absorption (D7): see the head-side loop above.
+                if extended <= chain_cap_ms
+                    && next.audio_start_ms < rows[lo].audio_start_ms + max_ms
+                {
+                    hi += 1;
+                }
                 break;
             }
             hi += 1;
@@ -2319,6 +2573,7 @@ fn vetted_stream_pair(
     cluster_speaker: &dyn Fn(u32) -> Option<String>,
 ) -> Result<([String; 2], [String; 2]), &'static str> {
     let mut texts: [String; 2] = [String::new(), String::new()];
+    let span_dur = (synthesis.span.1 - synthesis.span.0).max(1e-6);
     for (i, st) in synthesis.streams.iter().enumerate() {
         let t = match st.text.as_ref() {
             Some(t) => t,
@@ -2329,6 +2584,46 @@ fn vetted_stream_pair(
         }
         if is_stuttering_decode(t) {
             return Err("a stream decode stutters (repeated n-gram)");
+        }
+        // Class E backstop (ear round 2): a fluent decode over a short span
+        // at an inhuman rate is machine fiction regardless of how it reads.
+        let rate = t.split_whitespace().count() as f64 / span_dur;
+        if rate > MAX_STREAM_WORDS_PER_SEC {
+            log::warn!(
+                "CENSUS-STANDDOWN span=[{:.2},{:.2}] floor=MAX_STREAM_WORDS_PER_SEC stream={} rate={:.1}w/s",
+                synthesis.span.0,
+                synthesis.span.1,
+                i,
+                rate
+            );
+            return Err("a stream decode exceeds the words-per-second ceiling");
+        }
+        // Same ceiling at the granularity actually rendered (clip-09 ear
+        // ruling 2026-10-07): the phantom "You don't?" row was 2 words in a
+        // 0.2s utterance — 10 w/s against the UTTERANCE's own walls. The
+        // span-level check above reads the whole window's duration and
+        // cannot see it. A cross-stream 3-gram dial was tried first and
+        // reverted: two real speakers share ordinary phrases ("would have
+        // been") in one window; the w/s ceiling is physics, phrase echo is
+        // not fiction.
+        for u in &st.utterances {
+            let Some(ut) = u.text.as_deref() else {
+                continue;
+            };
+            let u_dur = (u.offset_s.1 - u.offset_s.0).max(1e-6);
+            let u_rate = ut.split_whitespace().count() as f64 / u_dur;
+            if u_rate > MAX_STREAM_WORDS_PER_SEC {
+                log::warn!(
+                    "CENSUS-STANDDOWN span=[{:.2},{:.2}] floor=MAX_STREAM_WORDS_PER_SEC stream={} utterance=[{:.2},{:.2}] rate={:.1}w/s",
+                    synthesis.span.0,
+                    synthesis.span.1,
+                    i,
+                    u.offset_s.0,
+                    u.offset_s.1,
+                    u_rate
+                );
+                return Err("a stream utterance exceeds the words-per-second ceiling against its own walls");
+            }
         }
         texts[i] = t.clone();
     }
@@ -3651,6 +3946,143 @@ mod tests {
         StreamEvidence { cluster, margin, rms_ratio: 1.0, text: text.map(str::to_string), utterances: Vec::new() }
     }
 
+    // ── Fidelity scans (diarization-render-fidelity 3.1/3.2) ──
+
+    fn segp(
+        id: &str,
+        text: &str,
+        start_ms: i64,
+        end_ms: i64,
+        synth_atom: bool,
+        synth_parent: Option<&str>,
+    ) -> AlignedSegment {
+        AlignedSegment {
+            original_id: id.to_string(),
+            text: text.to_string(),
+            audio_start_ms: start_ms,
+            audio_end_ms: end_ms,
+            speaker: "Speaker 0".to_string(),
+            speaker_source: SpeakerSource::Auto,
+            synth_atom,
+            synth_parent: synth_parent.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn boundary_leak_scan_flags_only_synth_side_boundaries() {
+        // The leak shape the 80%-of-shorter duplicate bar structurally
+        // misses (ear round 2): a synth row whose tail duplicates the next
+        // row's HEAD — a boundary fragment of a long row, far under 80% of
+        // either row. Provenance-scoped: the identical shape between two
+        // PLAIN rows must not be flagged, and the mirrored direction
+        // (synth head copying the previous row's tail) must be.
+        let rows = vec![
+            segp("p", "one two three four five", 0, 2_000, false, None),
+            segp("q", "three four five six seven", 2_000, 4_000, true, None),
+            segp("a", "the meeting moved to the original cadence schedule", 4_000, 8_000, false, None),
+            segp("b", "now reaching the original cadence schedule", 8_000, 10_000, true, None),
+            segp("c", "the original cadence schedule holds for july", 10_000, 13_000, false, None),
+            // Plain/plain identical texts — the duplicate scan's territory,
+            // never the boundary scan's (no synth side).
+            segp("d", "filler words nine eight seven six five", 13_000, 15_000, false, None),
+            segp("e", "filler words nine eight seven six five", 15_000, 17_000, false, None),
+        ];
+        let found = scan_boundary_leaks(&rows, BOUNDARY_LEAK_MIN_CHUNK);
+        assert_eq!(found.len(), 2, "exactly the two synth-boundary leaks: {found:?}");
+        let tail_hit = found
+            .iter()
+            .find(|f| f.synth_row_id == "b")
+            .expect("synth tail vs neighbour head flagged");
+        assert_eq!(tail_hit.neighbour_span_ms, (10_000, 13_000), "next row is the temporal neighbour");
+        assert_eq!(tail_hit.chunk_len, 4, "the original cadence schedule");
+        let head_hit = found
+            .iter()
+            .find(|f| f.synth_row_id == "q")
+            .expect("synth head vs neighbour tail flagged");
+        assert_eq!(head_hit.neighbour_span_ms, (0, 2_000), "previous row is the temporal neighbour");
+        assert_eq!(head_hit.chunk_len, 3, "three four five");
+        // Deterministic repeat.
+        assert_eq!(scan_boundary_leaks(&rows, BOUNDARY_LEAK_MIN_CHUNK), found);
+    }
+
+    #[test]
+    fn boundary_leak_scan_stays_quiet_without_a_synth_side() {
+        let rows = vec![
+            segp("a", "alpha beta gamma delta epsilon", 0, 2_000, false, None),
+            segp("b", "gamma delta epsilon zeta eta", 2_000, 4_000, false, None),
+        ];
+        assert!(
+            scan_boundary_leaks(&rows, BOUNDARY_LEAK_MIN_CHUNK).is_empty(),
+            "a plain/plain boundary pair is the duplicate scan's territory"
+        );
+    }
+
+    #[test]
+    fn boundary_leak_scan_ignores_far_boundaries_and_non_touching_edges() {
+        // A matching chunk across minutes of silence is not a boundary
+        // leak — the gap guard suppresses it (same guard family as the
+        // duplicate scan's).
+        let rows = vec![
+            segp("a", "the original cadence schedule holds", 0, 2_000, false, None),
+            segp("b", "cadence schedule holds today", 600_000, 602_000, true, None),
+        ];
+        assert!(
+            scan_boundary_leaks(&rows, BOUNDARY_LEAK_MIN_CHUNK).is_empty(),
+            "matching chunk, non-shared boundary: gap guard fires"
+        );
+        // Only the TOUCHING edges are pairings: q.tail vs the previous
+        // row's head (edges temporally far apart) never scans, so the
+        // identical-ish texts here produce exactly the one head-vs-tail
+        // finding on the edge the pair shares.
+        let rows = vec![
+            segp("p", "one two three four five", 0, 2_000, false, None),
+            segp("q", "one two three four five six", 2_000, 4_000, true, None),
+            segp("r", "x y z", 4_000, 6_000, false, None),
+        ];
+        let found = scan_boundary_leaks(&rows, BOUNDARY_LEAK_MIN_CHUNK);
+        assert_eq!(found.len(), 1, "only the touching-edge leak: {found:?}");
+        assert_eq!(found[0].direction, "synth_head_vs_neighbour_tail");
+        assert_eq!(found[0].neighbour_span_ms, (0, 2_000));
+    }
+
+    #[test]
+    fn parent_link_scan_flags_dangling_and_misaligned_links() {
+        // The ..ddfdee shape (clip-12): a synth row whose parent's walls
+        // sit ~11.8s away — provenance misalignment, not a valid link.
+        let rows = vec![
+            segp("r1", "plain row", 0, 2_000, false, None),
+            segp("r2", "atom row", 2_000, 4_000, true, Some("s1")),
+            // Split piece: own source id as parent, walls inside the source.
+            segp("s1", "piece head", 2_000, 3_000, false, Some("s1")),
+            segp("r4", "dangling", 6_000, 7_000, true, Some("missing")),
+            segp("r5", "misaligned", 9_000, 9_500, true, Some("s2")),
+        ];
+        let sources = vec![
+            ("s1".to_string(), 0i64, 5_000i64),
+            ("s2".to_string(), 20_000, 22_000),
+        ];
+        let found = scan_parent_links(&rows, &sources);
+        assert_eq!(found.len(), 2, "dangling + misaligned only: {found:?}");
+        assert!(found.iter().all(|f| f.row_id == "r4" || f.row_id == "r5"));
+        let dangling = found.iter().find(|f| f.row_id == "r4").expect("dangling");
+        assert!(matches!(dangling.defect, ParentLinkDefect::Dangling));
+        assert!(dangling.parent_span_ms.is_none());
+        let misaligned = found.iter().find(|f| f.row_id == "r5").expect("misaligned");
+        assert!(matches!(misaligned.defect, ParentLinkDefect::WallMismatch));
+        assert_eq!(misaligned.parent_span_ms, Some((20_000, 22_000)));
+    }
+
+    #[test]
+    fn parent_link_scan_passes_atom_and_split_piece_links() {
+        let rows = vec![
+            segp("r1", "atom row", 2_000, 4_000, true, Some("s1")),
+            segp("s1", "piece head", 2_000, 3_000, false, Some("s1")),
+            segp("r2", "plain row", 5_000, 6_000, false, None),
+        ];
+        let sources = vec![("s1".to_string(), 0i64, 5_000i64)];
+        assert!(scan_parent_links(&rows, &sources).is_empty());
+    }
+
     fn ev_quiet(cluster: u32, margin: f32, ratio: f32) -> StreamEvidence {
         StreamEvidence { cluster, margin, rms_ratio: ratio, text: Some("alpha".into()), utterances: Vec::new() }
     }
@@ -3734,6 +4166,61 @@ mod tests {
     }
 
     #[test]
+    fn impossible_rate_stream_decode_degrades() {
+        // Class E (ear round 2, 2026-10-06): Whisper hallucinated fluent
+        // template sentences on separated streams at up to ~35 words/s
+        // against their wall duration. The ceiling's denominator is the
+        // stream's own span duration — one definition everywhere. The
+        // span here is ABOVE the duration floor (1.6s) so this pin stays
+        // on the RATE backstop, not the duration floor.
+        let rows = vec![seg("src1", "jumbled", 100_000, 101_600, "Speaker 0")];
+        let cov = vec![(100_000, 101_600)];
+        let flood =
+            "the meeting will now come to order and the first agenda item is budget review";
+        let s = synth_cov(
+            (100.0, 101.6),
+            ev(1, 0.30, Some(flood)),
+            ev(3, 0.20, Some("gamma")),
+            &cov,
+        );
+        assert!(
+            synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_none(),
+            "15 words against a 1.6s span (~9.4 w/s) is machine fiction"
+        );
+        // Human-rate decodes on the same span still synthesize.
+        let s = synth_cov(
+            (100.0, 101.6),
+            ev(1, 0.30, Some("alpha beta gamma")),
+            ev(3, 0.20, Some("delta")),
+            &cov,
+        );
+        assert!(synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_some());
+    }
+
+    #[test]
+    fn below_floor_span_degrades_at_the_splice() {
+        // The acceptance-layer expression of the duration floor: a
+        // self-built SpanSynthesis (replay harness, any future caller)
+        // cannot slip a sub-floor span past the pure splices — the spec's
+        // "SHALL NOT synthesize" is structural, not just the run_engine
+        // pre-filter.
+        let rows = vec![seg("src1", "jumbled", 100_000, 101_200, "Speaker 0")];
+        let cov = vec![(100_000, 101_200)];
+        let s = synth_cov(
+            (100.0, 101.2),
+            ev(1, 0.30, Some("alpha")),
+            ev(3, 0.20, Some("gamma")),
+            &cov,
+        );
+        assert!(synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_none());
+        assert_eq!(
+            repair_overlap_rows_checked(&rows, &s, &cluster_speaker)
+                .expect_err("sub-floor repair window"),
+            "span under the minimum synthesis duration"
+        );
+    }
+
+    #[test]
     fn same_badge_collapse_degrades() {
         let rows = vec![seg("src1", "jumbled", 100_000, 102_000, "Speaker 0")];
         let s = synth(
@@ -3780,6 +4267,81 @@ mod tests {
         assert!(synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_some(), "exactly one whisper window is fine");
         let s = synth_cov((0.0, 30.5), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")), &cov);
         assert!(synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_none(), "beyond one window degrades");
+    }
+
+    #[test]
+    fn repair_chain_absorbs_straddling_edge_row_whole() {
+        // Clip-03 defect class (design D7): the chain's extension past the
+        // mass-span cap left a two-voice edge row unrepaired (wrong-badge
+        // head words). The row STRADDLING the mass-span cap is absorbed
+        // WHOLE when the extension stays within REPAIR_CHAIN_CAP_SECS.
+        let rows = vec![
+            seg("r0", "before the seed", 0, 2_000, "Speaker 0"),
+            seg("r1", "seed row with a long stretch of speech", 2_500, 28_500, "Speaker 0"),
+            seg("r2", "two voice edge row after the window", 29_000, 32_000, "Speaker 1"),
+        ];
+        let seeds = vec![(3_000i64, 27_000i64)];
+        let out = repair_windows_from_seeds(&rows, &seeds, &[], OVERLAP_MAX_SPAN_SECS);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].span,
+            (0, 32_000),
+            "the straddling edge row is absorbed whole: {out:?}"
+        );
+    }
+
+    #[test]
+    fn repair_chain_stops_before_cap_exceeding_edge() {
+        // Absorb-whole-or-stop: an edge row whose absorption would exceed
+        // the repair-chain cap stops the chain BEFORE it — the row keeps
+        // its old shape, no slice of it enters the stream decodes.
+        let rows = vec![
+            seg("r0", "before the seed", 0, 2_000, "Speaker 0"),
+            seg("r1", "seed row with a long stretch of speech", 2_500, 28_500, "Speaker 0"),
+            seg("r2", "cap exceeding edge row after the window", 29_000, 38_000, "Speaker 1"),
+        ];
+        let seeds = vec![(3_000i64, 27_000i64)];
+        let out = repair_windows_from_seeds(&rows, &seeds, &[], OVERLAP_MAX_SPAN_SECS);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].span,
+            (0, 28_500),
+            "the chain stops before the edge row: {out:?}"
+        );
+    }
+
+    #[test]
+    fn repair_splice_accepts_windows_up_to_the_chain_cap() {
+        // The repair splice's own cap is the CHAIN cap — a 31s absorbed
+        // window synthesizes; beyond the chain cap it degrades. The MASS
+        // splice's 30s guard is untouched (oversized_span_degrades).
+        let rows = vec![seg("src1", "long two voice stretch", 0, 31_000, "Speaker 0")];
+        let cov: Vec<(i64, i64)> = (0..31).map(|s| (s * 1000, (s + 1) * 1000)).collect();
+        let s = synth_cov((0.0, 31.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")), &cov);
+        assert!(repair_overlap_rows_checked(&rows, &s, &cluster_speaker).is_ok());
+        let rows = vec![seg("src1", "long two voice stretch", 0, 36_000, "Speaker 0")];
+        let cov: Vec<(i64, i64)> = (0..36).map(|s| (s * 1000, (s + 1) * 1000)).collect();
+        let s = synth_cov((0.0, 36.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")), &cov);
+        assert!(repair_overlap_rows_checked(&rows, &s, &cluster_speaker).is_err());
+    }
+
+    #[test]
+    fn class_e_fiction_candidates_seed_nothing() {
+        // Cold-gate finding (2026-10-07): the clip-04 repair re-fired from
+        // a stutter seed whose text was RATE-FLOOR fiction (34 words in
+        // 1.52s). Fiction is not stutter evidence.
+        let mut flood = synth(
+            (100.0, 101.52),
+            ev(1, 0.30, Some("the meeting will now come to order and the first agenda item is budget review and the second item is staffing")),
+            ev(3, 0.20, Some("gamma")),
+        );
+        assert!(is_class_e_fiction(&flood), "35 words in 1.52s is fiction");
+        // Human-rate stutter is still legitimate seed evidence.
+        flood.streams[0].text = Some("yeah yeah yeah tell me the plan".into());
+        assert!(!is_class_e_fiction(&flood));
+        // Abstaining streams are not fiction.
+        flood.streams[0].text = None;
+        assert!(!is_class_e_fiction(&flood));
     }
 
     #[test]
@@ -3934,10 +4496,11 @@ mod tests {
     fn short_disfluency_repetition_still_synthesizes() {
         // Human disfluencies ("yeah, yeah, yeah") are single-word repeats —
         // they must NOT read as decode stutter, or real talk-overs would
-        // stand down everywhere.
+        // stand down everywhere. Span cleared of the class-E duration
+        // floor (2.0s ≥ 1.5) so the pin stays on the stutter check.
         let rows = vec![seg("src1", "ordinary speech around it", 100_000, 102_000, "Speaker 0")];
         let s = synth(
-            (100.5, 101.5),
+            (100.0, 102.0),
             ev(1, 0.30, Some("yeah, yeah, yeah, tell me the plan")),
             ev(3, 0.20, Some("delta echo foxtrot golf")),
         );
@@ -3990,8 +4553,10 @@ mod tests {
         assert_eq!(cands.len(), 1, "{cands:?}");
         let c = &cands[0];
         // west: w2,w1,w0 all chain (gaps 0 / 0.4 / 0); east: e1,e2 chain,
-        // e3 would cross 30s (174.66→205.74 = 31.08) so it is trimmed.
-        assert_eq!((c.span.0, c.span.1), (174_660, 202_690), "{c:?}");
+        // e3 straddles the 30s mass cap (174.66→205.74 = 31.08) and is
+        // absorbed WHOLE within the 35s chain cap (design D7) — the chain
+        // then stops, so e4 stays out.
+        assert_eq!((c.span.0, c.span.1), (174_660, 205_740), "{c:?}");
         assert_eq!(c.donor_original_id, "cand");
     }
 
@@ -4066,6 +4631,70 @@ mod tests {
         )];
         let s = synth((100.0, 106.0), ev(1, 0.30, Some("alpha bravo alpha bravo alpha bravo")), ev(3, 0.20, Some("beta words")));
         assert!(repair_overlap_rows(&rows, &s, &cluster_speaker).is_none());
+    }
+
+    // ---- separation-leak veto (clip-09 ear ruling 2026-10-07) ----
+
+    #[test]
+    fn fiction_utterance_rate_degrades_the_synthesis() {
+        // The clip-09 phantom "You don't?" rendered as its own row at
+        // [1429.0-1429.2]: 2 words in a 0.2s utterance = 10 w/s against the
+        // utterance's own walls — machine fiction by the same class-E
+        // physics as the span-level ceiling, at the granularity actually
+        // rendered. (The cross-stream 3-gram dial was tried first and
+        // reverted: the S18 probe showed two real speakers sharing "would
+        // have been" in one window — ordinary phrase echo, not a leak.)
+        let rows = vec![seg(
+            "m",
+            "the seller profile behaving the same way as kind of home",
+            100_000,
+            112_000,
+            "Speaker 0",
+        )];
+        let mut a = ev(1, 0.30, Some("You don't?"));
+        a.utterances = vec![StreamUtterance {
+            offset_s: (7.8, 8.0),
+            text: Some("You don't?".to_string()),
+        }];
+        let s = synth_cov(
+            (100.0, 112.0),
+            a,
+            ev(3, 0.20, Some("which is you don't control what categories are there")),
+            &[(100_000, 112_000)],
+        );
+        assert!(
+            synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_none(),
+            "an utterance over the w/s ceiling against its own walls is fiction: the synthesis must degrade"
+        );
+        assert!(
+            repair_overlap_rows_checked(&rows, &s, &cluster_speaker)
+                .err()
+                .is_some_and(|r| r.contains("utterance exceeds the words-per-second ceiling")),
+            "the repair splice names the same gate"
+        );
+    }
+
+    #[test]
+    fn human_rate_utterances_still_synthesize() {
+        // Attested S18 decodes: long utterances well under the ceiling (and
+        // ordinary phrase echo across streams — "would have been" — must
+        // not veto a synthesis).
+        let rows = vec![seg("m", "I think it's a good idea", 100_000, 106_000, "Speaker 0")];
+        let mut a = ev(1, 0.30, Some("I think so, would have been nice"));
+        a.utterances = vec![StreamUtterance {
+            offset_s: (0.0, 3.0),
+            text: Some("I think so, would have been nice".to_string()),
+        }];
+        let mut b = ev(3, 0.20, Some("it would have been Participant E"));
+        b.utterances = vec![StreamUtterance {
+            offset_s: (0.0, 6.0),
+            text: Some("it would have been Participant E".to_string()),
+        }];
+        let s = synth_cov((100.0, 106.0), a, b, &[(100_000, 106_000)]);
+        assert!(
+            synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_some(),
+            "human-rate utterances and phrase echo synthesize"
+        );
     }
 
     // ---- utterance-real walls (4.3, clip-02 ear ruling 2026-10-05) ----
@@ -4445,9 +5074,11 @@ mod tests {
         let c = &cands[0];
         // west chain stops at the synth atom (gap to it would be absorbable
         // but synth rows are never re-absorbed); the seed row + e1..e4 fit
-        // under the 30s cap from 191_820 (e5 would cross it)
+        // under the 30s cap from 191_820; e5 STRADDLES the mass cap and is
+        // absorbed whole within the 35s chain cap (D7), stopping the chain.
         assert_eq!(c.span.0, 191_820, "window starts at the first absorbable row west of the seed");
-        assert!(c.span.1 <= 191_820 + 30_000, "cap respected: {c:?}");
+        assert!(c.span.1 <= 191_820 + 35_000, "chain cap respected: {c:?}");
+        assert_eq!(c.span.1, 226_000, "the straddling edge row is absorbed whole: {c:?}");
         assert!(c.span.1 >= 213_260, "window reaches well past the mixed row (probe: >=9s needed): {c:?}");
         assert_eq!(c.donor_original_id, "mixed");
         // The seed overlaps its own STOOD-DOWN mass span — irrelevant by
@@ -4492,7 +5123,9 @@ mod tests {
         let cands = repair_windows_from_seeds(&rows, &seeds, &[], OVERLAP_MAX_SPAN_SECS);
         assert_eq!(cands.len(), 1, "the loop seed must dedupe into the stutter window: {cands:?}");
         let c = &cands[0];
-        assert_eq!((c.span.0, c.span.1), (174_660, 202_690), "{c:?}");
+        // e2 straddles the 30s mass cap from 174_660 (174.66→205.74 =
+        // 31.08s) and is absorbed whole within the 35s chain cap (D7).
+        assert_eq!((c.span.0, c.span.1), (174_660, 205_740), "{c:?}");
         assert_eq!(c.donor_original_id, "mixed", "the stutter seed's row donates");
     }
 

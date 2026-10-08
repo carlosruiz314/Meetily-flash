@@ -1,0 +1,24 @@
+{
+  "id": "degrade_undecided_identity",
+  "note": "PURELY SYNTHETIC. Identity-skip shape: one stream's span-level identity is undecided (None) — decode_span_synthesis skips the input BEFORE any decode (expected decode calls: 0), no candidate is produced, and the render stays byte-identical.",
+  "rows": [
+    { "id": "src1", "text": "mixture jumble here", "start_ms": 2000, "end_ms": 10000, "speaker": "Speaker 0" }
+  ],
+  "span_s": [2.0, 10.0],
+  "covered_atoms_ms": [[2000, 10000]],
+  "identity": [[1, 0.30], null],
+  "rms_ratio": [0.6, 0.4],
+  "streams": [
+    {
+      "tone_windows_ms": [[0, 8000]],
+      "decode_text": "Alpha words."
+    },
+    {
+      "tone_windows_ms": [[0, 8000]],
+      "decode_text": "Gamma words."
+    }
+  ],
+  "manual_spans_ms": [],
+  "label_map": { "1": "userA", "3": "userC" },
+  "expected": { "mode": "degrade", "veto": null }
+}
