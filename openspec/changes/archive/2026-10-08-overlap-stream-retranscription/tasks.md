@@ -165,7 +165,7 @@ evidence home, never repo-committed).
       the other participant). Pre-existing attribution error, not introduced
       by surgery — the parent link keeps it reconstructable. Candidate fix:
       re-attest piece badges with the wall-atom voice-vote machinery.
-      File as a GitHub issue at archive time.
+      File as a GitHub issue at archive time. → FILED: #829.
 - [x] RULING (ear round 2026-09-30): a stuttering stream decode (a repeated
       n-gram ≥2 words, e.g. the clip-01 line "that's the hope ×4" for a real
       utterance, or clip-02 "the world, the world") stands its SPAN down —
@@ -220,7 +220,7 @@ evidence home, never repo-committed).
       general rule (never a per-moment skip list).
 - [ ] 4.2 S16 graduation: on the user's confirmation, remove the S16
       waiver from the fixture's known_limitations (amendment record
-      stays), making the window a hard pin.
+      stays), making the window a hard pin. → FILED: #831.
 - [x] 4.3 DONE (2026-10-06): utterance-real walls landed. Live gate
       20261006-utterance-walls4.log GREEN: 20 passed + 1 amended, 0
       failed; S18 fabrication absent with 6/6 needles; 0 fractures / 0
@@ -234,6 +234,22 @@ evidence home, never repo-committed).
       byte-identical, no split) → decode-once + sentence-match-or-legacy
       + peak-anchored floor. 762 lib tests green. Ear round: clip 01
       PASS (class closed); clip 02 re-check pending on the new render.
+- [x] 4.1 EAR ROUND 2 (2026-10-05/06): clip 01 PASS — stutter-promotion
+      class closed; clip 02 FAIL (gap erasure) -> 4.3 fix, verified; clip
+      03 FAIL-partial — "It is good work" badge correct, but (a) a
+      leftover mixed row just past the window edge carries wrong-badge
+      head words, (b) the dominant voice's phrase leaks as fragments into
+      BOTH stream decodes (duplicate scan's 80% bar misses tail
+      fragments); clip 04 FAIL — the repair is net-worse here: Participant B's
+      interjection dropped by the separated decode (word loss created by
+      the repair), a 4-turn exchange flattened into two whole-window
+      rows, and her answer's head leaked into Participant C's stream ("Speaker
+      2" = Participant C in that region); doubled "He was hired" attested
+      genuine. Clips 05-06 waived by the user; round closed -> paneled
+      build (explore/propose/build adversarial panels) over the defect
+      classes: leak fragments, chronology erasure (4.4), repair-created
+      word loss, mixed-row edge leftovers. Rulings in
+      fixture_clips/clips_manifest.md (local).
 - [ ] 4.4 DEFERRED (user ruling 2026-10-06): token-timestamp walls inside
       synth rows. Clip-02 residual: Participant A's whole-window row carries his
       "Oh, that's out." textually last with no internal wall (ear: it
@@ -251,7 +267,8 @@ evidence home, never repo-committed).
       — so no re-merge). RISK to resolve before wiring: whisper walls
       under separation noise come back DTW-smeared (fixture S2/S7c
       evidence) — validate token-wall reliability on separated streams
-      with an ear round first.
+      with an ear round first. → FILED: #830 (phase A census landed in
+      diarization-render-fidelity; phase B stays ear-round-gated).
 - [ ] 4.3 original plan, kept for the record (clip-02 ear
       ruling 2026-10-05; design: "Utterance-real walls"). RED first:
       `stream_utterance_spans` splits a stream at internal silences
