@@ -2,13 +2,14 @@
 
 ### Requirement: Overlap spans render per-voice rows from separated streams
 
-When the separation pre-pass identifies an overlap span and the margin-gated
+The pipeline SHALL transcribe each separated stream (span carved with
+context padding, RMS-normalized) through the loaded Whisper engine when
+the separation pre-pass identifies an overlap span and the margin-gated
 voice votes are decisive for BOTH separated streams (one vote each, at or
-above margin), the pipeline SHALL transcribe each separated stream (span
-carved with context padding, RMS-normalized) through the loaded Whisper
-engine, and the span's mixture rows in the regenerated rendering SHALL be
-replaced by one row per decisive stream — span walls, the stream's voice
-badge, the stream's text. The two streams' decisive votes SHALL resolve to
+above margin), and the span's mixture rows in the regenerated rendering
+SHALL be replaced by one row per decisive stream — span walls, the
+stream's voice badge, the stream's text. The two streams' decisive votes
+SHALL resolve to
 DIFFERENT speaker clusters; a same-badge outcome (separation collapse) SHALL
 degrade to the mixture render. Vote evidence SHALL carry stream identity (a
 per-span record of stream → cluster, margin, text) so badges are not derived
