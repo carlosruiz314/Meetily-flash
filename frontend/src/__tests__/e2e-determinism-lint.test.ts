@@ -30,9 +30,11 @@ afterEach(() => {
 describe('determinism ESLint rule (3.2)', () => {
   // Each test spins up a real ESLint instance with useEslintrc. The FIRST invocation in
   // the process pays the cold @typescript-eslint parser + config-cascade load, which on
-  // Windows exceeds vitest's default 5s budget (~8-12s observed). Subsequent tests reuse
-  // the warmed modules and finish in tens of ms.
-  const ESLINT_TEST_TIMEOUT = 30_000;
+  // Windows exceeds vitest's default 5s budget (~8-12s observed) — and exceeds 30s when
+  // the full suite runs machine-parallel under the pre-push hook (3 aborted pushes on
+  // 2026-10-08, each green in isolation). The budget only bounds a hung spawn: the lint
+  // itself finishes in tens of ms once the modules are warm.
+  const ESLINT_TEST_TIMEOUT = 120_000;
 
   test('page.waitForTimeout in an e2e spec triggers the ban rule from .eslintrc.json', async () => {
     fs.mkdirSync(META_DIR, { recursive: true });
