@@ -165,7 +165,7 @@ evidence home, never repo-committed).
       the other participant). Pre-existing attribution error, not introduced
       by surgery — the parent link keeps it reconstructable. Candidate fix:
       re-attest piece badges with the wall-atom voice-vote machinery.
-      File as a GitHub issue at archive time. → FILED: #829.
+      File as a GitHub issue at archive time. → FILED: fork issue #3 (an upstream #829 was misfiled and superseded).
 - [x] RULING (ear round 2026-09-30): a stuttering stream decode (a repeated
       n-gram ≥2 words, e.g. the clip-01 line "that's the hope ×4" for a real
       utterance, or clip-02 "the world, the world") stands its SPAN down —
@@ -220,7 +220,7 @@ evidence home, never repo-committed).
       general rule (never a per-moment skip list).
 - [ ] 4.2 S16 graduation: on the user's confirmation, remove the S16
       waiver from the fixture's known_limitations (amendment record
-      stays), making the window a hard pin. → FILED: #831.
+      stays), making the window a hard pin. → FILED: fork issue #5 (an upstream #831 was misfiled and superseded).
 - [x] 4.3 DONE (2026-10-06): utterance-real walls landed. Live gate
       20261006-utterance-walls4.log GREEN: 20 passed + 1 amended, 0
       failed; S18 fabrication absent with 6/6 needles; 0 fractures / 0
@@ -267,7 +267,7 @@ evidence home, never repo-committed).
       — so no re-merge). RISK to resolve before wiring: whisper walls
       under separation noise come back DTW-smeared (fixture S2/S7c
       evidence) — validate token-wall reliability on separated streams
-      with an ear round first. → FILED: #830 (phase A census landed in
+      with an ear round first. → FILED: fork issue #4 (an upstream #830 was misfiled and superseded; phase A census landed in
       diarization-render-fidelity; phase B stays ear-round-gated).
 - [ ] 4.3 original plan, kept for the record (clip-02 ear
       ruling 2026-10-05; design: "Utterance-real walls"). RED first:
