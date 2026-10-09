@@ -3,6 +3,24 @@
 # Pre-push gate 2: smoke tests — cross-platform-automated-smoke-tests.
 
 # ---------------------------------------------------------------------------
+# Gate 0: fork-only issue tracker (gh misfile guard, 2026-10-08). On a fork
+# checkout, gh's parent-repo heuristic sends `gh issue create` to the
+# UPSTREAM unless a per-clone default is set — that filed deferred-work
+# issues against Zackriya-Solutions/meetily twice. There is no hook around
+# `gh` itself, so the push is the chokepoint: fail loudly while the default
+# is unset or wrong. Skip silently when gh is absent. Normative rule:
+# AGENTS.md §7 "Issues live in the fork only".
+# ---------------------------------------------------------------------------
+if command -v gh >/dev/null 2>&1; then
+  GH_DEFAULT=$(gh repo set-default --view 2>/dev/null)
+  if [ "$GH_DEFAULT" != "carlosruiz314/Meetily-flash" ]; then
+    echo "[gh-guard] BLOCKED: gh default repo is '${GH_DEFAULT:-<unset>}' — issues are filed only against the fork." >&2
+    echo "[gh-guard] Fix: gh repo set-default carlosruiz314/Meetily-flash   (then push again)." >&2
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------------------
 # Gate 1 runs UNCONDITIONALLY — SKIP_SMOKE must never bypass it. Fail-closed:
 # a git error while inspecting the outgoing range blocks the push rather than
 # waving it through. Blocks outgoing commits that carry meeting-derived

@@ -258,9 +258,10 @@ first (`playwright.config.ts` sets `reuseExistingServer: !CI`).
 
 - Branch per OpenSpec change. Branch name matches the change name.
 - Commits reference the change by name in the subject.
+- **Issues live in the fork only.** Every `gh issue create` (and any other gh write) targets `carlosruiz314/Meetily-flash` — never the upstream `Zackriya-Solutions/meetily`. On a fork checkout gh's parent-repo heuristic silently defaults to upstream (this misfiled deferred-work issues twice, 2026-10-08): set `gh repo set-default carlosruiz314/Meetily-flash` right after cloning, scripts pass `-R carlosruiz314/Meetily-flash` explicitly anyway, and the pre-push hook's gh-guard (Gate 0) fails the push while the default is unset or wrong.
 - No force-pushing to `main`. No `--no-verify`.
 - Before merging: `cargo test && pytest && pnpm test && pnpm lint` all green.
-- Deferred work tracked as GitHub issues, not in-code TODOs or backlog files.
+- Deferred work tracked as GitHub issues (in the fork — see above), not in-code TODOs or backlog files.
 
 **Branch naming**:
 - `main` — stable releases
