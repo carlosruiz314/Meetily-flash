@@ -452,7 +452,10 @@ enum WaiverOutcome {
 /// is the amendment record's id (entry id, or the render-fixture's
 /// failure-kind id); `assertion_id` is the failing assertion's coverage
 /// key (a waivable pin's label, VERDICT_CHECK_KIND, or a render-fixture
-/// failure-kind id).
+/// failure-kind id). An empty assertion id (the pin site routes
+/// `label.unwrap_or("")` for unlabeled pins) never waives — defense in
+/// depth on top of the lint, which requires non-empty labels and covers
+/// entries that resolve against something real.
 fn resolve_waiver(
     known_limitations: &[String],
     amendments: &std::collections::BTreeMap<String, Amendment>,
@@ -460,7 +463,11 @@ fn resolve_waiver(
     assertion_id: &str,
     hard: bool,
 ) -> WaiverOutcome {
-    if hard || assertion_id == "*" || !known_limitations.iter().any(|k| k == record_key) {
+    if hard
+        || assertion_id.is_empty()
+        || assertion_id == "*"
+        || !known_limitations.iter().any(|k| k == record_key)
+    {
         return WaiverOutcome::Uncovered;
     }
     match amendments.get(record_key) {
@@ -508,24 +515,30 @@ fn record_render_failure(
     }
 }
 
-/// Plain `cargo test` (no audio/models/env): every KNOWN-LIMITATION id must
-/// carry a complete, auditable amendment record whose covers list is
-/// non-empty and resolvable, and every amendment record must belong to a
-/// listed or existing entry. Runs for BOTH gate fixtures (the ear-truth
-/// fixture and the render snapshot): the render fixture's records are
-/// failure-kind-keyed, so their covers entries must name listed kinds.
-#[test]
-fn ear_truth_fixture_lint() {
-    // The golden fixture is meeting-derived and lives only in the local
-    // evidence home; a fresh clone skips loudly instead of failing.
-    let Some(fixture_path) = evidence_fixture::evidence_fixture("ear_truth_cde5c264.json")
-    else {
-        return;
-    };
-    let fixture: Fixture = serde_json::from_str(
-        &std::fs::read_to_string(&fixture_path).expect("read fixture JSON"),
-    )
-    .expect("parse fixture JSON");
+/// Date + reason completeness for an amendment record (shared by the
+/// listed-limitation audit and the all-records audit below).
+fn assert_amendment_complete(id: &str, record: &Amendment) {
+    assert!(
+        !record.user_confirmed.is_empty()
+            && record.user_confirmed.len() == 10
+            && record.user_confirmed.as_bytes()[4] == b'-'
+            && record.user_confirmed.as_bytes()[7] == b'-'
+            && !record.reason.is_empty(),
+        "amendment record for {id} is incomplete (needs a YYYY-MM-DD user_confirmed + a reason)"
+    );
+}
+
+/// The ear-truth fixture audit: listed KNOWN-LIMITATION records must be
+/// complete and auditable (non-empty covers, resolvable entries, waivable
+/// pins labeled, hard pins unlabeled); every amendment record must carry a
+/// date + reason — including records for unlisted entries, which are inert
+/// at runtime (`resolve_waiver` never consults unlisted keys) but must stay
+/// complete so listing the entry later cannot resurrect an incomplete
+/// record. Covers stay audited only for listed records: an unlisted
+/// record's covers list has no runtime meaning, and forcing one onto the
+/// legacy ruling records (which attest badge facts, not waivers) would
+/// fabricate coverage semantics.
+fn audit_ear_truth_fixture(fixture: &Fixture) {
     let ids: Vec<&String> = fixture.entries.iter().map(|e| &e.id).collect();
     for id in &fixture.known_limitations {
         assert!(
@@ -536,17 +549,7 @@ fn ear_truth_fixture_lint() {
             .amendments
             .get(id)
             .unwrap_or_else(|| panic!("KNOWN-LIMITATION {id} has no amendments record"));
-        assert!(
-            !record.user_confirmed.is_empty() && !record.reason.is_empty(),
-            "amendment record for {id} is incomplete (needs user_confirmed + reason)"
-        );
-        assert!(
-            record.user_confirmed.len() == 10
-                && record.user_confirmed.as_bytes()[4] == b'-'
-                && record.user_confirmed.as_bytes()[7] == b'-',
-            "amendment record for {id}: user_confirmed must be a YYYY-MM-DD date, got {:?}",
-            record.user_confirmed
-        );
+        assert_amendment_complete(id, record);
         // Covers audit (overlap-repair-net-worse-guard 4.2): non-empty, no
         // wildcard, every entry resolvable (a waivable pin label on the
         // entry, or VERDICT_CHECK_KIND), waivable pins labeled, hard pins
@@ -559,10 +562,15 @@ fn ear_truth_fixture_lint() {
         let waivable: Vec<Option<&String>> = entry_ref
             .map(|e| e.pins.iter().filter(|p| !p.hard).map(|p| p.label.as_ref()).collect())
             .unwrap_or_default();
-        let unlabeled = waivable.iter().filter(|l| l.is_none()).count();
+        // Empty labels count as unlabeled: `Some("")` would pair with a
+        // covers entry of "" into a degenerate self-consistent waiver.
+        let unlabeled = waivable
+            .iter()
+            .filter(|l| l.map_or(true, |s| s.trim().is_empty()))
+            .count();
         assert_eq!(
             unlabeled, 0,
-            "listed entry {id} has waivable pins without labels — they can never be covered"
+            "listed entry {id} has waivable pins without non-empty labels — they can never be covered"
         );
         let hard_labeled = entry_ref
             .map(|e| e.pins.iter().filter(|p| p.hard && p.label.is_some()).count())
@@ -581,40 +589,65 @@ fn ear_truth_fixture_lint() {
             );
         }
     }
+    for (id, record) in &fixture.amendments {
+        assert_amendment_complete(id, record);
+    }
     for id in fixture.amendments.keys() {
         assert!(
             fixture.known_limitations.contains(id) || ids.contains(&id),
             "amendments record for {id} references an unknown entry"
         );
     }
+}
 
-    // The render snapshot fixture: same audit, kind-keyed — covers entries
-    // must name listed failure kinds.
-    if let Some(render_path) = evidence_fixture::evidence_fixture("cde5c264_transcripts.json") {
-        let rf: RenderFixture = serde_json::from_str(
+/// The render-snapshot audit, kind-keyed: a record's covers entries must
+/// name the record's OWN failure kind — `record_render_failure` routes
+/// with the kind as both record key and assertion id, so a covers entry
+/// naming any other kind waives nothing at runtime (dead coverage is
+/// exactly the drift this lint exists to catch).
+fn audit_render_fixture(rf: &RenderFixture) {
+    for id in &rf.known_limitations {
+        let record = rf
+            .amendments
+            .get(id)
+            .unwrap_or_else(|| panic!("render fixture KNOWN-LIMITATION {id} has no amendments record"));
+        assert_amendment_complete(id, record);
+        assert!(
+            !record.covers.is_empty(),
+            "render fixture amendment record for {id} has an empty covers list"
+        );
+        for c in &record.covers {
+            assert!(
+                c == id,
+                "render fixture record {id} covers {c:?} — must name the record's own failure kind (any other kind waives nothing at runtime)"
+            );
+        }
+    }
+}
+
+#[test]
+fn ear_truth_fixture_lint() {
+    // The two fixtures audit independently: a missing fixture skips
+    // loudly (evidence_fixture prints the setup instructions) without
+    // suppressing the other audit — a missing ear-truth fixture must not
+    // also skip the render-snapshot audit.
+    let ear = evidence_fixture::evidence_fixture("ear_truth_cde5c264.json").map(|fixture_path| {
+        serde_json::from_str::<Fixture>(
+            &std::fs::read_to_string(&fixture_path).expect("read fixture JSON"),
+        )
+        .expect("parse fixture JSON")
+    });
+    if let Some(fixture) = ear {
+        audit_ear_truth_fixture(&fixture);
+    }
+    let render = evidence_fixture::evidence_fixture("cde5c264_transcripts.json").map(|render_path| {
+        serde_json::from_str::<RenderFixture>(
             &std::fs::read_to_string(&render_path).expect("read cde5c264_transcripts.json"),
         )
-        .expect("parse cde5c264_transcripts.json");
-        for id in &rf.known_limitations {
-            let record = rf
-                .amendments
-                .get(id)
-                .unwrap_or_else(|| panic!("render fixture KNOWN-LIMITATION {id} has no amendments record"));
-            assert!(
-                !record.user_confirmed.is_empty() && !record.reason.is_empty(),
-                "render fixture amendment record for {id} is incomplete"
-            );
-            assert!(
-                !record.covers.is_empty(),
-                "render fixture amendment record for {id} has an empty covers list"
-            );
-            for c in &record.covers {
-                assert!(
-                    rf.known_limitations.contains(c),
-                    "render fixture record {id} covers {c:?} — not a listed failure kind"
-                );
-            }
-        }
+        .expect("parse cde5c264_transcripts.json")
+    });
+    if let Some(rf) = render {
+        audit_render_fixture(&rf);
     }
 }
 
@@ -2673,4 +2706,22 @@ fn waiver_router_verdict_kind_covered() {
     );
     let out = resolve_waiver(&["E".to_string()], &fx_records, "E", VERDICT_CHECK_KIND, false);
     assert!(matches!(out, WaiverOutcome::Waived { .. }));
+}
+
+#[test]
+fn waiver_router_empty_assertion_never_waives() {
+    let mut fx_records = std::collections::BTreeMap::new();
+    fx_records.insert(
+        "E".to_string(),
+        Amendment {
+            user_confirmed: "2026-10-01".to_string(),
+            reason: "entry-level limitation".to_string(),
+            covers: vec![VERDICT_CHECK_KIND.to_string()],
+        },
+    );
+    // The pin site routes an unlabeled waivable pin as "" — the empty
+    // coverage key must never match a covers entry (defense in depth on
+    // top of the lint's non-empty-label rule).
+    let out = resolve_waiver(&["E".to_string()], &fx_records, "E", "", false);
+    assert!(matches!(out, WaiverOutcome::Uncovered));
 }

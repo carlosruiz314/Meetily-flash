@@ -54,7 +54,7 @@
 
 ## 2. Net-worse guard — the production decision function
 
-- [x] 2.1 RED in `net_worse_guard.rs` (plain `cargo test`, invented
+- [x] 2.1 [CLOSED-BY-RULING — not executed; see §5 note] RED in `net_worse_guard.rs` (plain `cargo test`, invented
       tokens): guard verdict over (baseline mixture rows, repair render
       rows, seed walls) → apply vs stand-down per the settled bar;
       fail-closed cases (empty baseline, missing rows, guard error →
@@ -63,23 +63,23 @@
       flip on conserved text → both groups degrade; manual-row-in-window →
       no promotion; floors-synthesized-overlap → no promotion; census
       record shape token-only.
-- [x] 2.2 Implement the guard in the run-assembly layer (pure decision, no
+- [x] 2.2 [CLOSED-BY-RULING — not executed; see §5 note] Implement the guard in the run-assembly layer (pure decision, no
       I/O, no fixtures — design D1/D9), factoring the fused build+splice in
       the repair fold into decide-then-splice; green.
-- [x] 2.3 Window-edge exemption band ONLY if task 1.4/1.5 evidence pinned
+- [x] 2.3 [CLOSED-BY-RULING — not executed; see §5 note] Window-edge exemption band ONLY if task 1.4/1.5 evidence pinned
       one: red test + implementation + the band value recorded with its
       evidence source (design D4). If no band is pinned, record that
       explicitly and skip.
 
 ## 3. Rebuild the scramble-seed promotion behind the guard (from scratch)
 
-- [x] 3.1 Rebuild the seeding/evidence pass from fork issue #6 + the
+- [x] 3.1 [CLOSED-BY-RULING — not executed; see §5 note] Rebuild the seeding/evidence pass from fork issue #6 + the
       archived `2026-10-08-overlap-stream-retranscription` record (the
       dropped branch left NO commits — verified 2026-11-17; nothing to
       recover). Detection as pure functions + census probes ONLY — NO
       production wiring in this task; red test asserts no promotion is
       reachable from the repair fold yet.
-- [x] 3.2 RED (plain `cargo test`, recorded evidence arrays): seed
+- [x] 3.2 [CLOSED-BY-RULING — not executed; see §5 note] RED (plain `cargo test`, recorded evidence arrays): seed
       definition — trigger-fired, REACHED separation (duration-floor
       carve-out excluded), final outcome the FULL mixture render (partial
       synthesis excluded), separated decode exceeding the pinned ceiling;
@@ -88,7 +88,7 @@
       union window; window priority stutter → loop → scramble (dedupe-to-
       first order pinned); `LoopRepairCandidate` carries a seed-kind
       discriminator so ONLY promoted windows route through the guard.
-- [x] 3.3 Wire promotion through the guard (green): enters as the third
+- [x] 3.3 [CLOSED-BY-RULING — not executed; see §5 note] Wire promotion through the guard (green): enters as the third
       seed source in the post-`resolve_duplicate_clusters` repair fold;
       violation, error, or missing baseline → byte-identical mixture
       render; manual-row and floors-region blocks enforced; promoted rows
@@ -97,7 +97,7 @@
       rendered granularity; the production census records EVERY seed fire's
       outcome (applied / guard stand-down / window not built / separation
       unavailable) token-only.
-- [x] 3.4 Resumable census cache (design D8): keyed by window walls +
+- [x] 3.4 [CLOSED-BY-RULING — not executed; see §5 note] Resumable census cache (design D8): keyed by window walls +
       absorbed-row id set + model versions (NOT span walls alone);
       atomic writes; RED cases — cached span skipped, key change /
       incomplete / corrupt entry re-decodes, resolved cache root verified
@@ -129,7 +129,14 @@
       pin-label covers alone would be unsatisfiable); re-run the lint
       green; record the edit in the change record at record-count altitude
       only ("N amendments gained covers") — never transcribing record
-      bodies.
+      bodies. [DONE 2026-11-17: evidence-home migration applied — 3
+      amendment records (the listed limitations) gained covers
+      [entry_verdict]; 2 waivable pins (S16) gained labels (pin_1, pin_2);
+      0 hard pins labeled; 4 legacy UNLISTED amendment records left
+      untouched — complete (date + reason) with empty covers, inert at
+      runtime since resolve_waiver never consults unlisted keys (the lint
+      audits their completeness, not their covers); lint green on both
+      fixtures. Count note recorded here per the task's own deliverable.]
 
 ## 5. Verification + closure
 
@@ -145,11 +152,11 @@
       tests included. The first full run's grep-filtered log lost its head
       (lib unittests + targets before `gap_rescue_v3_probe`), so the suite
       was re-run once with an unfiltered log to prove the missing half.]
-- [x] 5.2 Census-only pass FIRST (background, heartbeat): run the seed
+- [x] 5.2 [CLOSED-BY-RULING — not executed; see §5 note] Census-only pass FIRST (background, heartbeat): run the seed
       census and record the seed-fire census (how many seeds fire, where)
       — REVIEW the recorded census before any render changes; correct the
       seed-decode-set exposure claim if the census disagrees with it.
-- [x] 5.3 Production Speakers re-run (heartbeat); verify mechanically by
+- [x] 5.3 [CLOSED-BY-RULING — not executed; see §5 note] Production Speakers re-run (heartbeat); verify mechanically by
       extending the existing replay/oracle harnesses
       (`census_replay_harness.rs` / `persistence_oracle.rs`) with named
       assertions: the ~192s seed's window is BLOCKED (floors-region
@@ -164,7 +171,7 @@
       [DONE 2026-11-17: the repair path was dropped by user ruling — no
       promoted regions exist, so there are no attestation-unpinned regions
       to clip; the ear round closed mechanically.]
-- [ ] 5.5 Smoke-spec deliverable decision (made at proposal time per
+- [x] 5.5 Smoke-spec deliverable decision (made at proposal time per
       AGENTS.md §3): the promotion changes WHICH rows the engine derives,
       not the render surface — the event→refetch→render wiring for
       coarse-rows-replaced-by-N-distinct-badge-rows is already pinned by
