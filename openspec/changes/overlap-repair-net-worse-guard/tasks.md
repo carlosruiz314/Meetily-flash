@@ -1,6 +1,6 @@
 ## 1. Offline guard validation — settle the bar before any production threshold
 
-- [ ] 1.1 RED in `frontend/src-tauri/tests/net_worse_guard.rs` (plain
+- [x] 1.1 RED in `frontend/src-tauri/tests/net_worse_guard.rs` (plain
       `cargo test`, invented generic tokens in the existing
       `run_assembly.rs` test style — never captured real sequences): the
       per-badge ordered-alignment statistic — fluent substitution collapses
@@ -11,9 +11,19 @@
       within-badge re-partitioning costs at most a small pinned penalty;
       recall denominator excludes unscopable repair-side tokens;
       normalization scope (case, punctuation, whitespace) pinned.
-- [ ] 1.2 Implement the statistic as a pure function in the speaker
-      run-assembly layer; green.
-- [ ] 1.3 Env-gated live probe (`#[ignore]`, `MEETIFY_LIVE_DIAG`,
+      [DONE 2026-11-17: 10 red-first tests in `tests/net_worse_guard.rs` —
+      perfect conservation, substitution collapse ≤0.5, multiset-equal
+      scramble ≤0.4, interleaved fixture per-badge ≥0.95 vs global
+      11/20≈0.55, boundary-blind repartitioning, unscoped-token
+      recall/precision, normalization, badge flip ≤0.3, missing-stream
+      hard miss, empty-baseline skip]
+- [x] 1.2 Implement the statistic as a pure function in the speaker
+      run-assembly layer; green. [DONE 2026-11-17:
+      `src/audio/speaker/net_worse_guard.rs` — `normalize_tokens`,
+      `lcs_length`, `ConservationGroup`/`RepairStream`/`GroupAlignment`,
+      `align_groups` (missing badge = hard 0.0 miss, empty baseline emits
+      no outcome); registered in `speaker/mod.rs`. 10/10 green.]
+- [x] 1.3 Env-gated live probe (`#[ignore]`, `MEETIFY_LIVE_DIAG`,
       inheriting all `span_decode_probe.rs` conventions: early-return
       without the env, verbatim only under `MEETIFY_RENDER_PRINT`, sha256 +
       counts otherwise; clips/WAVs written ONLY under the evidence home or
@@ -21,7 +31,7 @@
       separation + both stream decodes, assemble the repair render via the
       existing builder, compute the per-badge scoped ratios against the
       window's mixture rows.
-- [ ] 1.4 Freeze the statistic FIRST (denominator, normalization,
+- [x] 1.4 Freeze the statistic FIRST (denominator, normalization,
       minimum-set handling — recorded in the change record before any
       number exists), then run the probe on the three kept window shapes
       (validated 32.69s, mangled 30.68s, 12s control) and record: per-badge
@@ -40,7 +50,7 @@
       bound to ear-gate calibration governance with hold-out entries
       excluded (verify the attested windows map to non-hold-out entries).
       Record the dated constant + evidence sha256s in the change record.
-      No production wiring proceeds before this settles.
+      No production wiring proceeds before this settles. [ESCALATED 2026-11-17: the measured evidence shows NO conservation bar separates the validated render (0.652/0.857) from the mangled one (0.818/0.903) — the mangled case scores HIGHER; the guard premise is falsified for short fluent substitutions. Disposition pending the user's ruling; production wiring does not proceed.]
 
 ## 2. Net-worse guard — the production decision function
 

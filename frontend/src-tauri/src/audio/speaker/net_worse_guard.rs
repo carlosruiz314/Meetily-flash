@@ -122,41 +122,68 @@ pub struct BaselineRow {
     pub text: String,
 }
 
-/// The seed span's walls — the only thing the promotion was asked to fix.
-pub struct SeedWalls {
+/// A wall interval (used for both the seed span and the promoted window).
+pub struct Walls {
     pub start_s: f64,
     pub end_s: f64,
 }
 
-/// Build the conservation groups from the replaced mixture rows. Rows
-/// fully outside the seed span are conserved whole under their badge; a
-/// row straddling a wall is partitioned proportionally by word count at
-/// the wall (the replacement-scope precedent) and only its outside
-/// piece(s) are conserved; rows fully inside are excluded. Groups
-/// accumulate per badge in first-appearance order, tokens in time order.
-pub fn build_conservation_groups(rows: &[BaselineRow], seed: &SeedWalls) -> Vec<ConservationGroup> {
+/// The seed span's walls — the only thing the promotion was asked to fix.
+pub type SeedWalls = Walls;
+
+/// Build the conservation groups from the replaced mixture rows. Rows are
+/// first clipped to the WINDOW walls (the promotion replaces only the
+/// rows' within-window text; beyond-wall text persists as outside pieces,
+/// so out-of-window tokens are never conserved). Then: rows fully outside
+/// the seed span are conserved whole under their badge; a row straddling a
+/// wall is partitioned proportionally by word count at the wall (the
+/// replacement-scope precedent) and only its outside piece(s) are
+/// conserved; rows fully inside are excluded. Groups accumulate per badge
+/// in first-appearance order, tokens in time order.
+pub fn build_conservation_groups(
+    rows: &[BaselineRow],
+    seed: &Walls,
+    window: &Walls,
+) -> Vec<ConservationGroup> {
     let mut order: Vec<String> = Vec::new();
     let mut acc: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     for row in rows {
+        // Clip to the window first: beyond-window text is not replaced.
+        let rs = row.start_s.max(window.start_s);
+        let re = row.end_s.min(window.end_s);
+        if rs >= re {
+            continue;
+        }
         let tokens = normalize_tokens(&row.text);
+        let dur0 = (row.end_s - row.start_s).max(f64::EPSILON);
+        // Clip the token list to the window proportionally (token i covers
+        // [start + i/n*dur0, ...]; the same word-proportional mapping as
+        // the split precedent).
+        let n = tokens.len();
+        let lo = (((rs - row.start_s) / dur0) * n as f64).round().clamp(0.0, n as f64) as usize;
+        let hi = (((re - row.start_s) / dur0) * n as f64).round().clamp(0.0, n as f64) as usize;
+        if hi <= lo {
+            continue;
+        }
+        let tokens = &tokens[lo..hi];
         // Open-interval overlap: an edge-touching row does not overlap.
-        let overlaps = row.start_s < seed.end_s && row.end_s > seed.start_s;
+        let overlaps = rs < seed.end_s && re > seed.start_s;
         let mut pieces: Vec<Vec<String>> = Vec::new();
         if !overlaps {
-            pieces.push(tokens.clone());
+            pieces.push(tokens.to_vec());
         } else {
-            let dur = (row.end_s - row.start_s).max(f64::EPSILON);
+            let dur = (re - rs).max(f64::EPSILON);
             // West wall inside the row → head piece is outside the span.
-            if seed.start_s > row.start_s && seed.start_s < row.end_s {
-                let frac = ((seed.start_s - row.start_s) / dur).clamp(0.0, 1.0);
+            if seed.start_s > rs && seed.start_s < re {
+                let frac = ((seed.start_s - rs) / dur).clamp(0.0, 1.0);
                 let split = ((frac * tokens.len() as f64).round() as usize).min(tokens.len());
                 if split > 0 {
                     pieces.push(tokens[..split].to_vec());
                 }
             }
             // East wall inside the row → tail piece is outside the span.
-            if seed.end_s > row.start_s && seed.end_s < row.end_s {
-                let frac = ((seed.end_s - row.start_s) / dur).clamp(0.0, 1.0);
+            if seed.end_s > rs && seed.end_s < re {
+                let frac = ((seed.end_s - rs) / dur).clamp(0.0, 1.0);
                 let split = ((frac * tokens.len() as f64).round() as usize).min(tokens.len());
                 if split < tokens.len() {
                     pieces.push(tokens[split..].to_vec());
