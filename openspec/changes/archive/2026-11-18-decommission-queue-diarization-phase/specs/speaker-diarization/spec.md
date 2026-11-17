@@ -1,5 +1,14 @@
 ## MODIFIED Requirements
 
+> **SUPERSEDED 2026-11-18 — not synced at archive.** Later archived changes
+> re-derived the live headline requirement past this delta's pipeline
+> description: the live spec now titles it "runs as a direct post-transcription
+> step" and already carries the queue-decommission substance verbatim in its
+> amendment note (not a queue phase, invoked via `run_diarization_for_meeting`,
+> `JobPhase` ends at `Summarising`). Syncing this MODIFIED block would regress
+> the live spec to the retired chunk-grid success path. Kept as historical
+> record only.
+
 ### Requirement: Transcript-timestamp-driven speaker diarization runs as a post-processing queue phase
 
 After transcription completes — and after summarisation when an LLM provider is configured — the system SHALL run offline speaker diarization on the meeting's `audio.mp4` by invoking `run_diarization_for_meeting`. Diarization is not a transcription-queue phase: the queue's `JobPhase` ends at `Summarising`, and diarization is invoked automatically at the end of the import and Enhance/retranscription pipelines and on demand via the Speakers/reset commands. The diarization run SHALL:
