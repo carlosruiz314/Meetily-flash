@@ -12,6 +12,8 @@ Constraints: bright line (nothing meeting-derived in the repo; fixtures never re
 
 The offline measurement (task 1.4, recorded in `offline-evidence.md`) FALSIFIED the guard's premise before any production wiring: the mangled render scores HIGHER on the conservation statistic (0.818/0.903) than the user-validated render (0.652/0.857), because a fluent substitution costs 2–3 tokens while separation word-loss and cross-bleed cost far more. No bar exists. D3's mandatory-ruling branch triggered; the user ruled: **drop the repair path for good, keep the waiver-scoping fix.** D1/D2/D4/D5/D6/D8/D10/D11 below are kept as the closed evidence trail for that verdict (they describe the guard that was measured and rejected); only D7 (the waiver scoping) and D9 (pure-function placement, which the landed measurement instruments follow) remain in force as shipped design.
 
+Post-impl review confirmations (2026-11-17, round 1 of the requesting/receiving review loop): S16's `covers` is deliberately entry-scoped — its documented limitation is attribution/ordering (an entry-verdict failure), its needles are expected to PASS, so its two labeled waivable pins carry no covers entry and a failing S16 pin fails the gate loudly (new information, not absorbed). The four legacy unlisted amendment records keep empty covers deliberately: they attest badge facts/rulings for entries that pass, waiving nothing; the lint audits their date+reason completeness but not their covers (forcing covers would fabricate semantics), and the runtime never consults unlisted keys.
+
 ## Goals / Non-Goals
 
 **Goals (post-ruling):**

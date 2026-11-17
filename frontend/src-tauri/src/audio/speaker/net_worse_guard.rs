@@ -55,8 +55,12 @@ pub fn lcs_length(a: &[String], b: &[String]) -> usize {
 /// One badge's conserved baseline: the ordered normalized tokens of the
 /// replaced mixture rows OUTSIDE the seed span's walls (whole rows when
 /// fully outside; the outside piece of a proportionally split straddling
-/// row). Scoping happens on the BASELINE side — the caller (the guard,
-/// task 2.x) builds these from the meeting's own mixture rows.
+/// row). Scoping happens on the BASELINE side — callers build these from
+/// the meeting's own mixture rows. Landed 2026-11-17 as measurement
+/// instrumentation only (overlap-repair-net-worse-guard): the runtime
+/// guard's premise was falsified by the offline measurement and no
+/// production caller exists — do not wire one without re-opening the
+/// change record (see `offline-evidence.md` in the change folder).
 pub struct ConservationGroup {
     pub badge: String,
     pub baseline_tokens: Vec<String>,
@@ -72,7 +76,10 @@ pub struct RepairStream {
 pub struct GroupAlignment {
     pub badge: String,
     /// LCS length over the group's conserved count — 1.0 means fully
-    /// conserved; the guard's bar (settled offline, task 1.5) applies here.
+    /// conserved. No bar applies here: the offline measurement showed NO
+    /// conservation bar separates a validated render from a mangled one
+    /// (the mangled case scores higher), so recall is diagnostic — see
+    /// `offline-evidence.md` in the change folder.
     pub recall: f64,
     /// LCS length over the stream's token count — diagnostic mass (extra
     /// repair-side tokens: seed-span words, hallucination).
