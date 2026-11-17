@@ -3817,6 +3817,82 @@ mod tests {
         assert!((match_threshold_from_fp((0.20f32 * 65536.0) as u32) - 0.35).abs() < 1e-4);
         assert!((match_threshold_from_fp((0.90f32 * 65536.0) as u32) - 0.70).abs() < 1e-4);
     }
+
+    // --- Run-start match-pool reload (1.2) ---
+
+    #[tokio::test]
+    async fn run_start_registry_reload_sees_post_startup_embeddings_and_renames() {
+        // The run reloads the match pool from the stamped DB rows at run
+        // start (setup.rs::reload_speaker_registry inside
+        // run_diarization_for_meeting) — an embedding written after startup
+        // (or a rename relinking the vector) is visible to that run, where
+        // the old startup-frozen snapshot went stale.
+        let pool = stamp_pool().await;
+        let registry: std::sync::Arc<std::sync::Mutex<Option<CosineRegistryAdapter>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(None));
+        // Hydration pins the registry to the production nemo_titanet dim
+        // and silently drops vectors of any other width — use the real dim.
+        let dim = crate::audio::speaker::nemo_extractor::NEMO_EMBEDDING_DIM;
+        let query = |reg: &std::sync::Arc<std::sync::Mutex<Option<CosineRegistryAdapter>>>,
+                     v: &[f32]|
+         -> Option<String> {
+            reg.lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .search(&EmbeddingVector::from_slice(v, dim).unwrap(), 0.40)
+                .unwrap()
+        };
+
+        // Startup state: one named speaker with one embedding.
+        SpeakerRepository::ensure_speaker(&pool, "sp-1", "Bob", "#123456")
+            .await
+            .unwrap();
+        let startup_vec: Vec<f32> = std::iter::once(1.0)
+            .chain(std::iter::repeat(0.0).take(dim - 1))
+            .collect();
+        SpeakerRepository::store_embedding(
+            &pool,
+            "e1",
+            Some("sp-1"),
+            &startup_vec,
+            "m-1",
+            "Speaker 0",
+        )
+        .await
+        .unwrap();
+        crate::database::setup::reload_speaker_registry(&pool, &registry).await;
+        assert_eq!(query(&registry, &startup_vec).as_deref(), Some("sp-1"));
+
+        // Post-startup, before the next run: the user renames (the relink
+        // flow points e1 at a new named speaker) and another meeting's run
+        // stamps a second speaker's embedding.
+        SpeakerRepository::ensure_speaker(&pool, "sp-2", "Alice", "#654321")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE speaker_embeddings SET speaker_id = 'sp-2' WHERE id = 'e1'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let new_vec: Vec<f32> = std::iter::once(0.0)
+            .chain(std::iter::once(1.0))
+            .chain(std::iter::repeat(0.0).take(dim - 2))
+            .collect();
+        SpeakerRepository::store_embedding(&pool, "e2", Some("sp-2"), &new_vec, "m-2", "Speaker 0")
+            .await
+            .unwrap();
+
+        // The startup-frozen registry is now stale: without a reload the
+        // new speaker is invisible — this is the half the old behavior got
+        // wrong.
+        assert_eq!(query(&registry, &new_vec).as_deref(), None);
+
+        // The run-start reload picks both up: the renamed vector matches
+        // its NEW speaker id and the post-startup embedding is searchable.
+        crate::database::setup::reload_speaker_registry(&pool, &registry).await;
+        assert_eq!(query(&registry, &startup_vec).as_deref(), Some("sp-2"));
+        assert_eq!(query(&registry, &new_vec).as_deref(), Some("sp-2"));
+    }
     // --- Transactional stamped persistence (2.1-2.3) ---
 
     const TEST_DIM: usize = 128;
