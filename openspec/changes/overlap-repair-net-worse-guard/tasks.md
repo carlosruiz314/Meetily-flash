@@ -138,8 +138,13 @@
 > dropped on the measured evidence with the user's explicit ruling. Their
 > descriptions remain for the evidence trail.
 
-- [ ] 5.1 Full `cargo test` green including the fixture lint (no
-      concurrent cargo during live runs).
+- [x] 5.1 Full `cargo test` green including the fixture lint (no
+      concurrent cargo during live runs). [DONE 2026-11-17: full suite
+      green at `-j 2` — 825 passed / 0 failed across 47 targets, real
+      cargo exit 0 captured unfiltered; fixture lint + all 8 waiver-router
+      tests included. The first full run's grep-filtered log lost its head
+      (lib unittests + targets before `gap_rescue_v3_probe`), so the suite
+      was re-run once with an unfiltered log to prove the missing half.]
 - [x] 5.2 Census-only pass FIRST (background, heartbeat): run the seed
       census and record the seed-fire census (how many seeds fire, where)
       — REVIEW the recorded census before any render changes; correct the
@@ -152,10 +157,13 @@
       its pins; the validated window's render passes its pins;
       `transcript_sources` byte-identity; every seed fire's outcome present
       in the production census.
-- [ ] 5.4 Cut clips ONLY for attestation-unpinned promoted regions (written
+- [x] 5.4 Cut clips ONLY for attestation-unpinned promoted regions (written
       ONLY under the evidence home or the meeting folder); if none exist,
       record that the ear round closed mechanically. Ear round on those
       clips only; dated fixture amendment only for user-ruled outcomes.
+      [DONE 2026-11-17: the repair path was dropped by user ruling — no
+      promoted regions exist, so there are no attestation-unpinned regions
+      to clip; the ear round closed mechanically.]
 - [ ] 5.5 Smoke-spec deliverable decision (made at proposal time per
       AGENTS.md §3): the promotion changes WHICH rows the engine derives,
       not the render surface — the event→refetch→render wiring for
@@ -165,7 +173,7 @@
       selection is verified by the cargo gates + the ear-truth fixture
       pins. No new smoke spec is landed; this task records the rationale
       and verifies the covering specs still pass. [VERIFIED 2026-11-17: `diarization-speaker-split-persistence.spec.ts` + `diarization-label-quality.spec.ts` — 2 passed (1.4m); the re-scoped change touches no render-path code.]
-- [ ] 5.6 Before archive: re-read the live spec + design against what
+- [x] 5.6 Before archive: re-read the live spec + design against what
       landed; amend the delta/design first if the implementation evolved. [DONE 2026-11-17: artifacts re-scoped to the ruling before any archive — proposal/design/delta/tasks amended, validated 4/4; the landed code (statistic + scoping + probe + waiver router + lint) matches the amended design Outcome/D7/D9.]
 - [ ] 5.7 `/opsx:archive` on the user's go; close fork issue #6 with the
       outcome comment (commits and pushes only on the user's explicit
