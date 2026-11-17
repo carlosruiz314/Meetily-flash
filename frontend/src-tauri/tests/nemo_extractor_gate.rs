@@ -3,10 +3,10 @@
 //!
 //! The sherpa REFERENCE embeddings cannot be produced in-process (the two ORT
 //! runtimes coexisted in one process only before Part B's removal — and crashed).
-//! They were captured out-of-process via the `embed-probe-sherpa` binary and are
-//! COMMITTED as a fixture: `tests/fixtures/nemo_c5_reference_embeddings.json`
+//! They were captured out-of-process via the `embed-probe-sherpa` binary and live
+//! ONLY in the local evidence home: `nemo_c5_reference_embeddings.json`
 //! (both the original 10-clip set and the C5 extension set, with per-clip
-//! windows and sherpa's skip decisions).
+//! windows and sherpa's skip decisions) — meeting-derived, never tracked.
 //!
 //! GATE (margin-derived tiered threshold — panel verdict 2026-07-27):
 //!   - cosine ≥ 0.99 for clips ≥ 2.0s
@@ -28,6 +28,9 @@
 #![cfg(test)]
 
 use app_lib::audio::speaker::nemo_extractor::NemoEmbeddingExtractor;
+
+#[path = "common/evidence_fixture.rs"]
+mod evidence_fixture;
 
 // ============================================================================
 // EXACT reference input pipeline — copied verbatim from embed-probe-sherpa
@@ -234,8 +237,8 @@ async fn resolve_audio() -> Option<std::path::PathBuf> {
 #[tokio::test]
 #[ignore] // requires the on-disk cde5c264 recording + model (real-audio harness)
 async fn nemo_extractor_cosine_gate() {
-    let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/nemo_c5_reference_embeddings.json");
+    let fixture_path = evidence_fixture::evidence_fixture("nemo_c5_reference_embeddings.json")
+        .expect("evidence home missing: the fixture is local-only — restore ../meetily-flash-local-evidence/ (AGENTS.md §3)");
     let fixture: Fixture =
         serde_json::from_str(&std::fs::read_to_string(&fixture_path).expect("fixture"))
             .expect("fixture json");
@@ -368,18 +371,18 @@ async fn nemo_extractor_cosine_gate() {
 
 /// ONE-OFF fixture generator (task 5.1 support): compute the PORTED
 /// extractor's embeddings for every clip in the C5 reference fixture and
-/// write them to `tests/fixtures/nemo_c5_port_embeddings.json`, so
+/// write them to the evidence home's `nemo_c5_port_embeddings.json`, so
 /// `extractor_only_parity_unconditional` (sherpa_adapter.rs tests) can run
 /// sherpa-vs-port AHC parity WITHOUT the recording or models.
 ///
 /// Run once on a machine with the cde5c264 recording + nemo model:
 ///   cargo test --release --test nemo_extractor_gate -- --ignored dump_port_embeddings_fixture --nocapture
-/// Then COMMIT the generated JSON.
+/// Meeting-derived data: the output stays local (evidence home), never committed.
 #[tokio::test]
 #[ignore]
 async fn dump_port_embeddings_fixture() {
-    let fixture_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/nemo_c5_reference_embeddings.json");
+    let fixture_path = evidence_fixture::evidence_fixture("nemo_c5_reference_embeddings.json")
+        .expect("evidence home missing: the fixture is local-only — restore ../meetily-flash-local-evidence/ (AGENTS.md §3)");
     let fixture: Fixture =
         serde_json::from_str(&std::fs::read_to_string(&fixture_path).expect("fixture"))
             .expect("fixture json");
@@ -444,8 +447,7 @@ async fn dump_port_embeddings_fixture() {
                extractor_only_parity_unconditional.",
         clips,
     };
-    let out_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/nemo_c5_port_embeddings.json");
+    let out_path = evidence_fixture::evidence_dir().join("nemo_c5_port_embeddings.json");
     std::fs::write(
         &out_path,
         serde_json::to_string_pretty(&out_fixture).expect("serialize"),

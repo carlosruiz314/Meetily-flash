@@ -19,6 +19,10 @@ use app_lib::audio::speaker::run_assembly::{cosine, speech_runs, PROMOTION_FLOOR
 use app_lib::audio::speaker::run_engine;
 use serde::Deserialize;
 
+#[path = "common/evidence_fixture.rs"]
+mod evidence_fixture;
+
+
 const AUDIO: &str =
     "Music/local-recordings/Meeting 2026-06-22_16-04-01_2026-06-22_14-04/audio.mp4";
 const DB_PATH: &str = "AppData/Roaming/com.meetily.ai/meeting_minutes.sqlite";
@@ -328,10 +332,11 @@ async fn gap_rescue_v3_scan() {
     );
 
     let fixture: Fixture = serde_json::from_str(
-        &std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/ear_truth_cde5c264.json"
-        ))
+        &std::fs::read_to_string(
+            evidence_fixture::evidence_fixture("ear_truth_cde5c264.json").expect(
+                "evidence home missing: the golden fixture is local-only — restore                  ../meetily-flash-local-evidence/ (AGENTS.md §3)",
+            ),
+        )
         .expect("fixture"),
     )
     .expect("parse fixture");

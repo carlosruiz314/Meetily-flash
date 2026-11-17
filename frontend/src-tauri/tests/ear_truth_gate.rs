@@ -5,8 +5,9 @@
 //! records every run under that change's `gate-runs/`).
 //!
 //! Runs the production run-assembly engine (task 4.1 path) on the real
-//! meeting audio and asserts every entry in
-//! `tests/fixtures/ear_truth_cde5c264.json`, plus the hard invariant scan
+//! meeting audio and asserts every entry in the local evidence home's
+//! `ear_truth_cde5c264.json` (resolved via `evidence_fixture`), plus the
+//! hard invariant scan
 //! (every mid-sentence-initial turn must carry `continues_previous = true`)
 //! over the ENTIRE meeting output.
 //!
@@ -23,6 +24,9 @@ use app_lib::audio::speaker::run_assembly::{
 };
 use app_lib::audio::speaker::run_engine;
 use serde::Deserialize;
+
+#[path = "common/evidence_fixture.rs"]
+mod evidence_fixture;
 
 const MODELS_DIR: &str = ".meetily-models";
 const MEETING_DIR: &str = "Meeting 2026-06-22_16-04-01_2026-06-22_14-04";
@@ -445,12 +449,14 @@ fn record_render_failure(
 /// must belong to a listed or existing entry.
 #[test]
 fn ear_truth_fixture_lint() {
+    // The golden fixture is meeting-derived and lives only in the local
+    // evidence home; a fresh clone skips loudly instead of failing.
+    let Some(fixture_path) = evidence_fixture::evidence_fixture("ear_truth_cde5c264.json")
+    else {
+        return;
+    };
     let fixture: Fixture = serde_json::from_str(
-        &std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/ear_truth_cde5c264.json"
-        ))
-        .expect("read fixture JSON"),
+        &std::fs::read_to_string(&fixture_path).expect("read fixture JSON"),
     )
     .expect("parse fixture JSON");
     let ids: Vec<&String> = fixture.entries.iter().map(|e| &e.id).collect();
@@ -497,10 +503,12 @@ async fn ear_truth_gate_cde5c264() {
         .try_init();
     let home = std::env::var("USERPROFILE").unwrap();
     let fixture: Fixture = serde_json::from_str(
-        &std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/ear_truth_cde5c264.json"
-        ))
+        &std::fs::read_to_string(
+            evidence_fixture::evidence_fixture("ear_truth_cde5c264.json").expect(
+                "evidence home missing: the golden fixture is local-only — restore \
+                 ../meetily-flash-local-evidence/ (AGENTS.md §3)",
+            ),
+        )
         .expect("read fixture JSON"),
     )
     .expect("parse fixture JSON");
@@ -877,10 +885,12 @@ async fn ear_truth_gate_cde5c264() {
         // (exactly one match), row count, canonical hash. Any mismatch is a
         // loud "fixture drifted — re-pin"; 0 rows can never pass vacuously.
         let render_fixture: RenderFixture = serde_json::from_str(
-            &std::fs::read_to_string(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/cde5c264_transcripts.json"
-            ))
+            &std::fs::read_to_string(
+                evidence_fixture::evidence_fixture("cde5c264_transcripts.json").expect(
+                    "evidence home missing: the render snapshot is local-only — restore \
+                     ../meetily-flash-local-evidence/ (AGENTS.md §3)",
+                ),
+            )
             .expect("read cde5c264_transcripts.json"),
         )
         .expect("parse cde5c264_transcripts.json");
