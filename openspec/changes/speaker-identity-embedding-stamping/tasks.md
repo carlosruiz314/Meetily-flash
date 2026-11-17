@@ -1,9 +1,9 @@
 ## 1. Registry: id-keyed, fresh per run
 
 - [x] 1.1 RED→GREEN: registry hydration keys vectors by `speaker_id` (not `COALESCE(name, cluster_label)`); setup.rs hydration updated
-- [ ] 1.2 RED→GREEN: a Speakers run loads the match pool from the DB at run start — an embedding written after startup (or a rename) is visible to that run
+- [x] 1.2 RED→GREEN: a Speakers run loads the match pool from the DB at run start — an embedding written after startup (or a rename) is visible to that run [DONE 2026-11-17: implementation verified in `run_diarization_for_meeting` — `setup.rs::reload_speaker_registry(pool, registry)` runs at run start (after manual-label enumeration, before matching). Visibility pinned by `run_start_registry_reload_sees_post_startup_embeddings_and_renames`: post-startup rename relink + fresh stamped embedding become searchable after the reload and stay invisible without it (the old startup-frozen snapshot). Lib suite 779 passed / 0 failed.]
 - [x] 1.3 Add stamped-pool query (`speaker_id IS NOT NULL` join `speakers` for named-only filtering); RED→GREEN test proves auto rows and NULL rows are excluded from the pool
-- [ ] 1.4 Replace hard-coded `search(&emb, 0.60)` with the configured match threshold (default 0.40, clamped [0.35, 0.70]); test the clamp
+- [x] 1.4 Replace hard-coded `search(&emb, 0.60)` with the configured match threshold (default 0.40, clamped [0.35, 0.70]); test the clamp [DONE 2026-11-17: verified — the stamped match (`persist_stamped_centroids`) takes `match_threshold` from settings via `match_threshold_from_fp(threshold_fp)`, default 0.40 in `state.rs`, clamped [0.35, 0.70]; pinned by `match_threshold_uses_configured_value_in_range` + `match_threshold_clamped_to_035_070`; no hard-coded 0.60 search call remains anywhere.]
 
 ## 2. Live store path: transactional stamped writes
 
