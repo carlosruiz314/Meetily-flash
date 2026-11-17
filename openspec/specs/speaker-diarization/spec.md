@@ -1252,7 +1252,7 @@ A pinned ear-truth fixture (`ear_truth_cde5c264.json`) SHALL hold attribution fa
 
 The fixture SHALL NOT be committed to the public repository: it is local-only golden evidence, under the bright line adopted 2026-09-26 that NOTHING meeting-derived — real, sanitized, or synthetic — enters the repo. Its home resolves through one shared helper: `$MEETILY_LOCAL_EVIDENCE_DIR`, then the default repository sibling `../meetily-flash-local-evidence/` (outside `git clean` reach); a missing fixture means the gate and fixture-lint SKIP LOUDLY, printing the setup instructions — never a silent pass, never a clone-breaking failure. No synthetic or meeting-derived stand-in SHALL be committed in its place: the synthetic subset of the gate is removed outright (a fake golden is no oracle).  
 
-A gate test SHALL run the turn-derivation engine on the real meeting audio and assert every entry, failing with the entry name on mismatch. Because it requires the meeting audio and local models, the gate SHALL be env-gated like the existing live diagnostics, AND a named runner script SHALL record the gate output to a file — TOKEN-ONLY content — at every verification point, so the acceptance evidence is inspectable without re-running; recorded artifacts and their directory SHALL be gitignored and added to the pre-push guard's protected pathspecs. Per-entry outcomes SHALL be exactly: PASS; KNOWN-LIMITATION (documented with explicit user sign-off via the fixture's amendment/limitation records); or FAIL (blocks the change). A fixture-lint subset SHALL run in plain `cargo test` wherever the fixture resolves, asserting every KNOWN-LIMITATION/amendment record carries a user-confirmation date and reason.
+A gate test SHALL run the turn-derivation engine on the real meeting audio and assert every entry, failing with the entry name on mismatch. Because it requires the meeting audio and local models, the gate SHALL be env-gated like the existing live diagnostics, AND a named runner script SHALL record the gate output to a file — TOKEN-ONLY content — at every verification point, so the acceptance evidence is inspectable without re-running; recorded artifacts and their directory SHALL be gitignored and added to the pre-push guard's protected pathspecs. Per-entry outcomes SHALL be exactly: PASS; KNOWN-LIMITATION (documented with explicit user sign-off via the fixture's amendment/limitation records); or FAIL (blocks the change). A KNOWN-LIMITATION outcome covers ONLY the failing assertions its amendment record documents: every waivable pin carries a label, every amendment record lists what it covers (`covers` — the entry's waivable pin labels and/or the gate's enumerated failure-kind ids), and a failing assertion whose label or kind no complete amendment record covers SHALL FAIL the gate — a limitation recorded for one defect SHALL NOT absorb failures it does not document, and no wildcard coverage SHALL exist. Hard pins SHALL NOT carry labels and SHALL NOT appear in any covers list: they fail the gate outright regardless of amendment records. A fixture-lint subset SHALL run in plain `cargo test` wherever the fixtures resolve, asserting — for BOTH gate fixtures — every KNOWN-LIMITATION/amendment record carries a user-confirmation date, a reason, and a non-empty covers list whose entries resolve against the record's entry (pin labels present on the entry, or enumerated failure-kind ids).
 
 **Fidelity pins (ear round 2, 2026-10-06)**: needle assertions SHALL be
 multiplicity-aware and badge-aware — a pinned phrase SHALL appear exactly
@@ -1301,9 +1301,22 @@ The gate's duplicate scan SHALL be provenance-scoped at group level: overlapping
 
 #### Scenario: Waivers are auditable
 
-- **GIVEN** a fixture whose KNOWN-LIMITATION list or amendments map contains an entry without a user-confirmation date or reason
+- **GIVEN** a fixture whose KNOWN-LIMITATION list or amendments map contains an entry without a user-confirmation date or reason, or whose amendment record has an empty covers list or names entries that resolve against nothing (a pin label absent from the entry, or an unknown failure-kind id)
 - **WHEN** the fixture-lint subset runs in plain `cargo test`
 - **THEN** the lint fails, naming the incomplete record
+
+#### Scenario: Uncovered pin failure is not absorbed
+
+- **GIVEN** an entry whose amendment record covers only its badge pins
+- **WHEN** a different waivable pin of the same entry fails (a new text pin, for instance)
+- **THEN** the gate FAILS naming the uncovered pin — the entry's existing limitation does not absorb it
+- **AND** the failure resolves only by passing the engine or by a new user-confirmed amendment record covering that pin
+
+#### Scenario: Hard pins are never waivable
+
+- **GIVEN** a fixture where a hard pin fails inside an entry whose amendment record exists
+- **WHEN** the gate evaluates the failure
+- **THEN** the gate FAILS outright — hard pins carry no labels, appear in no covers list, and no amendment record absorbs them
 
 #### Scenario: Provenance-scoped duplicate-scan exemption
 
