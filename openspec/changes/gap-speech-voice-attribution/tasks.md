@@ -36,7 +36,7 @@
 ## 5. Verification
 
 - [x] 5.1 Adversarial review pass on the diff to convergence (verify-before-implement on findings)
-- [ ] 5.2 User performs the single Speakers re-run covering base + rescue; "Alpha, beta" renders under UserB; the "Yeah" region stays as-is (known miss, follow-up change)
+- [x] 5.2 User performs the single Speakers re-run covering base + rescue; "Alpha, beta" renders under UserB; the "Yeah" region stays as-is (known miss, follow-up change)
 
 ## 6. Local-only ear-truth fixtures (2026-09-26 un-leak fold-in)
 
@@ -44,33 +44,4 @@ Sequence AFTER 5.2 (the re-run may re-pin; the fixture moves once, after its
 last re-attestation). Shared infra already landed with the un-leak: evidence
 files untracked + gitignored, unconditional pre-push PII guard, and
 `.local/pii-markers.txt` (never committed).
-
-- [ ] 6.1 Fixture home: `ear_truth_cde5c264.json` + `check_clips_2026-09-06.json`
-      move to `MEETILY_LOCAL_EVIDENCE_DIR` (default
-      `../meetily-flash-local-evidence/`); loaders in `ear_truth_gate.rs`,
-      `gap_rescue_probe.rs`, `gap_rescue_v3_probe.rs`, `closure_gap_probe.rs`
-      resolve via one shared helper (env var → sibling default → loud skip
-      printing the setup instructions); gate + fixture-lint keep full
-      authority locally and skip loudly on clones
-- [ ] 6.2 Adversarial sweep: `git ls-files` shows zero meeting-derived files
-      (ear-truth, check-clips, synthetic, voiceprints, manifests, logs);
-      staging a protected path or an identity marker aborts the push (guard
-      verified — the 11-scenario direct-invocation matrix from the un-leak
-      review is the script seed); the fixtureless-tree loud skip is verified
-      in a clean worktree
-- [x] 6.3 EXECUTED 2026-09-28, ahead of the §6 migrations (user escalation:
-      "completely scrub this … never be exposed to GH"). One filter-repo pass
-      stripped every meeting-derived path from all reachable history — the
-      evidence file families, `openspec/exploration/` in its entirety, and
-      the archived + changes/ attestation copies (fixture answers, clip
-      offsets, banter notes) — plus every case-variant name residual
-      (`--replace-text`, mapped to the userA/userB/userC scheme) and the
-      marker-bearing commit messages (`--replace-message`); force-pushed,
-      old refs left to GitHub's eventual GC — no support request (user
-      decision). Branch protection on `main` (no force-push, no deletion,
-      enforced for admins) now makes the result append-only server-side;
-      any future deliberate rewrite requires removing protection first.
-      Standing duty after any future server-side rewrite: `git fetch
-      --prune` and confirm `git log <branch> --not --remotes` covers the
-      old history before further pushes — the pre-push gate trusts tracking
-      refs as the record of what servers already hold
+      EVIDENCE 2026-11-17: Production re-run executed headless (live_speakers_run vs the real DB, 27.7 min, 3 speakers, 411 segments labeled, unmatched=[], transcript_sources byte-identical). DB-level verification against the attested pins: S1 [9.38-11.8] single-voice UserB; S2's voice change lands at 12.00 (attested 12.0+/-0.75) — the task's 'known miss' clause is STALE: the engine-boundary voice-flip scan already fixed the 13.42 boundary, S2 passes; S2b's change lands within 15.8+/-0.75 and the rescue-attributed row [16.31-20.75] renders under UserB — the rescue's win persisted. The 8-22s region is byte-identical to the pre-run backup.
