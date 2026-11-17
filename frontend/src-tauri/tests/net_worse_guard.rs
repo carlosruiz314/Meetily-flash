@@ -250,7 +250,7 @@ fn walls(start: f64, end: f64) -> SeedWalls {
 #[test]
 fn row_fully_outside_is_conserved_whole() {
     let rows = vec![brow("A", 0.0, 4.0, "alpha beta gamma delta")];
-    let groups = build_conservation_groups(&rows, &walls(5.0, 9.0));
+    let groups = build_conservation_groups(&rows, &walls(5.0, 9.0), &walls(0.0, 100.0));
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].baseline_tokens, normalize_tokens("alpha beta gamma delta"));
 }
@@ -259,7 +259,7 @@ fn row_fully_outside_is_conserved_whole() {
 #[test]
 fn row_fully_inside_is_excluded() {
     let rows = vec![brow("A", 5.5, 8.5, "alpha beta gamma delta")];
-    let groups = build_conservation_groups(&rows, &walls(5.0, 9.0));
+    let groups = build_conservation_groups(&rows, &walls(5.0, 9.0), &walls(0.0, 100.0));
     assert!(groups.is_empty(), "inside rows must contribute nothing");
 }
 
@@ -274,7 +274,7 @@ fn straddling_row_splits_proportionally_at_the_wall() {
         10.0,
         "w1 w2 w3 w4 w5 w6 w7 w8",
     )];
-    let groups = build_conservation_groups(&rows, &walls(5.0, 20.0));
+    let groups = build_conservation_groups(&rows, &walls(5.0, 20.0), &walls(0.0, 100.0));
     assert_eq!(groups.len(), 1);
     assert_eq!(groups[0].baseline_tokens, normalize_tokens("w1 w2 w3 w4"));
 }
@@ -288,7 +288,7 @@ fn row_spanning_the_whole_seed_conserves_both_pieces() {
         10.0,
         "h1 h2 h3 h4 m1 m2 m3 m4 t1 t2 t3 t4",
     )];
-    let groups = build_conservation_groups(&rows, &walls(4.0, 6.0));
+    let groups = build_conservation_groups(&rows, &walls(4.0, 6.0), &walls(0.0, 100.0));
     assert_eq!(groups.len(), 1);
     // Proportional rounding: wall 4.0/10 → 0.4*12 = 4.8 → head = first 5
     // tokens; wall 6.0/10 → 0.6*12 = 7.2 → tail = last 5. The boundary
@@ -308,7 +308,7 @@ fn edge_touching_rows_are_conserved_whole() {
         brow("A", 0.0, 5.0, "alpha beta gamma"),
         brow("B", 9.0, 12.0, "one two three"),
     ];
-    let groups = build_conservation_groups(&rows, &walls(5.0, 9.0));
+    let groups = build_conservation_groups(&rows, &walls(5.0, 9.0), &walls(0.0, 100.0));
     assert_eq!(groups.len(), 2);
     assert_eq!(groups[0].baseline_tokens, normalize_tokens("alpha beta gamma"));
     assert_eq!(groups[1].baseline_tokens, normalize_tokens("one two three"));
@@ -322,9 +322,36 @@ fn groups_are_built_per_badge_in_first_appearance_order() {
         brow("A", 2.0, 4.0, "a-words here"),
         brow("B", 10.0, 12.0, "more b words"),
     ];
-    let groups = build_conservation_groups(&rows, &walls(5.0, 9.0));
+    let groups = build_conservation_groups(&rows, &walls(5.0, 9.0), &walls(0.0, 100.0));
     assert_eq!(groups.len(), 2);
     assert_eq!(groups[0].badge, "B");
     assert_eq!(groups[0].baseline_tokens, normalize_tokens("b-words here more b words"));
     assert_eq!(groups[1].badge, "A");
+}
+
+/// Rows are clipped to the WINDOW walls before seed-scoping: a promoted
+/// window replaces only the rows' within-window text (beyond-wall text
+/// persists as outside pieces), so out-of-window tokens are not conserved.
+#[test]
+fn rows_are_clipped_to_the_window_before_seed_scoping() {
+    // 20 tokens across 0-20s: token i covers [i-1, i) seconds.
+    let text: String = (1..=20)
+        .map(|i| format!("t{i} "))
+        .collect::<String>()
+        .trim_end()
+        .to_string();
+    let rows = vec![brow("A", 0.0, 20.0, &text)];
+    // Window [5,10] → tokens t6..t10; seed [8,9] → t9 excluded; the row
+    // spans the whole seed → both outside pieces conserved: t6 t7 t8 + t10.
+    let groups = build_conservation_groups(&rows, &walls(8.0, 9.0), &walls(5.0, 10.0));
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].baseline_tokens, vec!["t6", "t7", "t8", "t10"]);
+}
+
+/// A row entirely beyond the window contributes nothing.
+#[test]
+fn row_outside_the_window_is_excluded() {
+    let rows = vec![brow("A", 12.0, 20.0, "alpha beta gamma")];
+    let groups = build_conservation_groups(&rows, &walls(8.0, 9.0), &walls(5.0, 10.0));
+    assert!(groups.is_empty());
 }

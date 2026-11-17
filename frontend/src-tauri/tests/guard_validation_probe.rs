@@ -85,6 +85,27 @@ async fn read_baseline_rows(window: (f64, f64)) -> Vec<(String, f64, f64, String
         .collect()
 }
 
+/// Minimal PCM16 mono WAV reader (the exported earcheck-7 streams:
+/// pcm_s16le, 16000 Hz, 1 channel — hound is not a dependency).
+fn read_wav_mono16(path: &str) -> Vec<f32> {
+    let raw = std::fs::read(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    assert!(&raw[0..4] == b"RIFF" && &raw[8..12] == b"WAVE", "not a WAV: {path}");
+    let mut i = 12usize;
+    let mut data: Option<&[u8]> = None;
+    while i + 8 <= raw.len() {
+        let tag = &raw[i..i + 4];
+        let len = u32::from_le_bytes([raw[i + 4], raw[i + 5], raw[i + 6], raw[i + 7]]) as usize;
+        if tag == b"data" {
+            data = Some(&raw[i + 8..i + 8 + len]);
+        }
+        i += 8 + len + (len & 1);
+    }
+    let data = data.unwrap_or_else(|| panic!("no data chunk in {path}"));
+    data.chunks_exact(2)
+        .map(|c| i16::from_le_bytes([c[0], c[1]]) as f32 / 32768.0)
+        .collect()
+}
+
 #[tokio::test]
 #[ignore = "live GPU probe: MEETIFY_LIVE_DIAG=1 cargo test --test guard_validation_probe -- --ignored --nocapture"]
 async fn guard_validation_probe() {
@@ -110,39 +131,70 @@ async fn guard_validation_probe() {
         .expect("no user data dir")
         .join("com.meetily.ai")
         .join("models");
-    let mut engine = WhisperEngine::new_with_models_dir(Some(models_dir.clone())).expect("engine ctor");
-    engine.discover_models().await.expect("discover models");
-    engine.load_model(&model).await.expect("load model");
-    let separator =
-        app_lib::audio::speaker::separation::ConvTasNetSeparator::from_models_dir().expect("separator");
 
-    let cache = samples_cache();
-    let raw = std::fs::read(&cache).expect("read samples cache");
-    let all: Vec<f32> = raw
-        .chunks_exact(4)
-        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-        .collect();
-
-    // Separate the promoted window into the two repair streams.
-    let sep = tokio::task::spawn_blocking(move || separator.separate(&all, window))
-        .await
-        .expect("separate join")
-        .expect("separation");
-
-    // Decode both streams (blocking decode only — spawn_blocking-ONLY).
-    let decoded = tokio::task::spawn_blocking(move || {
-        sep.iter()
-            .enumerate()
-            .map(|(i, st)| {
-                let text = engine
-                    .transcribe_span_blocking(st.samples.clone(), &lang)
-                    .unwrap_or_default();
-                (i, st.pre_rms_ratio, text)
+    // Recorded-stream mode: MEETIFY_PROBE_WAVS="a.wav,b.wav" decodes the
+    // exported separated streams directly (reproducing a recorded decode
+    // without re-deriving its window shape). Otherwise: separate the
+    // window now.
+    let decoded: Vec<(usize, f64, String)> =
+        if let Ok(wavs) = std::env::var("MEETIFY_PROBE_WAVS") {
+            let paths: Vec<String> = wavs.split(',').map(|s| s.trim().to_string()).collect();
+            assert!(paths.len() == 2, "MEETIFY_PROBE_WAVS must list two stream WAVs");
+            let mut engine =
+                WhisperEngine::new_with_models_dir(Some(models_dir.clone())).expect("engine ctor");
+            engine.discover_models().await.expect("discover models");
+            engine.load_model(&model).await.expect("load model");
+            tokio::task::spawn_blocking(move || {
+                paths
+                    .iter()
+                    .enumerate()
+                    .map(|(i, p)| {
+                        let samples = read_wav_mono16(p);
+                        let text = engine
+                            .transcribe_span_blocking(samples, &lang)
+                            .unwrap_or_default();
+                        (i, 0.0, text)
+                    })
+                    .collect::<Vec<_>>()
             })
-            .collect::<Vec<_>>()
-    })
-    .await
-    .expect("decode join");
+            .await
+            .expect("wav decode join")
+        } else {
+            let mut engine =
+                WhisperEngine::new_with_models_dir(Some(models_dir.clone())).expect("engine ctor");
+            engine.discover_models().await.expect("discover models");
+            engine.load_model(&model).await.expect("load model");
+            let separator = app_lib::audio::speaker::separation::ConvTasNetSeparator::from_models_dir()
+                .expect("separator");
+
+            let cache = samples_cache();
+            let raw = std::fs::read(&cache).expect("read samples cache");
+            let all: Vec<f32> = raw
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect();
+
+            // Separate the promoted window into the two repair streams.
+            let sep = tokio::task::spawn_blocking(move || separator.separate(&all, window))
+                .await
+                .expect("separate join")
+                .expect("separation");
+
+            // Decode both streams (blocking decode only — spawn_blocking-ONLY).
+            tokio::task::spawn_blocking(move || {
+                sep.iter()
+                    .enumerate()
+                    .map(|(i, st)| {
+                        let text = engine
+                            .transcribe_span_blocking(st.samples.clone(), &lang)
+                            .unwrap_or_default();
+                        (i, st.pre_rms_ratio as f64, text)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .expect("decode join")
+        };
 
     // The replaced mixture rows: the meeting's own persisted render.
     let db_rows = read_baseline_rows(window).await;
@@ -155,7 +207,11 @@ async fn guard_validation_probe() {
             text: text.clone(),
         })
         .collect();
-    let groups = build_conservation_groups(&baseline_rows, &SeedWalls { start_s: seed.0, end_s: seed.1 });
+    let groups = build_conservation_groups(
+        &baseline_rows,
+        &SeedWalls { start_s: seed.0, end_s: seed.1 },
+        &SeedWalls { start_s: window.0, end_s: window.1 },
+    );
 
     // Token-only report.
     eprintln!("PROBE window=[{:.2},{:.2}] seed=[{:.2},{:.2}]", window.0, window.1, seed.0, seed.1);
