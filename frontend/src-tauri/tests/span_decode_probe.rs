@@ -26,12 +26,12 @@ fn samples_cache() -> std::path::PathBuf {
     let music = std::path::Path::new(&home).join("Music");
     for entry in std::fs::read_dir(&music).expect("read Music") {
         let p = entry.expect("dir entry").path();
-        if p.is_dir() && p.join(meeting).join("samples_16k.f32").exists() {
-            return p.join(meeting).join("samples_16k.f32");
+        if p.is_dir() && p.join(&meeting).join("samples_16k.f32").exists() {
+            return p.join(&meeting).join("samples_16k.f32");
         }
     }
     if let Ok(dir) = std::env::var("MEETIFY_RECORDINGS_DIR") {
-        let p = std::path::Path::new(&dir).join(meeting).join("samples_16k.f32");
+        let p = std::path::Path::new(&dir).join(&meeting).join("samples_16k.f32");
         if p.exists() {
             return p;
         }

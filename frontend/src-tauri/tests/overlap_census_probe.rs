@@ -48,14 +48,14 @@ fn resolve_audio() -> std::path::PathBuf {
     let meeting = std::env::var("MEETIFY_MEETING_DIR")
         .expect("MEETIFY_MEETING_DIR (recording dir name)");
     if let Ok(dir) = std::env::var("MEETIFY_RECORDINGS_DIR") {
-        return std::path::Path::new(&dir).join(meeting).join("audio.mp4");
+        return std::path::Path::new(&dir).join(&meeting).join("audio.mp4");
     }
     let home = std::env::var("USERPROFILE").expect("USERPROFILE");
     let music = std::path::Path::new(&home).join("Music");
     for entry in std::fs::read_dir(&music).expect("read Music") {
         let p = entry.expect("dir entry").path();
-        if p.is_dir() && p.join(meeting).join("audio.mp4").exists() {
-            return p.join(meeting).join("audio.mp4");
+        if p.is_dir() && p.join(&meeting).join("audio.mp4").exists() {
+            return p.join(&meeting).join("audio.mp4");
         }
     }
     panic!("no *-recordings folder with {meeting} under {}", music.display());

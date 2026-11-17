@@ -28,6 +28,10 @@ use app_lib::audio::speaker::run_assembly::{
 use app_lib::audio::speaker::run_engine;
 use serde::Deserialize;
 
+#[path = "common/evidence_fixture.rs"]
+mod evidence_fixture;
+
+
 const AUDIO: &str =
     "Music/local-recordings/Meeting 2026-06-22_16-04-01_2026-06-22_14-04/audio.mp4";
 const DB_PATH: &str = "AppData/Roaming/com.meetily.ai/meeting_minutes.sqlite";
@@ -626,7 +630,12 @@ async fn gap_rescue_signals() {
     eprintln!("\n=== 1.4 whole-meeting candidate scan (DB spans = production engine) ===");
     // fixture entries for disturbance mapping
     let fixture: Fixture = serde_json::from_str(
-        &std::fs::read_to_string("tests/fixtures/ear_truth_cde5c264.json").expect("fixture"),
+        &std::fs::read_to_string(
+            evidence_fixture::evidence_fixture("ear_truth_cde5c264.json").expect(
+                "evidence home missing: the golden fixture is local-only — restore                  ../meetily-flash-local-evidence/ (AGENTS.md §3)",
+            ),
+        )
+        .expect("fixture"),
     )
     .expect("parse fixture");
     let n_frames = fm.frames.len();
