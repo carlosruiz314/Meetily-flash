@@ -8,20 +8,19 @@ Live spec state this change builds on: the floors-driven per-voice synthesis wit
 
 Constraints: bright line (nothing meeting-derived in the repo; fixtures never read by code paths); ears rule classes, never moments; verdicts tune general dials only; SDD with adversarial TDD; the guard must be usable at runtime inside the production pipeline.
 
+## Outcome (stop-point resolved 2026-11-17 — user ruling)
+
+The offline measurement (task 1.4, recorded in `offline-evidence.md`) FALSIFIED the guard's premise before any production wiring: the mangled render scores HIGHER on the conservation statistic (0.818/0.903) than the user-validated render (0.652/0.857), because a fluent substitution costs 2–3 tokens while separation word-loss and cross-bleed cost far more. No bar exists. D3's mandatory-ruling branch triggered; the user ruled: **drop the repair path for good, keep the waiver-scoping fix.** D1/D2/D4/D5/D6/D8/D10/D11 below are kept as the closed evidence trail for that verdict (they describe the guard that was measured and rejected); only D7 (the waiver scoping) and D9 (pure-function placement, which the landed measurement instruments follow) remain in force as shipped design.
+
 ## Goals / Non-Goals
 
-**Goals:**
-- Rebuild the scramble-seed promotion from issue #6's recorded findings, behind a runtime **net-worse guard**.
-- Guard principle: the repair may only change what is broken — text the promotion was not asked to fix (tokens outside the seed span) must survive into the repair render.
-- Settle the guard's strictness OFFLINE against the kept window-shape evidence before any production threshold exists; no dial tuned on one window per side; user ruling is MANDATORY wherever the hard invariant fails.
-- Fix the ear gate's waiver absorption: a known-limitation covers only the pins/checks it documents.
-- Make the seed-detection census resumable so its decode cost is paid once.
+**Goals (post-ruling):**
+- Land the waiver-scoping fix: a known-limitation covers only the assertions it documents; hard pins are never waivable; one pure waiver router serves all four call sites; the lint covers both gate fixtures.
+- Land the measurement instruments (statistic, scoping, probe) as tested pure code — they are the evidence trail's instruments.
+- Close fork issue #6 with the measured verdict.
 
-**Non-Goals:**
-- No changes to the class-E floors (the Oct 7 ruling stands; loosening them to widen coverage is explicitly not this change).
-- No new window-shape rules — the issue proved no size dial separates the cases; the guard is the fix.
-- No span-internal quality claims: fluent substitution INSIDE the seed span remains undetectable without ground truth; the floors and the ear round govern it, as today. The guard protects what was already correct.
-- No re-litigation of the seeding DESIGN (rebuilt per the recorded findings); no universal guard — stutter/loop repair windows keep today's ungated behavior (rationale in D11).
+**Non-Goals (post-ruling):**
+- No scramble-seed promotion, no net-worse guard in production, no census cache, no render-path changes (all closed by the 2026-11-17 ruling; the D-records below explain what was measured and why).
 
 ## Decisions
 

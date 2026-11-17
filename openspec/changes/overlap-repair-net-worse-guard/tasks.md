@@ -41,7 +41,7 @@
       the reproduction criterion — the re-derived validated render passes
       that window's fixture pins and the mangled-case render fails the same
       pins; a mismatch is a recorded STOP for the user to rule on.
-- [ ] 1.5 STOP-POINT: (a) hard non-seed-interior conservation holds → hard
+- [x] 1.5 STOP-POINT: (a) hard non-seed-interior conservation holds → hard
       interior invariant replaces the ratio; (b) hard conservation FAILS →
       the bar is USER-RULED as a dated class dial — mandatory, with a
       mechanically pinned separation margin between validated and mangled
@@ -50,11 +50,11 @@
       bound to ear-gate calibration governance with hold-out entries
       excluded (verify the attested windows map to non-hold-out entries).
       Record the dated constant + evidence sha256s in the change record.
-      No production wiring proceeds before this settles. [ESCALATED 2026-11-17: the measured evidence shows NO conservation bar separates the validated render (0.652/0.857) from the mangled one (0.818/0.903) — the mangled case scores HIGHER; the guard premise is falsified for short fluent substitutions. Disposition pending the user's ruling; production wiring does not proceed.]
+      No production wiring proceeds before this settles. [ESCALATED 2026-11-17: the measured evidence shows NO conservation bar separates the validated render (0.652/0.857) from the mangled one (0.818/0.903) — the mangled case scores HIGHER; the guard premise is falsified for short fluent substitutions. Disposition pending the user's ruling; production wiring does not proceed. USER RULING 2026-11-17: drop the repair for good, keep the waiver-scoping fix; the measured verdict closes issue #6.]
 
 ## 2. Net-worse guard — the production decision function
 
-- [ ] 2.1 RED in `net_worse_guard.rs` (plain `cargo test`, invented
+- [x] 2.1 RED in `net_worse_guard.rs` (plain `cargo test`, invented
       tokens): guard verdict over (baseline mixture rows, repair render
       rows, seed walls) → apply vs stand-down per the settled bar;
       fail-closed cases (empty baseline, missing rows, guard error →
@@ -63,23 +63,23 @@
       flip on conserved text → both groups degrade; manual-row-in-window →
       no promotion; floors-synthesized-overlap → no promotion; census
       record shape token-only.
-- [ ] 2.2 Implement the guard in the run-assembly layer (pure decision, no
+- [x] 2.2 Implement the guard in the run-assembly layer (pure decision, no
       I/O, no fixtures — design D1/D9), factoring the fused build+splice in
       the repair fold into decide-then-splice; green.
-- [ ] 2.3 Window-edge exemption band ONLY if task 1.4/1.5 evidence pinned
+- [x] 2.3 Window-edge exemption band ONLY if task 1.4/1.5 evidence pinned
       one: red test + implementation + the band value recorded with its
       evidence source (design D4). If no band is pinned, record that
       explicitly and skip.
 
 ## 3. Rebuild the scramble-seed promotion behind the guard (from scratch)
 
-- [ ] 3.1 Rebuild the seeding/evidence pass from fork issue #6 + the
+- [x] 3.1 Rebuild the seeding/evidence pass from fork issue #6 + the
       archived `2026-10-08-overlap-stream-retranscription` record (the
       dropped branch left NO commits — verified 2026-11-17; nothing to
       recover). Detection as pure functions + census probes ONLY — NO
       production wiring in this task; red test asserts no promotion is
       reachable from the repair fold yet.
-- [ ] 3.2 RED (plain `cargo test`, recorded evidence arrays): seed
+- [x] 3.2 RED (plain `cargo test`, recorded evidence arrays): seed
       definition — trigger-fired, REACHED separation (duration-floor
       carve-out excluded), final outcome the FULL mixture render (partial
       synthesis excluded), separated decode exceeding the pinned ceiling;
@@ -88,7 +88,7 @@
       union window; window priority stutter → loop → scramble (dedupe-to-
       first order pinned); `LoopRepairCandidate` carries a seed-kind
       discriminator so ONLY promoted windows route through the guard.
-- [ ] 3.3 Wire promotion through the guard (green): enters as the third
+- [x] 3.3 Wire promotion through the guard (green): enters as the third
       seed source in the post-`resolve_duplicate_clusters` repair fold;
       violation, error, or missing baseline → byte-identical mixture
       render; manual-row and floors-region blocks enforced; promoted rows
@@ -97,7 +97,7 @@
       rendered granularity; the production census records EVERY seed fire's
       outcome (applied / guard stand-down / window not built / separation
       unavailable) token-only.
-- [ ] 3.4 Resumable census cache (design D8): keyed by window walls +
+- [x] 3.4 Resumable census cache (design D8): keyed by window walls +
       absorbed-row id set + model versions (NOT span walls alone);
       atomic writes; RED cases — cached span skipped, key change /
       incomplete / corrupt entry re-decodes, resolved cache root verified
@@ -107,7 +107,7 @@
 
 ## 4. Ear gate — pin-scoped waivers (no more silent absorption)
 
-- [ ] 4.1 RED (plain `cargo test`): extract waiver resolution into ONE pure
+- [x] 4.1 RED (plain `cargo test`): extract waiver resolution into ONE pure
       router and red-test ALL FOUR call sites (kind-keyed
       `record_render_failure` ~:422, entry-verdict waivers ~:818 and
       ~:1479, pin waiver ~:1978): a failing waivable pin whose label no
@@ -116,12 +116,12 @@
       KNOWN-LIMITATION; verdict-level failures resolve via enumerated
       failure-kind covers; unlabeled waivable pins are never coverable; no
       wildcard; hard pins are never waivable regardless of covers.
-- [ ] 4.2 Implement: `RowPin.label`, `Amendment.covers` (pin labels ∪
+- [x] 4.2 Implement: `RowPin.label`, `Amendment.covers` (pin labels ∪
       enumerated failure-kind ids), router wired into all four sites;
       `ear_truth_fixture_lint` extended to BOTH gate fixtures (date +
       reason + non-empty covers whose entries resolve — pin labels present
       on the entry, or known failure-kind ids); green.
-- [ ] 4.3 Local evidence-home fixture migration (edits the evidence home,
+- [x] 4.3 Local evidence-home fixture migration (edits the evidence home,
       NOT the repo): label the limited entries' waivable pins, populate
       each existing amendment record's covers from its documented reason —
       including check-kind covers for the two entries whose limitations
@@ -133,13 +133,18 @@
 
 ## 5. Verification + closure
 
+> Tasks 2.1–2.3, 3.1–3.4, 5.2 and 5.3 are CHECKED ABOVE as closed-by-ruling
+> (2026-11-17): they are not executed — the repair path they build was
+> dropped on the measured evidence with the user's explicit ruling. Their
+> descriptions remain for the evidence trail.
+
 - [ ] 5.1 Full `cargo test` green including the fixture lint (no
       concurrent cargo during live runs).
-- [ ] 5.2 Census-only pass FIRST (background, heartbeat): run the seed
+- [x] 5.2 Census-only pass FIRST (background, heartbeat): run the seed
       census and record the seed-fire census (how many seeds fire, where)
       — REVIEW the recorded census before any render changes; correct the
       seed-decode-set exposure claim if the census disagrees with it.
-- [ ] 5.3 Production Speakers re-run (heartbeat); verify mechanically by
+- [x] 5.3 Production Speakers re-run (heartbeat); verify mechanically by
       extending the existing replay/oracle harnesses
       (`census_replay_harness.rs` / `persistence_oracle.rs`) with named
       assertions: the ~192s seed's window is BLOCKED (floors-region
@@ -159,9 +164,9 @@
       (and `diarization-label-quality.spec.ts` at N=2), and the engine-side
       selection is verified by the cargo gates + the ear-truth fixture
       pins. No new smoke spec is landed; this task records the rationale
-      and verifies the covering specs still pass.
+      and verifies the covering specs still pass. [VERIFIED 2026-11-17: `diarization-speaker-split-persistence.spec.ts` + `diarization-label-quality.spec.ts` — 2 passed (1.4m); the re-scoped change touches no render-path code.]
 - [ ] 5.6 Before archive: re-read the live spec + design against what
-      landed; amend the delta/design first if the implementation evolved.
+      landed; amend the delta/design first if the implementation evolved. [DONE 2026-11-17: artifacts re-scoped to the ruling before any archive — proposal/design/delta/tasks amended, validated 4/4; the landed code (statistic + scoping + probe + waiver router + lint) matches the amended design Outcome/D7/D9.]
 - [ ] 5.7 `/opsx:archive` on the user's go; close fork issue #6 with the
       outcome comment (commits and pushes only on the user's explicit
       word).

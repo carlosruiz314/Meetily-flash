@@ -71,6 +71,14 @@ struct Fixture {
 struct Amendment {
     user_confirmed: String,
     reason: String,
+    /// What this record covers: waivable pin LABELS on its entry and/or
+    /// the enumerated failure-kind ids (`VERDICT_CHECK_KIND` for
+    /// entry-level verdicts; render-fixture records cover their own
+    /// failure-kind ids). No wildcard — a record covers only what it
+    /// documents (overlap-repair-net-worse-guard; lint-enforced on BOTH
+    /// fixtures).
+    #[serde(default)]
+    covers: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -122,6 +130,11 @@ struct RowPin {
     /// through the entry's amendment record (KNOWN-LIMITATION).
     #[serde(default)]
     hard: bool,
+    /// Waivable pins carry a label so an amendment record can cover
+    /// exactly them; hard pins carry none (lint-enforced on listed
+    /// entries).
+    #[serde(default)]
+    label: Option<String>,
 }
 
 /// One derived turn: label + span + engine continuation fact + aligned text.
@@ -250,12 +263,14 @@ fn count_token_run(haystack: &[String], run: &[String]) -> usize {
 }
 
 /// Fidelity-pin enforcement over the replayed render groups (pure — the
-/// unit tests below pin the matcher semantics). Returns (hard, message)
-/// failures; empty = every pin passes.
+/// unit tests below pin the matcher semantics). Returns
+/// (pin label, hard, message) failures; empty = every pin passes. The
+/// label routes waivable pins through the waiver router; hard pins carry
+/// no label (never waivable).
 fn check_row_pins(
     groups: &[app_lib::audio::speaker::turns::TurnGroup],
     e: &Entry,
-) -> Vec<(bool, String)> {
+) -> Vec<(Option<String>, bool, String)> {
     let s0 = (e.start_s * 1000.0) as i64;
     let s1 = (e.end_s * 1000.0) as i64;
     let window: Vec<&app_lib::audio::speaker::turns::SpeakerTurn> = groups
@@ -286,6 +301,7 @@ fn check_row_pins(
         if got != pin.count {
             let head: Vec<&str> = pin.tokens.iter().take(4).map(String::as_str).collect();
             out.push((
+                pin.label.clone(),
                 pin.hard,
                 format!(
                     "pin {:?}… ({}) wanted x{} under badge {:?} — got x{} in {} window row(s)",
@@ -413,40 +429,91 @@ fn longest_shared_chunk(a: &[String], b: &[String]) -> usize {
     best
 }
 
+/// The enumerated failure-kind id for entry-level verdict failures
+/// (single_voice / voice_change_at / multi_voice / distinct_speaker /
+/// marker checks): an amendment record covers these with this id.
+const VERDICT_CHECK_KIND: &str = "entry_verdict";
+
+/// One failing assertion's waiver outcome.
+enum WaiverOutcome {
+    /// Covered by a complete record: AMENDED with its date + reason.
+    Waived {
+        user_confirmed: String,
+        reason: String,
+    },
+    /// Hard, unlisted, incomplete, empty covers, or uncovered: the
+    /// assertion FAILS. A known-limitation never silently absorbs what it
+    /// does not document.
+    Uncovered,
+}
+
+/// THE waiver resolution — one pure fn, every call site routes through it
+/// (overlap-repair-net-worse-guard 4.1/4.2; red-tested below). `record_key`
+/// is the amendment record's id (entry id, or the render-fixture's
+/// failure-kind id); `assertion_id` is the failing assertion's coverage
+/// key (a waivable pin's label, VERDICT_CHECK_KIND, or a render-fixture
+/// failure-kind id).
+fn resolve_waiver(
+    known_limitations: &[String],
+    amendments: &std::collections::BTreeMap<String, Amendment>,
+    record_key: &str,
+    assertion_id: &str,
+    hard: bool,
+) -> WaiverOutcome {
+    if hard || assertion_id == "*" || !known_limitations.iter().any(|k| k == record_key) {
+        return WaiverOutcome::Uncovered;
+    }
+    match amendments.get(record_key) {
+        Some(a)
+            if !a.user_confirmed.is_empty()
+                && !a.reason.is_empty()
+                && !a.covers.is_empty()
+                && a.covers.iter().any(|c| c == assertion_id && c != "*") =>
+        {
+            WaiverOutcome::Waived {
+                user_confirmed: a.user_confirmed.clone(),
+                reason: a.reason.clone(),
+            }
+        }
+        _ => WaiverOutcome::Uncovered,
+    }
+}
+
 /// Record a render-level failure under the amendment waiver path: a kind
-/// listed in `known_limitations` WITH a complete amendment record is
-/// printed AMENDED(<date>, <reason>) and does not fail the gate; listed
-/// without a record fails loudly; unlisted fails plainly. (The fracture scan
-/// no longer routes through here — since the 2026-09-09 ear decree every
-/// cross-badge fracture fails hard, with no waiver kind.)
+/// listed in `known_limitations` WITH a complete, COVERING amendment
+/// record is printed AMENDED(<date>, <reason>) and does not fail the
+/// gate; listed without a covering record fails loudly; unlisted fails
+/// plainly. (The fracture scan no longer routes through here — since the
+/// 2026-09-09 ear decree every cross-badge fracture fails hard, with no
+/// waiver kind.)
 fn record_render_failure(
     render_failures: &mut Vec<String>,
     fx: &RenderFixture,
     kind: &str,
     msg: String,
 ) {
-    let listed = fx.known_limitations.iter().any(|k| k == kind);
-    let record = fx.amendments.get(kind);
-    let complete = record
-        .map(|a| !a.user_confirmed.is_empty() && !a.reason.is_empty())
-        .unwrap_or(false);
-    if listed && complete {
-        let a = record.expect("checked");
-        eprintln!("AMENDED({}) {kind} — {} | {msg}", a.user_confirmed, a.reason);
-        return;
-    }
-    if listed {
-        render_failures.push(format!(
-            "{kind}: {msg} (in known_limitations but missing a complete amendments record)"
-        ));
-    } else {
-        render_failures.push(format!("{kind}: {msg}"));
+    match resolve_waiver(&fx.known_limitations, &fx.amendments, kind, kind, false) {
+        WaiverOutcome::Waived { user_confirmed, reason } => {
+            eprintln!("AMENDED({}) {kind} — {} | {msg}", user_confirmed, reason);
+        }
+        WaiverOutcome::Uncovered => {
+            if fx.known_limitations.iter().any(|k| k == kind) {
+                render_failures.push(format!(
+                    "{kind}: {msg} (listed but its amendment record does not cover this failure kind)"
+                ));
+            } else {
+                render_failures.push(format!("{kind}: {msg}"));
+            }
+        }
     }
 }
 
 /// Plain `cargo test` (no audio/models/env): every KNOWN-LIMITATION id must
-/// carry a complete, auditable amendment record, and every amendment record
-/// must belong to a listed or existing entry.
+/// carry a complete, auditable amendment record whose covers list is
+/// non-empty and resolvable, and every amendment record must belong to a
+/// listed or existing entry. Runs for BOTH gate fixtures (the ear-truth
+/// fixture and the render snapshot): the render fixture's records are
+/// failure-kind-keyed, so their covers entries must name listed kinds.
 #[test]
 fn ear_truth_fixture_lint() {
     // The golden fixture is meeting-derived and lives only in the local
@@ -480,12 +547,74 @@ fn ear_truth_fixture_lint() {
             "amendment record for {id}: user_confirmed must be a YYYY-MM-DD date, got {:?}",
             record.user_confirmed
         );
+        // Covers audit (overlap-repair-net-worse-guard 4.2): non-empty, no
+        // wildcard, every entry resolvable (a waivable pin label on the
+        // entry, or VERDICT_CHECK_KIND), waivable pins labeled, hard pins
+        // unlabeled.
+        assert!(
+            !record.covers.is_empty(),
+            "amendment record for {id} has an empty covers list — a limitation must document what it covers"
+        );
+        let entry_ref = fixture.entries.iter().find(|e| &e.id == id);
+        let waivable: Vec<Option<&String>> = entry_ref
+            .map(|e| e.pins.iter().filter(|p| !p.hard).map(|p| p.label.as_ref()).collect())
+            .unwrap_or_default();
+        let unlabeled = waivable.iter().filter(|l| l.is_none()).count();
+        assert_eq!(
+            unlabeled, 0,
+            "listed entry {id} has waivable pins without labels — they can never be covered"
+        );
+        let hard_labeled = entry_ref
+            .map(|e| e.pins.iter().filter(|p| p.hard && p.label.is_some()).count())
+            .unwrap_or(0);
+        assert_eq!(
+            hard_labeled, 0,
+            "listed entry {id} has hard pins carrying labels — hard pins are never waivable"
+        );
+        for c in &record.covers {
+            assert!(c != "*", "wildcard covers entry in record {id}");
+            let resolves = c == VERDICT_CHECK_KIND
+                || waivable.iter().flatten().any(|l| **l == *c);
+            assert!(
+                resolves,
+                "covers entry {c:?} of record {id} resolves against nothing (no such waivable pin label, not {VERDICT_CHECK_KIND:?})"
+            );
+        }
     }
     for id in fixture.amendments.keys() {
         assert!(
             fixture.known_limitations.contains(id) || ids.contains(&id),
             "amendments record for {id} references an unknown entry"
         );
+    }
+
+    // The render snapshot fixture: same audit, kind-keyed — covers entries
+    // must name listed failure kinds.
+    if let Some(render_path) = evidence_fixture::evidence_fixture("cde5c264_transcripts.json") {
+        let rf: RenderFixture = serde_json::from_str(
+            &std::fs::read_to_string(&render_path).expect("read cde5c264_transcripts.json"),
+        )
+        .expect("parse cde5c264_transcripts.json");
+        for id in &rf.known_limitations {
+            let record = rf
+                .amendments
+                .get(id)
+                .unwrap_or_else(|| panic!("render fixture KNOWN-LIMITATION {id} has no amendments record"));
+            assert!(
+                !record.user_confirmed.is_empty() && !record.reason.is_empty(),
+                "render fixture amendment record for {id} is incomplete"
+            );
+            assert!(
+                !record.covers.is_empty(),
+                "render fixture amendment record for {id} has an empty covers list"
+            );
+            for c in &record.covers {
+                assert!(
+                    rf.known_limitations.contains(c),
+                    "render fixture record {id} covers {c:?} — not a listed failure kind"
+                );
+            }
+        }
     }
 }
 
@@ -816,27 +945,28 @@ async fn ear_truth_gate_cde5c264() {
             }
             Verdict::Fail(reason) => {
                 let listed = fixture.known_limitations.iter().any(|k| k == &e.id);
-                let record = fixture.amendments.get(&e.id);
-                let waived = listed
-                    && record
-                        .map(|a| !a.user_confirmed.is_empty() && !a.reason.is_empty())
-                        .unwrap_or(false);
-                if waived {
-                    limited += 1;
-                    let a = record.expect("checked");
-                    eprintln!(
-                        "AMENDED({}) {} — {} | {}",
-                        a.user_confirmed, e.id, a.reason, reason
-                    );
-                } else if listed {
-                    failed.push(e.id.clone());
-                    eprintln!(
-                        "FAIL{} {} — {} (in known_limitations but missing a complete amendments record)",
-                        tag, e.id, reason
-                    );
-                } else {
-                    failed.push(e.id.clone());
-                    eprintln!("FAIL{} {} — {}", tag, e.id, reason);
+                match resolve_waiver(
+                    &fixture.known_limitations,
+                    &fixture.amendments,
+                    &e.id,
+                    VERDICT_CHECK_KIND,
+                    false,
+                ) {
+                    WaiverOutcome::Waived { user_confirmed, reason: r } => {
+                        limited += 1;
+                        eprintln!("AMENDED({}) {} — {} | {}", user_confirmed, e.id, r, reason);
+                    }
+                    WaiverOutcome::Uncovered if listed => {
+                        failed.push(e.id.clone());
+                        eprintln!(
+                            "FAIL{} {} — {} (listed but its amendment record does not cover entry-verdict failures)",
+                            tag, e.id, reason
+                        );
+                    }
+                    WaiverOutcome::Uncovered => {
+                        failed.push(e.id.clone());
+                        eprintln!("FAIL{} {} — {}", tag, e.id, reason);
+                    }
                 }
             }
         }
@@ -1476,23 +1606,22 @@ async fn ear_truth_gate_cde5c264() {
                     eprintln!("PASS {}", e.id);
                 }
                 Verdict::Fail(reason) => {
-                    let listed = fixture.known_limitations.iter().any(|k| k == &e.id);
-                    let record = fixture.amendments.get(&e.id);
-                    let waived = listed
-                        && record
-                            .map(|a| !a.user_confirmed.is_empty() && !a.reason.is_empty())
-                            .unwrap_or(false);
-                    if waived {
-                        limited += 1;
-                        let a = record.expect("checked");
-                        eprintln!(
-                            "AMENDED({}) {} — {} | {}",
-                            a.user_confirmed, e.id, a.reason, reason
-                        );
-                    } else {
-                        failed.push(e.id.clone());
-                        eprintln!("FAIL {}", e.id,);
-                        eprintln!("  -> {}", reason);
+                    match resolve_waiver(
+                        &fixture.known_limitations,
+                        &fixture.amendments,
+                        &e.id,
+                        VERDICT_CHECK_KIND,
+                        false,
+                    ) {
+                        WaiverOutcome::Waived { user_confirmed, reason: r } => {
+                            limited += 1;
+                            eprintln!("AMENDED({}) {} — {} | {}", user_confirmed, e.id, r, reason);
+                        }
+                        WaiverOutcome::Uncovered => {
+                            failed.push(e.id.clone());
+                            eprintln!("FAIL {}", e.id,);
+                            eprintln!("  -> {}", reason);
+                        }
                     }
                 }
             }
@@ -1971,19 +2100,27 @@ async fn ear_truth_gate_cde5c264() {
             let mut enforced = 0usize;
             for e in fixture.entries.iter().filter(|e| !e.pins.is_empty()) {
                 enforced += 1;
-                for (hard, msg) in check_row_pins(&groups, e) {
-                    if hard {
-                        render_failures.push(format!("{} (hard pin): {msg}", e.id));
-                    } else {
-                        let waived = fixture.known_limitations.iter().any(|k| k == &e.id)
-                            && fixture
-                                .amendments
-                                .get(&e.id)
-                                .map_or(false, |a| !a.user_confirmed.is_empty() && !a.reason.is_empty());
-                        if waived {
-                            eprintln!("AMENDED {} — {msg}", e.id);
-                        } else {
-                            render_failures.push(format!("{}: {msg}", e.id));
+                for (label, hard, msg) in check_row_pins(&groups, e) {
+                    let assertion = label.as_deref().unwrap_or("");
+                    match resolve_waiver(
+                        &fixture.known_limitations,
+                        &fixture.amendments,
+                        &e.id,
+                        assertion,
+                        hard,
+                    ) {
+                        WaiverOutcome::Waived { user_confirmed, reason } => {
+                            eprintln!(
+                                "AMENDED({}) {} — {} | {msg}",
+                                user_confirmed, e.id, reason
+                            );
+                        }
+                        WaiverOutcome::Uncovered => {
+                            if hard {
+                                render_failures.push(format!("{} (hard pin): {msg}", e.id));
+                            } else {
+                                render_failures.push(format!("{}: {msg}", e.id));
+                            }
                         }
                     }
                 }
@@ -2280,6 +2417,7 @@ fn row_pin(badge: Option<&str>, tokens: &[&str], count: usize, scope: &str, hard
         count,
         scope: scope.to_string(),
         hard,
+        label: None,
     }
 }
 
@@ -2400,4 +2538,139 @@ fn pin_absence_and_non_overlapping_counts() {
     assert!(check_row_pins(&groups, &e).is_empty(), "non-overlapping count is 1");
     let e = pin_entry(vec![row_pin(None, &["alpha", "alpha"], 2, "row", true)]);
     assert_eq!(check_row_pins(&groups, &e).len(), 1, "overlapping matches do not stack");
+}
+
+// ---------------------------------------------------------------------------
+// Waiver router (overlap-repair-net-worse-guard tasks 4.1/4.2): ONE pure
+// resolution for every waiver call site. A known-limitation covers ONLY
+// the assertions its amendment record documents — a failing assertion
+// whose id no complete record covers FAILS. Hard pins are never waivable;
+// no wildcard exists. RED tests first, plain `cargo test`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn waiver_router_covered_pin_resolves_waived() {
+    let mut fx_records = std::collections::BTreeMap::new();
+    fx_records.insert(
+        "S16".to_string(),
+        Amendment {
+            user_confirmed: "2026-09-25".to_string(),
+            reason: "test reason".to_string(),
+            covers: vec!["single_badge_flattening".to_string()],
+        },
+    );
+    let out = resolve_waiver(
+        &["S16".to_string()],
+        &fx_records,
+        "S16",
+        "single_badge_flattening",
+        false,
+    );
+    assert!(matches!(out, WaiverOutcome::Waived { .. }));
+}
+
+#[test]
+fn waiver_router_uncovered_pin_fails() {
+    let mut fx_records = std::collections::BTreeMap::new();
+    fx_records.insert(
+        "S18".to_string(),
+        Amendment {
+            user_confirmed: "2026-10-01".to_string(),
+            reason: "badge limitation only".to_string(),
+            covers: vec!["entry_verdict".to_string()],
+        },
+    );
+    // A NEW text pin the record never covered: FAIL, not absorbed.
+    let out = resolve_waiver(&["S18".to_string()], &fx_records, "S18", "tail_text_pin", false);
+    assert!(matches!(out, WaiverOutcome::Uncovered));
+}
+
+#[test]
+fn waiver_router_hard_pin_never_waived() {
+    let mut fx_records = std::collections::BTreeMap::new();
+    fx_records.insert(
+        "E".to_string(),
+        Amendment {
+            user_confirmed: "2026-10-01".to_string(),
+            reason: "r".to_string(),
+            covers: vec!["fabrication_absence".to_string()],
+        },
+    );
+    let out = resolve_waiver(
+        &["E".to_string()],
+        &fx_records,
+        "E",
+        "fabrication_absence",
+        true,
+    );
+    assert!(matches!(out, WaiverOutcome::Uncovered));
+}
+
+#[test]
+fn waiver_router_incomplete_record_fails() {
+    let mut fx_records = std::collections::BTreeMap::new();
+    fx_records.insert(
+        "E".to_string(),
+        Amendment {
+            user_confirmed: "2026-10-01".to_string(),
+            reason: String::new(),
+            covers: vec!["some_label".to_string()],
+        },
+    );
+    let out = resolve_waiver(&["E".to_string()], &fx_records, "E", "some_label", false);
+    assert!(matches!(out, WaiverOutcome::Uncovered));
+}
+
+#[test]
+fn waiver_router_unlisted_entry_fails() {
+    let fx_records = std::collections::BTreeMap::new();
+    let out = resolve_waiver(&[], &fx_records, "E", "some_label", false);
+    assert!(matches!(out, WaiverOutcome::Uncovered));
+}
+
+#[test]
+fn waiver_router_empty_covers_fails() {
+    let mut fx_records = std::collections::BTreeMap::new();
+    fx_records.insert(
+        "E".to_string(),
+        Amendment {
+            user_confirmed: "2026-10-01".to_string(),
+            reason: "r".to_string(),
+            covers: Vec::new(),
+        },
+    );
+    let out = resolve_waiver(&["E".to_string()], &fx_records, "E", "entry_verdict", false);
+    assert!(matches!(out, WaiverOutcome::Uncovered));
+}
+
+#[test]
+fn waiver_router_wildcard_never_waives() {
+    let mut fx_records = std::collections::BTreeMap::new();
+    fx_records.insert(
+        "E".to_string(),
+        Amendment {
+            user_confirmed: "2026-10-01".to_string(),
+            reason: "r".to_string(),
+            covers: vec!["*".to_string()],
+        },
+    );
+    for assertion in ["entry_verdict", "any_label", "*"] {
+        let out = resolve_waiver(&["E".to_string()], &fx_records, "E", assertion, false);
+        assert!(matches!(out, WaiverOutcome::Uncovered), "wildcard must not waive {assertion}");
+    }
+}
+
+#[test]
+fn waiver_router_verdict_kind_covered() {
+    let mut fx_records = std::collections::BTreeMap::new();
+    fx_records.insert(
+        "E".to_string(),
+        Amendment {
+            user_confirmed: "2026-10-01".to_string(),
+            reason: "entry-level limitation".to_string(),
+            covers: vec![VERDICT_CHECK_KIND.to_string()],
+        },
+    );
+    let out = resolve_waiver(&["E".to_string()], &fx_records, "E", VERDICT_CHECK_KIND, false);
+    assert!(matches!(out, WaiverOutcome::Waived { .. }));
 }
