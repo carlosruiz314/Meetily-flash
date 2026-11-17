@@ -260,6 +260,7 @@ first (`playwright.config.ts` sets `reuseExistingServer: !CI`).
 - Commits reference the change by name in the subject.
 - **Issues live in the fork only.** Every `gh issue create` (and any other gh write) targets `carlosruiz314/Meetily-flash` — never the upstream `Zackriya-Solutions/meetily`. On a fork checkout gh's parent-repo heuristic silently defaults to upstream (this misfiled deferred-work issues twice, 2026-10-08): set `gh repo set-default carlosruiz314/Meetily-flash` right after cloning, scripts pass `-R carlosruiz314/Meetily-flash` explicitly anyway, and the pre-push hook's gh-guard (Gate 0) fails the push while the default is unset or wrong.
 - No force-pushing to `main`. No `--no-verify`.
+- **Dropped work stays retrievable.** When a change is dropped or its implementation reverted, the applied code SHALL first be committed to the change branch (local commit; push on the user's word) before the revert — the drop decision includes this preservation commit. An issue documenting findings without the code that produced them is an orphan (this orphaned the overlap-scramble-repair work, 2026-11-17: findings in issue #6, every line of code destroyed).
 - Before merging: `cargo test && pytest && pnpm test && pnpm lint` all green.
 - Deferred work tracked as GitHub issues (in the fork — see above), not in-code TODOs or backlog files.
 
