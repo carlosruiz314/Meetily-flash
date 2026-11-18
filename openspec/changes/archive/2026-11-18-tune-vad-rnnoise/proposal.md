@@ -1,3 +1,15 @@
+> **STATUS: DROPPED 2026-11-18 — never started (0/11 tasks, no code applied).**
+> The motivating failure is already handled: batch transcription quarantines
+> hallucinated segments (strict retry, then drop, with a mass-drop circuit
+> breaker — landed 2026-09-13, fixture-verified; see the
+> `post-meeting-pipeline` spec requirement). The change also predates the
+> PII bright line: task 1.1's real recorded noise snippet as a repo fixture
+> under `tests/fixtures/` is repo-forbidden now (would live in the evidence
+> home). The knobs remain as this proposal found them
+> (`RNNOISE_APPLY_ENABLED = false`, `positive_speech_threshold = 0.50`), so
+> re-opening is cheap if noise-driven transcription failures ever reappear —
+> re-scope to the current pipeline first.
+
 ## Why
 
 After `fix-audio-normalization` and `post-meeting-transcription` are applied, the retranscription path may still forward borderline noise segments to Whisper if the ambient noise floor remains loud enough to pass the Silero VAD threshold (0.50 default) or if the MP4 audio still contains significant broadband noise. RNNoise is already compiled into the binary but disabled (`RNNOISE_APPLY_ENABLED = false`); enabling it in the recording path removes steady-state noise before it enters the MP4, improving both playback quality and retranscription accuracy. Silero threshold tuning tightens the VAD gate so only confident speech segments reach Whisper.
