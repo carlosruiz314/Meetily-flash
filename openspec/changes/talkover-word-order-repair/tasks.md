@@ -36,16 +36,26 @@
       UNIONED interval re-runs manual-row and synth-atom checks (RED test
       for the straddling-manual-row union); refused union falls back to
       individual windows if individually clean, else `window-not-built`.
-- [ ] 2.4 Offline lever-ladder probe on the three kept window shapes
+- [x] 2.4 Offline lever-ladder probe on the three kept window shapes
       (env-gated, evidence-home fixtures, token-only record): the probe
       drives the FULL builder+splice path; leg A = live rebuild width +
       existing strict profile; leg B = leg A + the named no-condition
-      retry; comparison operator FROZEN before measurement (NFC, lowercase,
-      punctuation stripped, whitespace collapsed, exact token-sequence
-      equality). GREEN bar: each attested shape recovers verbatim on the
-      measured minimal leg; unrecovered shape = recorded STOP (user
-      re-plans; no wiring ships). Mismatch diagnostics print verbatim only
-      under `MEETIFY_RENDER_PRINT`; the STOP record stays token-only.
+      retry; comparison operator FROZEN before measurement (amended at
+      the tick to the gate's own pin semantics — the fixture pins are
+      needles, not full sequences; design D3 retracts the exact-sequence
+      wording). [DONE 2026-11-18: probe written + run live; record
+      sha256 31e09fa22bcd3d933dde11996c84cb42bb2092b55a9b968980fd555335b
+      290f7; clean shape RECOVERED 7/7 hard pins on leg A — leg B
+      identical everywhere, no retry ships; validated shape NOT
+      recovered (pin1 want=2 got=1) — diagnosed as wall-coverage, not
+      decode: needle occurrence #2 sits beyond the recorded walls on
+      today's geometry and the absorb-whole splice erased it (17.12s
+      east); baseline holds 2/2, so the runtime stale-attestation hash
+      gate fails exactly this closed — D4 amended: entries are cut
+      ROW-ALIGNED on the hash-pinned render; control fail-closed at the
+      vote bar (margin 0.046 < 0.05). STOP recorded: S16 entry awaits
+      re-cutting row-aligned on the current render + re-measurement
+      before §3 wires (probe-record-2-4.md).]
 - [ ] COMMIT CHECKPOINT: commit the probe record + chosen leg before §3.
 
 ## 3. Promotion wiring — rebuild from the archived sketches
