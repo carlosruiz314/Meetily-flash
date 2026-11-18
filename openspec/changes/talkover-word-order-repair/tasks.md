@@ -1,12 +1,16 @@
 ## 1. Candidate census — measure the flagging before touching anything
 
-- [ ] 1.1 Extend `tests/overlap_census_probe.rs` (DRY — no parallel probe;
+- [x] 1.1 Extend `tests/overlap_census_probe.rs` (DRY — no parallel probe;
       env-gated, `MEETIFY_LIVE_DIAG`, loud evidence-home skip, token-only):
       enumerate every overlap-span candidate flag from
       `engine_out.overlap_spans` (computed independent of enrollment, so
       un-enrolled meetings measure too) with wall position, overlap mass,
       duration, floors verdict (fires / stood-down), sorted by position;
-      counts + sha256 only.
+      counts + sha256 only. [DONE 2026-11-18: probe extended (production
+      pre-normalization RMS ratio semantics, wall-level floors verdicts,
+      position-sorted record pinned by sha256) and run live on the reference
+      meeting — record sha256 ebcd986c958382b2066e84495dabdd7e4671f8cfc5e7
+      ad06b166e9a2b87b9f2e; note written to `census-review-note.md`.]
 - [ ] 1.2 Review the recorded census with the user (STOP gate); the review
       produces a dated token-only note in the change folder (counts +
       ruling) — a hard prerequisite for opening §3.
@@ -46,15 +50,19 @@
 
 ## 3. Promotion wiring — rebuild from the archived sketches
 
-- [ ] 3.1 RED: seed = a rate-fiction or stutter talk-over span that REACHED
-      separation (duration-floor carve-out excluded); `LoopRepairCandidate`
-      gains the seed-class discriminator; negated-reachability test first
-      (no promotion reachable from the repair fold until wired); RED test
-      that an overlapping, token-similar, different-badge span pair
-      SURVIVES `resolve_duplicate_clusters` (pins the existing
-      overlapping-pair guard against regression); the fiction-candidate
-      seed filter is explicitly amended for the talk-over class — design
-      D4's supersession of the 2026-10-07 ruling recorded.
+- [ ] 3.1 RED: two seed routes — (a) a duration-passing span whose
+      separated decode trips rate-fiction or stutter; (b) an attested-window
+      seed: a trigger-fired span whose walls fall within an allowlist entry,
+      rebuilding REGARDLESS of the duration floor (RED test: a 0.4s
+      attested-window span rebuilds; the same walls without an entry do
+      not). `LoopRepairCandidate` gains the seed-class discriminator;
+      negated-reachability test first (no promotion reachable from the
+      repair fold until wired); RED test that an overlapping, token-similar,
+      different-badge span pair SURVIVES `resolve_duplicate_clusters` (pins
+      the existing overlapping-pair guard against regression); the
+      fiction-candidate seed filter is explicitly amended for the
+      decode-tripped talk-over class — design D4's supersession of the
+      2026-10-07 ruling recorded.
 - [ ] 3.2 GREEN: route the promoted window through the live repair-window
       builder (separation + per-stream decode + per-voice splice with
       `synth_parent` links); all existing rejection guards apply unchanged

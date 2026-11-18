@@ -2,9 +2,14 @@
 
 ### Requirement: Talk-over repair promotion is decode-hardened and ear-gated
 
-A rate-fiction or stutter talk-over span SHALL promote as a repair seed with
-decode hardening and an ear-attestation gate: its window SHALL rebuild by the
-live repair-window construction (the same builder the offline probe drives),
+A talk-over span SHALL promote as a repair seed through one of two routes:
+a duration-passing span whose separated decode trips rate-fiction or
+stutter (decode-tripped), or a trigger-fired span whose walls fall within
+an `attestedRepairWindows` entry (attested-window — such a span SHALL
+rebuild regardless of the minimum synthesis duration floor, the
+attestation being the prior ear evidence). A promoted seed's window SHALL
+rebuild by the live repair-window construction (the same builder the
+offline probe drives),
 the separated streams SHALL re-decode under the deterministic profile and —
 only if the offline lever-ladder measurement shows a retry variant is
 required to recover the attested shapes — under that measured minimal retry
@@ -100,6 +105,16 @@ walls to match an `attestedRepairWindows` entry (for rebuilt windows).
 - **WHEN** the rendering regenerates
 - **THEN** the span renders byte-identical to the mixture render
 - **AND** the census records `stood-down:<guard>`
+
+#### Scenario: Attested sub-floor span rebuilds despite the duration floor
+
+- **GIVEN** a trigger-fired span of 0.4s wall duration — under the minimum
+  synthesis duration floor — whose walls fall within an allowlist entry
+  matching on meeting, walls, hash, and fingerprint
+- **WHEN** the repair fold evaluates the span
+- **THEN** the span's window rebuilds at the attested walls and splices
+  per-voice rows from the rebuilt streams
+- **AND** the census records `fired+attested`
 
 #### Scenario: Phrase-loop repairs are unaffected by the gate
 

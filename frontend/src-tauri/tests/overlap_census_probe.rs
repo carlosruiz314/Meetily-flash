@@ -1,19 +1,24 @@
-//! overlap-stream-retranscription task 0.1: dry-run census (token-only).
+//! overlap-stream-retranscription task 0.1, extended by
+//! talkover-word-order-repair task 1.1: candidate census (token-only).
 //!
-//! Blocking measurement before any implementation: does the attested S16
-//! crosstalk window (1055.5–1057.5s) actually FIRE the production overlap
-//! trigger (`OVERLAP_TRIGGER_MASS` = 0.5, sustained ≥ 0.4s)? The prepass
-//! stop-gate scored S16 by running the separator directly on attested
-//! coordinates — it never went through the trigger — so nothing yet proves
-//! S16 is among the spans the pipeline would separate.
+//! Original blocking measurement: does the attested S16 crosstalk window
+//! (1055.5–1057.5s) actually FIRE the production overlap trigger
+//! (`OVERLAP_TRIGGER_MASS` = 0.5, sustained ≥ 0.4s)? The prepass stop-gate
+//! scored S16 by running the separator directly on attested coordinates —
+//! it never went through the trigger.
 //!
-//! Census over EVERY trigger-fired span: walls, trigger mass, per-stream
-//! pre-normalization RMS ratio (normalization amplifies near-silence into
-//! the hallucination regime), span-level stream identity (best/second
-//! cosine, margin, decisive bar) including REJECTED streams — the
-//! near-miss distribution the threshold-retuning protocol needs. Atom-level
-//! votes need transcript token walls (gate-extension work); this is the
-//! span-level identity read.
+//! Task 1.1 extension: EVERY overlap-span candidate flag on the reference
+//! meeting, enumerated from `run_engine::overlap_spans` (computed
+//! independent of enrollment — un-enrolled meetings measure too), sorted
+//! by position, each with its detector evidence: wall position, wall
+//! duration, trigger mass (max/mean), the production pre-normalization
+//! RMS ratio per stream (raw span RMS / mixture-clip RMS, the adapter's
+//! exact semantics), and the wall-level floors verdict
+//! (`MIN_SYNTH_DURATION_SECS`, `SYNTH_STREAM_MIN_RMS_RATIO`) — fires /
+//! stood-down:<floor>. The words-per-second ceilings are decode-dependent
+//! and belong to the runtime per-seed census, not this pass. The full
+//! record is printed and pinned by its sha256 (counts + record digest are
+//! what land in the change-folder note).
 //!
 //! Every output line is TOKEN-ONLY: numbers plus userA/userB/userC. No
 //! render change, no persistence, nothing meeting-derived beyond these
@@ -23,7 +28,9 @@ use app_lib::audio::speaker::nemo_extractor::NemoEmbeddingExtractor;
 use app_lib::audio::speaker::pyannote_segmentation::{
     cache_provenance, FrameMassesOutput, PyannoteSegmentation, FRAME_SHIFT,
 };
-use app_lib::audio::speaker::run_assembly::{cosine, SUBTURN_VOTE_MARGIN};
+use app_lib::audio::speaker::run_assembly::{
+    cosine, MIN_SYNTH_DURATION_SECS, SUBTURN_VOTE_MARGIN, SYNTH_STREAM_MIN_RMS_RATIO,
+};
 use app_lib::audio::speaker::run_engine::{overlap_spans, OVERLAP_TRIGGER_MASS};
 use app_lib::audio::speaker::separation::conv_tasnet::SEPARATION_CONTEXT_SECS;
 use ndarray::Array2;
@@ -246,10 +253,22 @@ fn overlap_census_dry_run() {
         s16_max_mass = s16_max_mass.max(f.overlap);
     }
 
-    // ── The trigger, verbatim production semantics.
-    let spans = overlap_spans(&fm.frames, FRAME_SHIFT);
+    // ── The trigger, verbatim production semantics. Candidates are
+    //    enumerated here (independent of enrollment) and sorted by position.
+    let mut spans = overlap_spans(&fm.frames, FRAME_SHIFT);
+    spans.sort_by(|a, b| a.0.total_cmp(&b.0));
     eprintln!("CENSUS: {} trigger-fired span(s) at mass ≥ {OVERLAP_TRIGGER_MASS}, ≥0.4s", spans.len());
-    for (s0, s1) in &spans {
+
+    // Task 1.1 record: every candidate flag with its detector evidence and
+    // wall-level floors verdict, token-only, pinned by sha256.
+    let mut record: Vec<String> = Vec::new();
+    let mut stood_duration = 0usize;
+    let mut stood_rms = 0usize;
+    record.push(format!(
+        "record_meeting_dir_sha=see_audio_sha256 audio_bytes={}",
+        std::fs::metadata(&audio_path).map(|m| m.len()).unwrap_or(0)
+    ));
+    for &(s0, s1) in &spans {
         let f0 = (s0 / FRAME_SHIFT) as usize;
         let f1 = ((s1 / FRAME_SHIFT) as usize).min(fm.frames.len());
         let mut mx = 0.0f32;
@@ -259,10 +278,30 @@ fn overlap_census_dry_run() {
             sum += f.overlap;
         }
         let mean = sum / (f1 - f0).max(1) as f32;
+        let dur = s1 - s0;
         eprintln!(
-            "CENSUS SPAN [{:.2}-{:.2}] mass_max={:.3} mass_mean={:.3}",
-            s0, s1, mx, mean
+            "CENSUS SPAN [{:.2}-{:.2}] dur={:.2} mass_max={:.3} mass_mean={:.3}",
+            s0, s1, dur, mx, mean
         );
+        record.push(format!(
+            "CANDIDATE [{:.2}-{:.2}] dur={:.2} mass_max={:.3} mass_mean={:.3}",
+            s0, s1, dur, mx, mean
+        ));
+        // Wall-level floors (production semantics). The duration floor
+        // stands the span down BEFORE separation; the RMS ratio needs the
+        // separation read below. The w/s ceilings are decode-dependent and
+        // recorded by the runtime per-seed census instead.
+        if dur < MIN_SYNTH_DURATION_SECS {
+            stood_duration += 1;
+            eprintln!(
+                "CENSUS FLOORS span[{:.2}-{:.2}] STOOD-DOWN:floor=MIN_SYNTH_DURATION_SECS ({:.2} < {MIN_SYNTH_DURATION_SECS})",
+                s0, s1, dur
+            );
+            record.push(format!(
+                "FLOORS [{:.2}-{:.2}] stood_down=MIN_SYNTH_DURATION_SECS",
+                s0, s1
+            ));
+        }
     }
     let s16_fires = spans
         .iter()
@@ -354,15 +393,24 @@ fn overlap_census_dry_run() {
         let (raw_streams, clip_rms) =
             separate_raw(&mut session, &samples, (s0, s1)).expect("separate span");
         // The separator's raw output scale is a per-forward artifact (export
-        // gain), so absolute raw RMS is meaningless — the WITHIN-SPAN energy
-        // split between the two streams is the silence signal: a collapsed
-        // (residue-only) stream sits near 0 or 1.
+        // gain), so absolute raw RMS is meaningless. Two within-clip signals:
+        // the production pre-normalization ratio (raw span RMS / mixture-clip
+        // RMS, the adapter's exact semantics — the eligibility floor reads
+        // this) and the WITHIN-SPAN energy split (a collapsed residue-only
+        // stream sits near 0 or 1).
         let raw_rms: Vec<f32> = raw_streams.iter().map(|r| rms(r)).collect();
         let total: f32 = raw_rms.iter().sum();
         let mut tops: Vec<&'static str> = Vec::new();
         let mut decisive = true;
+        let mut ratio_ok = true;
+        let mut ratio_strs: Vec<String> = Vec::new();
         for (i, raw) in raw_streams.iter().enumerate() {
             let split = raw_rms[i] / total.max(1e-9);
+            let pre_ratio = raw_rms[i] / clip_rms.max(1e-9);
+            if pre_ratio < SYNTH_STREAM_MIN_RMS_RATIO {
+                ratio_ok = false;
+            }
+            ratio_strs.push(format!("{:.4}", pre_ratio));
             let mut norm = raw.clone();
             normalize_to(&mut norm, clip_rms);
             let emb = extractor
@@ -381,9 +429,10 @@ fn overlap_census_dry_run() {
                 reject_kinds.1 += 1;
             }
             eprintln!(
-                "CENSUS READ span[{:.2}-{:.2}] stream{i} energy_split={:.3} top={} c1={:.4} c2={:.4} margin={:.4} {}",
+                "CENSUS READ span[{:.2}-{:.2}] stream{i} pre_rms_ratio={:.4} energy_split={:.3} top={} c1={:.4} c2={:.4} margin={:.4} {}",
                 s0,
                 s1,
+                pre_ratio,
                 split,
                 coss[0].0,
                 coss[0].1,
@@ -391,7 +440,22 @@ fn overlap_census_dry_run() {
                 margin,
                 if ok { "DECISIVE" } else { "REJECT" }
             );
+            record.push(format!(
+                "READ [{:.2}-{:.2}] stream{} pre_rms_ratio={:.4} top={} margin={:.4} {}",
+                s0, s1, i, pre_ratio, coss[0].0, margin, if ok { "decisive" } else { "reject" }
+            ));
             tops.push(coss[0].0);
+        }
+        if !ratio_ok {
+            stood_rms += 1;
+            eprintln!(
+                "CENSUS FLOORS span[{:.2}-{:.2}] STOOD-DOWN:floor=SYNTH_STREAM_MIN_RMS_RATIO ratios={}",
+                s0, s1, ratio_strs.join(",")
+            );
+            record.push(format!(
+                "FLOORS [{:.2}-{:.2}] stood_down=SYNTH_STREAM_MIN_RMS_RATIO ratios={}",
+                s0, s1, ratio_strs.join(",")
+            ));
         }
         let distinct = tops[0] != tops[1];
         if !distinct {
@@ -408,14 +472,33 @@ fn overlap_census_dry_run() {
             distinct,
             if decisive && distinct { "SYNTHESIZE" } else { "DEGRADE" }
         );
+        record.push(format!(
+            "VERDICT [{:.2}-{:.2}] both_decisive={} distinct={}",
+            s0, s1, decisive, distinct
+        ));
     }
+
+    // ── Record digest: the change-folder note pins THIS record by sha256.
+    use sha2::{Digest, Sha256};
+    let record_text = record.join("\n");
+    let mut h = Sha256::new();
+    h.update(record_text.as_bytes());
+    let record_sha = format!("{:x}", h.finalize());
+    eprintln!("CENSUS RECORD-BEGIN ({} lines)", record.len());
+    for line in &record {
+        eprintln!("{}", line);
+    }
+    eprintln!("CENSUS RECORD-END sha256={}", record_sha);
     eprintln!(
-        "CENSUS SUMMARY: fired={} both_decisive_distinct={} rejects(margin,silent,same-badge)=({},{},{}) s16_fires={}",
+        "CENSUS SUMMARY: candidates={} stood_duration_floor={} stood_rms_floor={} both_decisive_distinct={} rejects(margin,silent,same-badge)=({},{},{}) s16_fires={} record_sha256={}",
         spans.len(),
+        stood_duration,
+        stood_rms,
         both_decisive_distinct,
         reject_kinds.0,
         reject_kinds.1,
         reject_kinds.2,
-        s16_fires
+        s16_fires,
+        record_sha
     );
 }
