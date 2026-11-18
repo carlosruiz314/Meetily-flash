@@ -77,10 +77,20 @@ struct Shape {
     trigger: (f64, f64),
     pin_entry: Option<&'static str>,
 }
-const SHAPES: [Shape; 3] = [
+const SHAPES: [Shape; 4] = [
     Shape {
         name: "validated",
         window: (1024.61, 1057.30),
+        trigger: (1056.90, 1057.30),
+        pin_entry: Some("S16_ads_overlap_1056"),
+    },
+    // Row-aligned re-cut of the S16 entry on the CURRENT render (the user's
+    // 2026-11-18 ruling after the validated shape's wall-coverage STOP):
+    // walls = the mega-row's own boundaries, so the splice absorbs whole
+    // rows and erases nothing.
+    Shape {
+        name: "validated-aligned",
+        window: (1042.40, 1074.42),
         trigger: (1056.90, 1057.30),
         pin_entry: Some("S16_ads_overlap_1056"),
     },

@@ -67,6 +67,50 @@
 
 **SUMMARY shapes_gated=2 recovered=1/2.**
 
+## Addendum — row-aligned re-cut (2026-11-18, user ruling: "Re-measure row-aligned")
+
+**Run 2:** `validated-aligned` — window [1042.40,1074.42] (the mega-row's own
+boundaries, row-aligned), trigger [1056.90,1057.30], same S16 pins.
+**Record sha256:** `42e8cee8498ccbe775daa7ef1ffb63d5a257182f18387d4e18495292bdcc6dd8`
+
+- Baseline pins: pin0 got=1 PASS, pin1 got=2 PASS (unchanged — coordinates hold).
+- Builder: attested walls exact, would-fire; **absorbed=1 straddling=0
+  erase_west_s=0.00 erase_east_s=0.00** — the geometry is exactly as the
+  row-aligned rule intends.
+- Identity: stream0 top=userB margin=**0.0531** (a hair above the 0.05
+  bar — vs 0.5777 at the recorded shape); stream1 top=userA margin=0.2017.
+- Legs: stream_tokens=[**4**, 65] — BOTH legs identical; stream0 (the
+  talk-over voice) decoded 4 tokens vs 44 at the recorded shape: the
+  separation collapsed at this window composition. No stutter, no
+  fiction, splice ok.
+- Pins on promoted render: pin0 want=1 got=0 FAIL; pin1 want=2 got=0
+  FAIL — **both needles lost** (absent from both streams' decodes).
+- **VERDICT: NOT recovered** — separation-quality failure, not geometry.
+
+### Combined verdict: the S16 route is geometrically blocked on today's render
+
+Both admissible wall strategies are now MEASURED and fail on different axes:
+
+| Walls | Geometry | Separation | Result |
+|---|---|---|---|
+| recorded [1024.61,1057.30] | straddles the mega-row → 17.12s east erase | strong (0.578/0.217), occurrence #1 recovered | needle #2 erased (want=2 got=1) |
+| row-aligned [1042.40,1074.42] | clean (erase=0) | collapsed (0.053; stream0 4 tokens) | both needles lost (want=1/2, got=0/0) |
+
+The ONLY row-aligned window ≤ the 35s chain cap that covers the talk-over
+IS the mega-row itself (any west extension exceeds the cap), and the
+separator collapses on that composition. No admissible window on today's
+geometry both covers the talk-over and separates it. The S16 moment
+stays mixture (the S16 waiver already covers it); the runtime hash gate
+keeps every failing shape byte-identical — **no wiring can regress the
+render; the attestation flow inherently filters shapes** (an entry whose
+shape fails this probe never gets attested).
+
+Decode reliability stands PROVEN where walls align AND separation is
+strong (clean shape, 7/7 hard pins, leg A). §3 wiring is unblocked by
+this evidence; S16 specifically awaits either a render-geometry change
+(why the 2026-11-18 re-render merged those rows into one 32s row) or a
+user-ruled cap/dial move — both out of this change's scope.
+
 ## Findings
 
 - **F1 — leg A suffices; no retry ships.** Both legs produced identical
