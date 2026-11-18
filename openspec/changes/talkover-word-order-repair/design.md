@@ -48,7 +48,14 @@ confirming the content-hash design. Consequence recorded as a rule: attestation 
 ROW-ALIGNED on the render they hash-pin (the §5.3 round derives entry walls from the fired
 candidate's row-aligned walls, never hand-drawn); the S16 entry awaits re-cutting on the current
 render (candidate row-aligned walls [1042.40,1074.42], 32.02s ≤ the 35s chain cap) and re-measure-
-ment at its own walls before it can fire.
+ment at its own walls before it can fire. The row-aligned re-cut was
+measured 2026-11-18 and FAILED differently (separation collapses on that
+composition: stream0 4 tokens vs 44, both needles absent — probe record
+addendum); the S16 route is geometrically blocked on today's render, root
+cause traced in `mega-row-investigation.md`: the region renders as one
+32s token-wall-less mega-row spanning two source chunks, and the unblock
+path is the deferred token-walls capability (fork issue #4) — S16 stays
+mixture (waiver covers it) until that lands.
 
 **D5 — Census before render changes; review produces a dated artifact.**
 Task 1 extends the existing `overlap_census_probe.rs` (DRY) rather than starting a new probe, and enumerates from `engine_out.overlap_spans` — which is computed independent of enrollment, so detector precision is measurable on meetings without enrolled references. Every candidate flag is recorded token-only (wall position, overlap mass, duration, floors verdict, counts+sha256). The user reviews the census; the review produces a dated token-only note in the change folder (counts + ruling) that is a hard prerequisite for opening §3.
