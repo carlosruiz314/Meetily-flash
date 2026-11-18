@@ -60,6 +60,14 @@
 
 ## 3. Promotion wiring — rebuild from the archived sketches
 
+> **PAUSED 2026-11-18 (user ruling):** the S16 attested fix is measured
+> blocked on today's render geometry (probe-record-2-4.md + addendum,
+> mega-row-investigation.md) and the user ruled the token-walls change
+> runs FIRST — it is the unblock path (per-word walls from sources into
+> the render make the straddling mega-row splittable). This change stays
+> open at §2: decode reliability measured and recorded, machinery green,
+> all records landed. §3–§5 resume once the token-walls change lands.
+
 - [ ] 3.1 RED: two seed routes — (a) a duration-passing span whose
       separated decode trips rate-fiction or stutter; (b) an attested-window
       seed: a trigger-fired span whose walls fall within an allowlist entry,
