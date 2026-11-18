@@ -797,6 +797,57 @@ impl WhisperEngine {
         }
     }
 
+    /// Repair-window stream decode (talkover-word-order-repair 2.0): the
+    /// strict posture PLUS no-condition ON THIS CALL'S OWN params object —
+    /// the rebuilt window decodes a wide context where conditioning on
+    /// prior output is the fluent-substitution hazard. The shared profile
+    /// (`apply_strict_params`) is untouched: this is a fresh params object
+    /// per call, so no other decode path can observe the variant. Reachable
+    /// ONLY from the repair rebuild — the general chunk path and the mass
+    /// overlap pre-pass bind the plain entry (pinned by structural tests).
+    /// Same blocking contract: spawn_blocking threads only.
+    pub fn transcribe_span_repair(&self, audio_data: Vec<f32>, pinned_language: &str) -> Option<String> {
+        let ctx_lock = self.current_context.blocking_read();
+        let ctx = ctx_lock.as_ref()?;
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 5 });
+        apply_strict_params(&mut params, pinned_language);
+        // The one repair-profile divergence, on params this call owns.
+        params.set_no_context(true);
+        let audio_ctx = ((audio_data.len() / 320) + 32).min(1500) as i32;
+        params.set_audio_ctx(audio_ctx);
+
+        let (num_segments, state) = {
+            let mut state = ctx.create_state().ok()?;
+            state.full(params, &audio_data).ok()?;
+            let num_segments = state.full_n_segments();
+            (num_segments, state)
+        };
+        let mut result = String::new();
+        for i in 0..num_segments {
+            let Some(segment) = state.get_segment(i) else {
+                continue;
+            };
+            let Ok(segment_text) = segment.to_str_lossy() else {
+                continue;
+            };
+            let cleaned_text =
+                crate::audio::speaker::token_timestamps::strip_eot_markers(&segment_text);
+            if !cleaned_text.is_empty() {
+                if !result.is_empty() {
+                    result.push(' ');
+                }
+                result.push_str(&cleaned_text);
+            }
+        }
+        let final_result = result.trim().to_string();
+        let cleaned_result = Self::clean_repetitive_text(&final_result);
+        if cleaned_result.is_empty() {
+            None
+        } else {
+            Some(cleaned_result)
+        }
+    }
+
     /// Token-census sibling of `transcribe_span_blocking` (diarization-
     /// render-fidelity 6.1, PHASE A ONLY — data, never consumed): the same
     /// strict blocking profile with token-timestamp chunking ENABLED
@@ -1644,6 +1695,42 @@ mod params_structure_tests {
         assert!(
             sib_body.contains("set_no_timestamps(false)"),
             "the sibling flips timestamps LOCALLY — that flip is the census's recorded divergence source"
+        );
+    }
+
+    #[test]
+    fn repair_decode_variant_is_scoped_to_repair_windows() {
+        // talkover-word-order-repair 2.0: the no-condition retry posture
+        // exists ONLY on the repair-scoped entry, on params that call owns
+        // — the shared strict profile never sets it, so the general chunk
+        // path and the mass overlap pre-pass (which bind the plain entry)
+        // are structurally unreachable from the retry profile.
+        let src = include_str!("whisper_engine.rs");
+        let profile_start = src
+            .find("fn apply_strict_params<'a>(")
+            .expect("strict params profile present");
+        let profile = &src[profile_start..];
+        let profile = &profile[..profile.find("\n}").expect("profile bounds")];
+        assert!(
+            !profile.contains("set_no_context"),
+            "the shared strict profile must never set no_context — that posture is repair-scoped"
+        );
+        let repair_start = src
+            .find("pub fn transcribe_span_repair(")
+            .expect("repair-scoped decode entry present");
+        let repair = &src[repair_start..];
+        let repair = &repair[..repair.find("\n    pub fn").expect("repair fn bounds")];
+        assert!(
+            repair.contains("apply_strict_params("),
+            "the repair variant must reuse the shared strict profile"
+        );
+        assert!(
+            repair.contains("set_no_context(true)"),
+            "the repair variant's divergence is no_context on its own params"
+        );
+        assert!(
+            !repair.contains("set_no_timestamps("),
+            "the repair variant must not touch the timestamp posture"
         );
     }
 }

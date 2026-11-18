@@ -2470,10 +2470,36 @@ pub fn repair_windows_from_seeds(
 ) -> Vec<LoopRepairCandidate> {
     let max_ms = (max_span_secs * 1000.0) as i64;
     let gap_ms = (REPAIR_CHAIN_GAP_SECS * 1000.0) as i64;
+    let chain_cap_ms = (REPAIR_CHAIN_CAP_SECS * 1000.0) as i64;
     let mut out: Vec<LoopRepairCandidate> = Vec::new();
     for seed in seeds {
-        let mut lo = None;
-        let mut hi = None;
+        if let Some(cand) =
+            build_repair_window_for_seed(rows, *seed, manual_spans, max_ms, gap_ms, chain_cap_ms)
+        {
+            if out.iter().any(|c| c.span.0 < cand.span.1 && cand.span.0 < c.span.1) {
+                continue;
+            }
+            out.push(cand);
+        }
+    }
+    out
+}
+
+/// One seed's whole-row repair window, extracted verbatim from the legacy
+/// builder so the talk-over class-aware builder (talkover-word-order-repair
+/// 2.3) shares the exact chain/absorption semantics. Returns None when the
+/// seed overlaps no rows, has no non-synth donor, hits a manual span, or
+/// the base span exceeds the mass cap.
+fn build_repair_window_for_seed(
+    rows: &[AlignedSegment],
+    seed: (i64, i64),
+    manual_spans: &[(i64, i64)],
+    max_ms: i64,
+    gap_ms: i64,
+    chain_cap_ms: i64,
+) -> Option<LoopRepairCandidate> {
+    let mut lo = None;
+    let mut hi = None;
         for (i, row) in rows.iter().enumerate() {
             if row.audio_start_ms < seed.1 && seed.0 < row.audio_end_ms {
                 if lo.is_none() {
@@ -2484,10 +2510,12 @@ pub fn repair_windows_from_seeds(
         }
         let (mut lo, mut hi) = match (lo, hi) {
             (Some(a), Some(b)) => (a, b),
-            _ => continue,
+            _ => return None,
         };
-        if (rows[hi].audio_end_ms - rows[lo].audio_start_ms) as f64 / 1000.0 > max_span_secs {
-            continue;
+        if (rows[hi].audio_end_ms - rows[lo].audio_start_ms) as f64 / 1000.0
+            > max_ms as f64 / 1000.0
+        {
+            return None;
         }
         let donor = rows[lo..=hi]
             .iter()
@@ -2497,15 +2525,14 @@ pub fn repair_windows_from_seeds(
             })
             .map(|r| r.original_id.clone());
         if donor.is_none() {
-            continue;
+            return None;
         }
         if manual_spans
             .iter()
             .any(|&(a, b)| seed.0 < b && a < seed.1)
         {
-            continue;
+            return None;
         }
-        let chain_cap_ms = (REPAIR_CHAIN_CAP_SECS * 1000.0) as i64;
         while lo > 0 {
             let prev = &rows[lo - 1];
             if prev.synth_atom || rows[lo].audio_start_ms - prev.audio_end_ms > gap_ms {
@@ -2548,20 +2575,175 @@ pub fn repair_windows_from_seeds(
             .iter()
             .any(|&(a, b)| span.0 < b && a < span.1)
         {
-            continue;
+            return None;
         }
-        if out
-            .iter()
-            .any(|c| c.span.0 < span.1 && span.0 < c.span.1)
-        {
-            continue;
-        }
-        out.push(LoopRepairCandidate {
+        Some(LoopRepairCandidate {
             span,
             donor_original_id: donor.unwrap(),
+        })
+}
+
+/// Talk-over seed class (talkover-word-order-repair 3.1): the attestation
+/// gate binds to BOTH classes at splice time, but their window-building
+/// rules differ. An ATTESTED seed's window is exactly the entry's walls —
+/// no chain drift, so the run-over-run wall match and the pinned content
+/// hash stay valid. A DECODE-TRIPPED seed builds by the legacy chain rules
+/// and UNIONS with its own class (no seed's coverage is dropped); a
+/// decode-tripped window overlapping an attested one dedupes into it (the
+/// attested walls are immovable — unioning would drift them and break the
+/// exact-wall splice match).
+pub enum TalkoverSeedKind {
+    DecodeTripped,
+    Attested,
+}
+
+pub struct TalkoverSeed {
+    pub span: (i64, i64),
+    pub kind: TalkoverSeedKind,
+}
+
+/// Class-aware talk-over repair windows. Deterministic: attested seeds
+/// claim their regions first (stable caller order within each class), then
+/// decode-tripped seeds — unions only among decode-tripped windows, with
+/// the unioned interval re-checked against manual rows, synth atoms, and
+/// the chain cap; a refused union falls back to the two individual windows
+/// when each is individually clean.
+pub fn repair_windows_from_talkover_seeds(
+    rows: &[AlignedSegment],
+    seeds: &[TalkoverSeed],
+    manual_spans: &[(i64, i64)],
+    max_span_secs: f64,
+) -> Vec<LoopRepairCandidate> {
+    let max_ms = (max_span_secs * 1000.0) as i64;
+    let gap_ms = (REPAIR_CHAIN_GAP_SECS * 1000.0) as i64;
+    let chain_cap_ms = (REPAIR_CHAIN_CAP_SECS * 1000.0) as i64;
+    let mut attested: Vec<(i64, i64)> = Vec::new();
+    let mut decode_tripped: Vec<(i64, i64)> = Vec::new();
+    for seed in seeds {
+        match seed.kind {
+            TalkoverSeedKind::Attested => attested.push(seed.span),
+            TalkoverSeedKind::DecodeTripped => decode_tripped.push(seed.span),
+        }
+    }
+    let mut out: Vec<LoopRepairCandidate> = Vec::new();
+    // Attested first: exact walls, no chain, re-checked on manual rows and
+    // synth atoms, capped by the splice cap.
+    for seed in &attested {
+        if (seed.1 - seed.0) > chain_cap_ms {
+            continue;
+        }
+        if manual_spans.iter().any(|&(a, b)| seed.0 < b && a < seed.1) {
+            continue;
+        }
+        // Find rows overlapping the attested walls; every row inside must
+        // be non-synth (the splice re-derives them) and a donor must exist.
+        let mut lo = None;
+        let mut hi = None;
+        for (i, row) in rows.iter().enumerate() {
+            if row.audio_start_ms < seed.1 && seed.0 < row.audio_end_ms {
+                if lo.is_none() {
+                    lo = Some(i);
+                }
+                hi = Some(i);
+            }
+        }
+        let (lo, hi) = match (lo, hi) {
+            (Some(a), Some(b)) => (a, b),
+            _ => continue,
+        };
+        if rows[lo..=hi].iter().any(|r| r.synth_atom) {
+            continue;
+        }
+        let donor = rows[lo..=hi]
+            .iter()
+            .filter(|r| !r.synth_atom)
+            .max_by_key(|r| r.audio_end_ms.min(seed.1) - r.audio_start_ms.max(seed.0))
+            .map(|r| r.original_id.clone());
+        let Some(donor) = donor else {
+            continue;
+        };
+        out.push(LoopRepairCandidate {
+            span: *seed,
+            donor_original_id: donor,
         });
     }
+    // Decode-tripped: legacy per-seed building, then class-aware overlap
+    // resolution — union with a decode-tripped candidate, dedupe into an
+    // attested one.
+    for seed in &decode_tripped {
+        let Some(cand) =
+            build_repair_window_for_seed(rows, *seed, manual_spans, max_ms, gap_ms, chain_cap_ms)
+        else {
+            continue;
+        };
+        let overlap = out.iter().position(|c| c.span.0 < cand.span.1 && cand.span.0 < c.span.1);
+        match overlap {
+            None => out.push(cand),
+            Some(idx) => {
+                let existing = out[idx].span;
+                if attested
+                    .iter()
+                    .any(|a| a.0 < cand.span.1 && cand.span.0 < a.1)
+                {
+                    // An attested window claims the region: dedupe, the
+                    // attested walls are immovable.
+                    continue;
+                }
+                let union = (existing.0.min(cand.span.0), existing.1.max(cand.span.1));
+                let gap_has_synth = rows.iter().any(|r| {
+                    r.synth_atom
+                        && r.audio_start_ms < union.1
+                        && union.0 < r.audio_end_ms
+                        && !(r.audio_start_ms < existing.1 && existing.0 < r.audio_end_ms)
+                        && !(r.audio_start_ms < cand.span.1 && cand.span.0 < r.audio_end_ms)
+                });
+                let union_ok = (union.1 - union.0) <= chain_cap_ms
+                    && !manual_spans.iter().any(|&(a, b)| union.0 < b && a < union.1)
+                    && !gap_has_synth;
+                if union_ok {
+                    out[idx].span = union;
+                } else if existing != cand.span {
+                    // Refused union: keep both individual windows — each
+                    // already passed its own checks.
+                    out.push(cand);
+                }
+            }
+        }
+    }
     out
+}
+
+/// Repair decode retry (talkover-word-order-repair 2.1): the FROZEN
+/// selection rule between a rebuilt window's decode passes. Pass 1 stands
+/// unless it tripped a rejection guard AND the single alternate pass
+/// cleared every guard — a clean first pass can never be replaced, and a
+/// guard-tripped pass 1 with a guard-tripped (or absent) alternate stands
+/// down through the normal degrade channel. Evidence booleans are computed
+/// by the caller from the decode text via the shared rejection guards.
+pub struct RepairPassEvidence {
+    pub guard_tripped: bool,
+    pub cleared_all_guards: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum SelectedRepairPass {
+    First,
+    Alternate,
+}
+
+pub fn select_repair_pass(
+    first: &RepairPassEvidence,
+    alternate: Option<&RepairPassEvidence>,
+) -> SelectedRepairPass {
+    if first.guard_tripped
+        && alternate
+            .map(|a| !a.guard_tripped && a.cleared_all_guards)
+            .unwrap_or(false)
+    {
+        SelectedRepairPass::Alternate
+    } else {
+        SelectedRepairPass::First
+    }
 }
 
 /// The shared synthesis acceptance gates: both streams must decode to real
@@ -4323,6 +4505,140 @@ mod tests {
         let cov: Vec<(i64, i64)> = (0..36).map(|s| (s * 1000, (s + 1) * 1000)).collect();
         let s = synth_cov((0.0, 36.0), ev(1, 0.30, Some("alpha")), ev(3, 0.20, Some("gamma")), &cov);
         assert!(repair_overlap_rows_checked(&rows, &s, &cluster_speaker).is_err());
+    }
+
+    // ---- repair decode retry selection (talkover-word-order-repair 2.1) ----
+
+    #[test]
+    fn clean_first_pass_never_replaced() {
+        let first = RepairPassEvidence { guard_tripped: false, cleared_all_guards: true };
+        let alt = RepairPassEvidence { guard_tripped: false, cleared_all_guards: true };
+        assert_eq!(select_repair_pass(&first, Some(&alt)), SelectedRepairPass::First);
+        assert_eq!(select_repair_pass(&first, None), SelectedRepairPass::First);
+    }
+
+    #[test]
+    fn tripped_first_with_clean_alternate_takes_alternate() {
+        let first = RepairPassEvidence { guard_tripped: true, cleared_all_guards: false };
+        let alt = RepairPassEvidence { guard_tripped: false, cleared_all_guards: true };
+        assert_eq!(select_repair_pass(&first, Some(&alt)), SelectedRepairPass::Alternate);
+    }
+
+    #[test]
+    fn tripped_first_with_tripped_or_absent_alternate_stands_down() {
+        let first = RepairPassEvidence { guard_tripped: true, cleared_all_guards: false };
+        let alt = RepairPassEvidence { guard_tripped: true, cleared_all_guards: false };
+        assert_eq!(select_repair_pass(&first, Some(&alt)), SelectedRepairPass::First);
+        assert_eq!(select_repair_pass(&first, None), SelectedRepairPass::First);
+    }
+
+    #[test]
+    fn alternate_must_clear_all_guards_not_just_avoid_trips() {
+        let first = RepairPassEvidence { guard_tripped: true, cleared_all_guards: false };
+        let alt = RepairPassEvidence { guard_tripped: false, cleared_all_guards: false };
+        assert_eq!(select_repair_pass(&first, Some(&alt)), SelectedRepairPass::First);
+    }
+
+    // ---- talk-over seed windows (talkover-word-order-repair 2.3) ----
+    //
+    // Geometry (chain cap 35000, mass cap parameterized): west rows
+    // w0..w3, the fab row, the mixed row, e1. The two seeds' base rows
+    // differ (fab vs mixed), so their west chain absorption stops at
+    // different walls — overlapping windows that DIFFER, the only shape
+    // where union vs dedupe is observable.
+
+    fn union_rows() -> Vec<AlignedSegment> {
+        vec![
+            seg("w0", "west zero", 0, 4_500, "Speaker 0"),
+            seg("w1", "west one", 5_000, 9_500, "Speaker 0"),
+            seg("w2", "west two", 10_000, 14_500, "Speaker 0"),
+            seg("w3", "west three", 15_000, 19_500, "Speaker 0"),
+            seg("fab", "fabricated row body", 20_000, 26_000, "Speaker 0"),
+            seg("mixed", "mixed two voice row body", 26_500, 39_000, "Speaker 0"),
+            seg("e1", "east one", 39_500, 50_000, "Speaker 0"),
+        ]
+    }
+
+    #[test]
+    fn overlapping_decode_tripped_windows_union() {
+        // max 20s: A (mixed seed) chains west to 5000 (the w1 absorption
+        // straddles the mass cap within the chain cap) and stays
+        // (5000, 39000); B (fab seed) builds (5000, 26000) — contained.
+        // The union merges B into A's walls (no coverage dropped, no
+        // drift beyond the anchor's own extent).
+        let rows = union_rows();
+        let seeds = vec![
+            TalkoverSeed { span: (36_000, 36_500), kind: TalkoverSeedKind::DecodeTripped },
+            TalkoverSeed { span: (21_000, 21_500), kind: TalkoverSeedKind::DecodeTripped },
+        ];
+        let out = repair_windows_from_talkover_seeds(&rows, &seeds, &[], 20.0);
+        assert_eq!(out.len(), 1, "union merges: {out:?}");
+        assert_eq!(out[0].span, (5_000, 39_000), "{out:?}");
+        assert_eq!(out[0].donor_original_id, "mixed", "the anchor seed donates");
+    }
+
+    #[test]
+    fn union_over_chain_cap_falls_back_to_individual_windows() {
+        // max 30s: A builds (5000, 39000) (west chain stops at the chain
+        // cap), B builds (0, 26000) — the union (0, 39000) exceeds the
+        // chain cap, so the union is refused and BOTH individual windows
+        // survive (each clean on its own).
+        let rows = union_rows();
+        let seeds = vec![
+            TalkoverSeed { span: (36_000, 36_500), kind: TalkoverSeedKind::DecodeTripped },
+            TalkoverSeed { span: (21_000, 21_500), kind: TalkoverSeedKind::DecodeTripped },
+        ];
+        let out = repair_windows_from_talkover_seeds(&rows, &seeds, &[], 30.0);
+        assert_eq!(out.len(), 2, "refused union keeps both windows: {out:?}");
+        assert_eq!(out[0].span, (5_000, 39_000), "{out:?}");
+        assert_eq!(out[1].span, (0, 26_000), "{out:?}");
+    }
+
+    #[test]
+    fn attested_window_builds_exact_walls_and_claims_the_region() {
+        // The attested seed's window is EXACTLY the entry's walls — no
+        // chain drift (the same walls would chain-extend for a
+        // decode-tripped seed) — and a decode-tripped window overlapping
+        // it dedupes into it (attested walls are immovable; drifting them
+        // would break the exact-wall hash match).
+        let rows = union_rows();
+        let seeds = vec![
+            TalkoverSeed { span: (36_000, 36_500), kind: TalkoverSeedKind::DecodeTripped },
+            TalkoverSeed { span: (21_000, 24_000), kind: TalkoverSeedKind::Attested },
+        ];
+        let out = repair_windows_from_talkover_seeds(&rows, &seeds, &[], 20.0);
+        assert_eq!(out.len(), 1, "attested window claims the region: {out:?}");
+        assert_eq!(out[0].span, (21_000, 24_000), "exact walls, no drift: {out:?}");
+        assert_eq!(out[0].donor_original_id, "fab");
+    }
+
+    #[test]
+    fn attested_window_refused_on_synth_atom_or_manual_row() {
+        let mut rows = union_rows();
+        rows[4].synth_atom = true; // the fab row
+        let seeds = vec![TalkoverSeed { span: (21_000, 24_000), kind: TalkoverSeedKind::Attested }];
+        let out = repair_windows_from_talkover_seeds(&rows, &seeds, &[], 20.0);
+        assert!(out.is_empty(), "a synth atom inside the attested walls refuses the rebuild: {out:?}");
+        let rows = union_rows();
+        let manual = vec![(21_000i64, 24_000i64)];
+        let out = repair_windows_from_talkover_seeds(&rows, &seeds, &manual, 20.0);
+        assert!(out.is_empty(), "a manual row inside the attested walls stands the rebuild down: {out:?}");
+    }
+
+    // ---- empty stream decode (talkover-word-order-repair 2.2) ----
+
+    #[test]
+    fn empty_stream_decode_never_replaces_mixture_rows() {
+        // A rebuilt stream decoding to empty text must not replace
+        // non-empty mixture rows — the shared vetting abstains the pair
+        // and the splice degrades byte-identically.
+        let rows = vec![seg("src1", "long jumble", 0, 6_000, "Speaker 0")];
+        let cov: Vec<(i64, i64)> = (0..6).map(|s| (s * 1000, (s + 1) * 1000)).collect();
+        let s = synth_cov((0.0, 6.0), ev(1, 0.30, None), ev(3, 0.20, Some("gamma")), &cov);
+        assert!(
+            synthesize_overlap_rows(&rows, &s, &[], &cluster_speaker).is_none(),
+            "an empty stream decode stands the span down"
+        );
     }
 
     #[test]

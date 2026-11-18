@@ -19,20 +19,20 @@
 
 ## 2. Decode reliability — offline, red-first, measured lever ladder
 
-- [ ] 2.0 RED (structural): the retry decode profile is unreachable from
+- [x] 2.0 RED (structural): the retry decode profile is unreachable from
       the general chunk path AND the mass overlap pre-pass (no call edge;
       the pre-pass keeps the plain profile); the retry variant uses a
       CLONED decoder context (`set_no_context(true)` on the clone), never
       mutation of shared params.
-- [ ] 2.1 RED (plain `cargo test`, invented generic tokens): the FROZEN
+- [x] 2.1 RED (plain `cargo test`, invented generic tokens): the FROZEN
       selection rule — pass 1 stands unless it tripped rate-fiction or a
       stutter/hallucination guard AND the alternate pass clears every
       rejection guard; at most one alternate; both passes' evidence in the
       decode record (walls, per-pass token counts, guard trips, retry
       count, decode sha256).
-- [ ] 2.2 RED: malformed/empty decode handling — a rebuilt stream decoding
+- [x] 2.2 RED: malformed/empty decode handling — a rebuilt stream decoding
       empty must not replace non-empty mixture rows (stand down, record).
-- [ ] 2.3 RED: union-window rules — two seeds union deterministically; the
+- [x] 2.3 RED: union-window rules — two seeds union deterministically; the
       UNIONED interval re-runs manual-row and synth-atom checks (RED test
       for the straddling-manual-row union); refused union falls back to
       individual windows if individually clean, else `window-not-built`.

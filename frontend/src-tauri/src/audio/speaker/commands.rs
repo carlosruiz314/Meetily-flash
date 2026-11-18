@@ -2024,6 +2024,27 @@ pub fn enforce_max_speakers_cap(
 mod tests {
     use super::*;
 
+    // ── Repair-scoped decode isolation (talkover-word-order-repair 2.0) ──
+
+    #[test]
+    fn repair_decode_entry_unreachable_from_shared_paths() {
+        // The no-condition repair decode is reachable ONLY from the repair
+        // rebuild (wired in 3.2). The mass overlap pre-pass binds the plain
+        // entry, and the repair entry appears nowhere else in this file —
+        // when 3.2 wires it, this assertion must be strengthened to
+        // region-scoped (occurrences allowed only inside the rebuild fn).
+        let src = include_str!("commands.rs");
+        assert!(
+            src.contains("decode_span_synthesis(synthesis_inputs, &|s: &[f32]| {"),
+            "the pre-pass must bind the plain decode entry by closure"
+        );
+        assert_eq!(
+            src.matches(concat!("transcribe_span_", "repair")).count(),
+            0,
+            "the repair decode entry must not be bound outside the repair rebuild"
+        );
+    }
+
     // ── Overlap-stream synthesis seam (task 2.1) ──
 
     #[test]
