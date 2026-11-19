@@ -278,6 +278,7 @@ fn to_aligned(
             // module header).
             synth_atom: *synth && !strip_synth,
             synth_parent: None,
+            token_walls: None,
         })
         .collect()
 }

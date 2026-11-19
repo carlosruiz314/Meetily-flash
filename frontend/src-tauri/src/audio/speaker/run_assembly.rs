@@ -2111,6 +2111,7 @@ pub fn synthesize_overlap_rows(
             speaker_source: SpeakerSource::Auto,
             synth_atom: atom,
             synth_parent: Some(parent.to_string()),
+            token_walls: None,
         })
     };
 
@@ -2252,6 +2253,10 @@ fn synth_rows_for_streams(
                     speaker_source: SpeakerSource::Auto,
                     synth_atom: true,
                     synth_parent: Some(donor_id.to_string()),
+                    // Repair-spliced stream rows carry no walls (render-
+                    // token-walls 2.4): the stream decode's wall shape is
+                    // the paused change's surface, not this one's.
+                    token_walls: None,
                 },
             ));
         }
@@ -4121,6 +4126,7 @@ mod tests {
             speaker_source: SpeakerSource::Auto,
             synth_atom: false,
             synth_parent: None,
+            token_walls: None,
         }
     }
 
@@ -4147,6 +4153,7 @@ mod tests {
             speaker_source: SpeakerSource::Auto,
             synth_atom,
             synth_parent: synth_parent.map(str::to_string),
+            token_walls: None,
         }
     }
 

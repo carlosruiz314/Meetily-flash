@@ -1,14 +1,14 @@
 ## 1. Wall carriage through alignment (red-first, plain `cargo test`)
 
-- [ ] 1.1 RED: every aligned segment produced from token-walled source
+- [x] 1.1 RED: every aligned segment produced from token-walled source
       words carries the walls of exactly its own text's alphanumeric
       words (`Option<Vec<TokenWord>>` on `AlignedSegment`, populated from
       the `UnitWord`s at segment formation; empty/None for token-less
       segments).
-- [ ] 1.2 RED: consolidation merge concatenates the merged rows' wall
+- [x] 1.2 RED: consolidation merge concatenates the merged rows' wall
       lists verbatim in row order (no re-stamp, no re-derive); the
       merged row's text is unchanged.
-- [ ] 1.3 RED: duplicate-cluster resolution keeps the survivor's walls
+- [x] 1.3 RED: duplicate-cluster resolution keeps the survivor's walls
       with its text; absorbed members' walls vanish with their text.
 - [ ] COMMIT CHECKPOINT.
 

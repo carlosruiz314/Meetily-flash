@@ -53,6 +53,14 @@ pub struct AlignedSegment {
     /// grouping on it. Serde-defaulted like synth_atom.
     #[serde(default)]
     pub synth_parent: Option<String>,
+    /// Per-word walls carried from the alignment (render-token-walls 1.1):
+    /// exactly the segment's own words' walls when they derive from
+    /// validator-accepted source token timestamps; None for proportional
+    /// (fallback) words and repair-spliced synth rows — nothing estimates
+    /// walls into the render. Serde-defaulted like synth_atom: older
+    /// checkpoint payloads predate the field.
+    #[serde(default)]
+    pub token_walls: Option<Vec<TokenWord>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1005,6 +1013,18 @@ fn owner_row_id(words: &[UnitWord], transcripts: &[TranscriptInput]) -> String {
         .unwrap_or_default()
 }
 
+/// Source walls fit for persisting (render-token-walls 1.1): eot markers
+/// drop; an empty remainder is None — the source's own walls ride along
+/// verbatim, nothing re-derives or estimates.
+fn clean_source_walls(walls: Option<&[TokenWord]>) -> Option<Vec<TokenWord>> {
+    let filtered: Vec<TokenWord> = walls?
+        .iter()
+        .filter(|w| !crate::audio::speaker::token_timestamps::is_eot_marker(w.word.trim()))
+        .cloned()
+        .collect();
+    (!filtered.is_empty()).then_some(filtered)
+}
+
 fn join_words(words: &[UnitWord]) -> String {
     fn is_cjk(c: char) -> bool {
         matches!(c as u32, 0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF)
@@ -1047,13 +1067,16 @@ pub fn align_transcripts_with_diarization(
             .into_iter()
             .map(|t| AlignedSegment {
                 original_id: t.id,
-                text: t.text,
+                text: t.text.clone(),
                 audio_start_ms: t.audio_start_ms,
                 audio_end_ms: t.audio_end_ms,
                 speaker: "Unknown Speaker".to_string(),
                 speaker_source: SpeakerSource::Unknown,
                 synth_atom: false,
                 synth_parent: None,
+                // The passthrough keeps the source's own walls (render-
+                // token-walls 1.1): eot markers drop, nothing re-derives.
+                token_walls: clean_source_walls(t.token_words.as_deref()),
             })
             .collect();
     }
@@ -1130,6 +1153,9 @@ pub fn align_transcripts_with_diarization(
                         speaker_source: source.clone(),
                         synth_atom: false,
                         synth_parent: None,
+                        // Boundary-anchored rows are proportional-only
+                        // (the !spans_real branch): no real walls exist.
+                        token_walls: None,
                     });
                 }
                 if let Some(last) = results.last() {
@@ -1169,6 +1195,21 @@ pub fn align_transcripts_with_diarization(
                 speaker_source: badge_source,
                 synth_atom: false,
                 synth_parent: None,
+                // Token-walled units carry their own words' real walls;
+                // proportional units persist None (render-token-walls 1.1).
+                token_walls: if *spans_real {
+                    Some(
+                        atom.iter()
+                            .map(|w| TokenWord {
+                                word: w.text.clone(),
+                                start_ms: w.start_ms,
+                                end_ms: w.end_ms,
+                            })
+                            .collect(),
+                    )
+                } else {
+                    None
+                },
             });
             previous_badge = Some(badge);
         }
@@ -1183,6 +1224,18 @@ pub fn align_transcripts_with_diarization(
             results[k].audio_start_ms = clipped;
             if results[k].audio_end_ms <= clipped {
                 results[k].audio_end_ms = clipped + 1;
+            }
+            // Walls ride the same clip (render-token-walls 1.1): a clamped
+            // row's walls must stay inside its own clamped bounds.
+            if let Some(walls) = &mut results[k].token_walls {
+                for w in walls.iter_mut() {
+                    if w.start_ms < clipped {
+                        w.start_ms = clipped;
+                    }
+                    if w.end_ms <= w.start_ms {
+                        w.end_ms = w.start_ms + 1;
+                    }
+                }
             }
         }
     }
@@ -2728,6 +2781,7 @@ Yeah, for Paulina, right?";
             speaker_source: SpeakerSource::Fallback,
             synth_atom: false,
             synth_parent: None,
+            token_walls: None,
         }
     }
 
@@ -2806,5 +2860,195 @@ Yeah, for Paulina, right?";
         assert_eq!(out[0].original_id, "r1", "earliest member of the winning badge");
         assert_eq!((out[0].audio_start_ms, out[0].audio_end_ms), (0, 12_000));
         assert_eq!(out[0].text, "alpha beta gamma delta epsilon");
+    }
+
+    // ── render-token-walls 1.1: aligned segments carry their own walls ──
+
+    /// Wall-faithfulness checks shared by the carriage tests: the wall
+    /// list's words equal the row text's words in order, walls sit inside
+    /// the row's own bounds, and starts are monotone non-decreasing.
+    fn assert_wall_faithful(row: &AlignedSegment) {
+        let walls = row
+            .token_walls
+            .as_ref()
+            .expect("token-walled rows carry their walls");
+        let norm = |s: &str| -> String {
+            s.chars().filter(|c| c.is_alphanumeric()).collect()
+        };
+        let text_words: Vec<String> = row
+            .text
+            .split_whitespace()
+            .map(norm)
+            .filter(|w| !w.is_empty())
+            .collect();
+        let wall_words: Vec<String> = walls
+            .iter()
+            .map(|w| norm(&w.word))
+            .filter(|w| !w.is_empty())
+            .collect();
+        assert_eq!(
+            wall_words, text_words,
+            "row {:?} walls must cover exactly its own words",
+            row.text
+        );
+        for w in walls {
+            assert!(
+                w.start_ms >= row.audio_start_ms && w.end_ms <= row.audio_end_ms,
+                "wall [{},{}] escapes the row [{},{}]",
+                w.start_ms,
+                w.end_ms,
+                row.audio_start_ms,
+                row.audio_end_ms
+            );
+        }
+        for pair in walls.windows(2) {
+            assert!(
+                pair[0].start_ms <= pair[1].start_ms,
+                "wall starts must be monotone non-decreasing"
+            );
+        }
+    }
+
+    #[test]
+    fn token_walled_segments_carry_their_own_words_walls() {
+        let t = transcript_with_tokens(
+            "tw",
+            "Hello there. That is interesting.",
+            10_000,
+            16_000,
+            vec![
+                token("Hello", 10_100, 10_500),
+                token("there", 10_600, 11_000),
+                token(".", 11_000, 11_100),
+                token("That", 12_000, 12_300),
+                token("is", 12_400, 12_600),
+                token("interesting", 12_700, 13_500),
+                token(".", 13_500, 13_600),
+            ],
+        );
+        let diarization = vec![seg(10_000, 11_500, 0), seg(11_500, 16_000, 1)];
+        let out = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
+        assert_eq!(out.len(), 2, "two atoms, two speakers");
+        assert!(out[0].text.contains("Hello") && out[1].text.contains("That"));
+        for row in &out {
+            assert_wall_faithful(row);
+        }
+        // Each piece carries exactly ITS words' walls, not the unit's.
+        assert_eq!(out[0].token_walls.as_ref().unwrap().len(), 2);
+        assert_eq!(out[1].token_walls.as_ref().unwrap().len(), 3);
+    }
+
+    #[test]
+    fn proportional_segments_persist_no_walls() {
+        let t = transcript("p", "Hello there. That is interesting.", 10_000, 16_000);
+        let diarization = vec![seg(10_000, 11_500, 0), seg(11_500, 16_000, 1)];
+        let out = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
+        assert_eq!(out.len(), 2);
+        for row in &out {
+            assert!(
+                row.token_walls.is_none(),
+                "proportional rows carry no walls — nothing estimates walls"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_diarization_passthrough_keeps_clean_source_walls() {
+        // The no-diarization early return passes source rows through whole:
+        // eot markers drop, real walls ride along, token-less rows stay None.
+        let t = transcript_with_tokens(
+            "tw",
+            "Hello there.",
+            10_000,
+            12_000,
+            vec![
+                token("Hello", 10_100, 10_500),
+                token("there", 10_600, 11_000),
+                token(".", 11_000, 11_100),
+                token("[_EOT_]", 11_900, 12_000),
+            ],
+        );
+        let out = align_transcripts_with_diarization(vec![t], &[], &[], &[]);
+        assert_eq!(out.len(), 1);
+        let walls = out[0].token_walls.as_ref().expect("walls ride along");
+        assert_eq!(walls.len(), 3, "eot marker dropped");
+        assert_eq!(walls[2].word, ".");
+        let bare = transcript("bare", "Just words.", 10_000, 12_000);
+        let out = align_transcripts_with_diarization(vec![bare], &[], &[], &[]);
+        assert!(out[0].token_walls.is_none());
+    }
+
+    #[test]
+    fn seam_clip_clamps_the_clipped_rows_walls() {
+        // The output seam clips an overlapping row's start to its
+        // predecessor's end — the walls ride the same clip so wall
+        // integrity holds on the persisted shape.
+        let t = transcript_with_tokens(
+            "ov",
+            "First words. Second words here.",
+            10_000,
+            16_000,
+            vec![
+                token("First", 10_100, 10_500),
+                token("words", 10_600, 11_000),
+                token(".", 11_000, 11_100),
+                token("Second", 10_900, 11_200), // DTW overlap with row 1
+                token("words", 11_300, 11_600),
+                token("here", 11_700, 12_000),
+                token(".", 12_000, 12_100),
+            ],
+        );
+        let diarization = vec![seg(10_000, 11_000, 0), seg(11_000, 16_000, 1)];
+        let out = align_transcripts_with_diarization(vec![t], &diarization, &[], &[]);
+        for row in &out {
+            assert_wall_faithful(row);
+        }
+    }
+
+    #[test]
+    fn duplicate_survivor_keeps_its_walls_absorbed_lose_theirs() {
+        // render-token-walls 1.3: the survivor's walls travel with its text
+        // (the union extends only the span — its own walls stay in bounds);
+        // absorbed members' walls vanish with their text. Pins the
+        // by-value passthrough against a rebuild-the-survivor regression.
+        let mut a = dup_seg("r1", "alpha beta gamma delta epsilon", 0, 4_000, "Speaker 1");
+        a.token_walls = Some(vec![
+            token("alpha", 0, 800),
+            token("beta", 800, 1_600),
+            token("gamma", 1_600, 2_400),
+            token("delta", 2_400, 3_200),
+            token("epsilon", 3_200, 4_000),
+        ]);
+        let mut b = dup_seg("r2", "beta gamma delta epsilon zeta", 4_400, 8_000, "Speaker 0");
+        b.token_walls = Some(vec![
+            token("beta", 4_400, 5_200),
+            token("gamma", 5_200, 6_000),
+            token("delta", 6_000, 6_800),
+            token("epsilon", 6_800, 7_600),
+            token("zeta", 7_600, 8_000),
+        ]);
+        let mut c = dup_seg("r3", "delta epsilon zeta eta", 8_400, 12_000, "Speaker 1");
+        c.token_walls = Some(vec![
+            token("delta", 8_400, 9_300),
+            token("epsilon", 9_300, 10_200),
+            token("zeta", 10_200, 11_100),
+            token("eta", 11_100, 12_000),
+        ]);
+
+        let out = resolve_duplicate_clusters(vec![a, b, c]);
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].original_id, "r1");
+        assert_eq!(out[0].text, "alpha beta gamma delta epsilon");
+        // The union widened the span; the survivor's own walls are intact,
+        // unmodified, and still inside the widened bounds.
+        assert_eq!((out[0].audio_start_ms, out[0].audio_end_ms), (0, 12_000));
+        let walls = out[0].token_walls.as_ref().expect("survivor keeps its walls");
+        assert_eq!(walls.len(), 5);
+        assert_eq!(walls[0].start_ms, 0);
+        assert_eq!(walls[4].end_ms, 4_000);
+        for w in walls {
+            assert!(w.start_ms >= out[0].audio_start_ms && w.end_ms <= out[0].audio_end_ms);
+        }
     }
 }

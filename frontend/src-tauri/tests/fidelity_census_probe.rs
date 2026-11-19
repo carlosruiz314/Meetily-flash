@@ -111,6 +111,7 @@ async fn fidelity_scan_calibration() {
                 speaker_source: app_lib::audio::speaker::alignment::SpeakerSource::Auto,
                 synth_atom: r.get::<Option<i64>, _>("synth_atom").unwrap_or(0) != 0,
                 synth_parent: r.get::<Option<String>, _>("synth_parent"),
+                token_walls: None,
             })
         })
         .collect();

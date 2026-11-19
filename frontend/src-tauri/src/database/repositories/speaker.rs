@@ -11,6 +11,20 @@ const MAX_EMBEDDING_DIM: usize = 1024;
 
 pub struct SpeakerRepository;
 
+/// Concatenate merged rows' token walls verbatim in row order (render-
+/// token-walls 1.2). Any wall-less member fails the whole list to None: a
+/// merged row mixing walled and wall-less pieces could not carry a wall-
+/// faithful list, so the merge persists NULL instead of a partial claim.
+fn concat_token_walls(
+    lists: &[Option<&Vec<crate::audio::speaker::alignment::TokenWord>>],
+) -> Option<Vec<crate::audio::speaker::alignment::TokenWord>> {
+    let mut out = Vec::new();
+    for list in lists {
+        out.extend(list.as_ref()?.iter().cloned());
+    }
+    Some(out)
+}
+
 impl SpeakerRepository {
     pub async fn create_speaker<'a, E: sqlx::Executor<'a, Database = sqlx::Sqlite>>(
         pool: E,
@@ -693,13 +707,25 @@ impl SpeakerRepository {
             audio_start_time: f64,
             audio_end_time: f64,
             transcript: String,
+            token_timestamps: Option<String>,
         }
         let frags = sqlx::query_as::<_, Frag>(
-            "SELECT id, speaker_label, speaker_source, synth_atom, audio_start_time, audio_end_time, transcript FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time, audio_end_time",
+            "SELECT id, speaker_label, speaker_source, synth_atom, audio_start_time, audio_end_time, transcript, token_timestamps FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time, audio_end_time",
         )
         .bind(meeting_id)
         .fetch_all(pool)
         .await?;
+        // Parse each row's walls once (render-token-walls 1.2): unparseable
+        // JSON counts as wall-less — the merge fails closed to NULL rather
+        // than persisting a list it cannot vouch for.
+        let parsed_walls: Vec<Option<Vec<crate::audio::speaker::alignment::TokenWord>>> =
+            frags.iter()
+                .map(|f| {
+                    f.token_timestamps
+                        .as_deref()
+                        .and_then(|j| serde_json::from_str(j).ok())
+                })
+                .collect();
 
         // Manual rows and overlap-stream synthesis atoms are isolated into
         // singleton groups via a unique group key so the turn predicate can
@@ -742,13 +768,27 @@ impl SpeakerRepository {
                 && first.transcript == t.text
                 && (first.audio_end_time * 1000.0).round() as i64 == t.end_ms;
             if !unchanged {
+                // The merged row's walls are the merged rows' wall lists
+                // concatenated verbatim in row order; any wall-less member
+                // fails the whole list to NULL (render-token-walls 1.2).
+                let merged_walls = concat_token_walls(
+                    &g.row_indexes
+                        .iter()
+                        .map(|&i| parsed_walls[i].as_ref())
+                        .collect::<Vec<_>>(),
+                );
                 sqlx::query(
-                    "UPDATE transcripts SET transcript = ?, audio_start_time = ?, audio_end_time = ?, duration = ?, token_timestamps = NULL WHERE id = ?",
+                    "UPDATE transcripts SET transcript = ?, audio_start_time = ?, audio_end_time = ?, duration = ?, token_timestamps = ? WHERE id = ?",
                 )
                 .bind(&t.text)
                 .bind(t.start_ms as f64 / 1000.0)
                 .bind(t.end_ms as f64 / 1000.0)
                 .bind((t.end_ms - t.start_ms) as f64 / 1000.0)
+                .bind(
+                    merged_walls
+                        .as_ref()
+                        .and_then(|w| serde_json::to_string(w).ok()),
+                )
                 .bind(&first.id)
                 .execute(&mut *tx)
                 .await?;
@@ -1564,6 +1604,153 @@ mod tests {
         seed_row(pool, id, "meet-1", text, 5.0, 9.0, source, None).await;
     }
 
+    // ── render-token-walls 1.2: consolidation preserves walls verbatim ──
+
+    fn wall(word: &str, start_ms: i64, end_ms: i64) -> crate::audio::speaker::alignment::TokenWord {
+        crate::audio::speaker::alignment::TokenWord {
+            word: word.to_string(),
+            start_ms,
+            end_ms,
+        }
+    }
+
+    async fn seed_labeled_row(
+        pool: &SqlitePool,
+        id: &str,
+        text: &str,
+        start: f64,
+        end: f64,
+        tokens: Option<String>,
+    ) {
+        sqlx::query(
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, \
+             audio_end_time, duration, speaker_label, speaker_source, token_timestamps) \
+             VALUES (?, 'meet-1', ?, '2026-07-25T00:00:00Z', ?, ?, ?, 'Speaker 0', 'auto', ?)",
+        )
+        .bind(id)
+        .bind(text)
+        .bind(start)
+        .bind(end)
+        .bind(end - start)
+        .bind(tokens)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn consolidation_merge_concatenates_token_walls_verbatim() {
+        let pool = transcripts_test_pool().await;
+        let walls_a = vec![
+            wall("alpha", 5_000, 5_500),
+            wall("beta", 5_600, 6_000),
+            wall(".", 6_000, 6_100),
+        ];
+        let walls_b = vec![
+            wall("gamma", 9_500, 10_000),
+            wall("delta", 10_100, 10_600),
+            wall(".", 10_600, 10_700),
+        ];
+        seed_labeled_row(
+            &pool,
+            "a",
+            "alpha beta.",
+            5.0,
+            9.0,
+            Some(serde_json::to_string(&walls_a).unwrap()),
+        )
+        .await;
+        seed_labeled_row(
+            &pool,
+            "b",
+            "gamma delta.",
+            9.5,
+            13.0,
+            Some(serde_json::to_string(&walls_b).unwrap()),
+        )
+        .await;
+
+        let (groups, deleted) =
+            SpeakerRepository::consolidate_meeting_turns(&pool, "meet-1").await.unwrap();
+        assert_eq!((groups, deleted), (1, 1), "same badge, 0.5s gap merges");
+
+        let (tt, text): (Option<String>, String) =
+            sqlx::query_as("SELECT token_timestamps, transcript FROM transcripts WHERE id = 'a'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let merged: Vec<crate::audio::speaker::alignment::TokenWord> =
+            serde_json::from_str(&tt.expect("merged walls persist")).unwrap();
+        assert_eq!(merged.len(), 6);
+        // Verbatim in row order — never re-stamped or re-derived.
+        assert_eq!(merged[0].start_ms, 5_000);
+        assert_eq!(merged[3].word, "gamma");
+        assert_eq!(merged[3].start_ms, 9_500);
+        // Wall-faithful to the merged text.
+        let norm = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+        let text_words: Vec<String> = text
+            .split_whitespace()
+            .map(norm)
+            .filter(|w| !w.is_empty())
+            .collect();
+        let wall_words: Vec<String> = merged
+            .iter()
+            .map(|w| norm(&w.word))
+            .filter(|w| !w.is_empty())
+            .collect();
+        assert_eq!(wall_words, text_words);
+    }
+
+    #[tokio::test]
+    async fn consolidation_with_a_wall_less_member_persists_null() {
+        let pool = transcripts_test_pool().await;
+        let walls_a = vec![wall("alpha", 5_000, 5_500), wall("beta", 5_600, 6_000)];
+        seed_labeled_row(
+            &pool,
+            "a",
+            "alpha beta.",
+            5.0,
+            9.0,
+            Some(serde_json::to_string(&walls_a).unwrap()),
+        )
+        .await;
+        seed_labeled_row(&pool, "b", "gamma delta.", 9.5, 13.0, None).await;
+        SpeakerRepository::consolidate_meeting_turns(&pool, "meet-1").await.unwrap();
+        let (tt,): (Option<String>,) =
+            sqlx::query_as("SELECT token_timestamps FROM transcripts WHERE id = 'a'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(
+            tt.is_none(),
+            "a mixed merge cannot carry a faithful list — fail closed to NULL"
+        );
+    }
+
+    #[tokio::test]
+    async fn consolidation_untouched_rows_keep_their_walls() {
+        let pool = transcripts_test_pool().await;
+        let walls = vec![wall("alpha", 5_000, 5_500), wall("beta", 5_600, 6_000)];
+        seed_labeled_row(
+            &pool,
+            "a",
+            "alpha beta.",
+            5.0,
+            9.0,
+            Some(serde_json::to_string(&walls).unwrap()),
+        )
+        .await;
+        SpeakerRepository::consolidate_meeting_turns(&pool, "meet-1").await.unwrap();
+        let (tt,): (Option<String>,) =
+            sqlx::query_as("SELECT token_timestamps FROM transcripts WHERE id = 'a'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        let parsed: Vec<crate::audio::speaker::alignment::TokenWord> =
+            serde_json::from_str(&tt.expect("unchanged singleton keeps its walls")).unwrap();
+        assert_eq!(parsed.len(), 2);
+    }
+
     fn aligned(id: &str, text: &str, start_ms: i64, end_ms: i64, speaker: &str) -> AlignedSegment {
         AlignedSegment {
             original_id: id.to_string(),
@@ -1574,6 +1761,7 @@ mod tests {
             speaker_source: SpeakerSource::Auto,
             synth_atom: false,
             synth_parent: None,
+            token_walls: None,
         }
     }
 

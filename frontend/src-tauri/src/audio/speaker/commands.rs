@@ -2205,6 +2205,7 @@ mod tests {
             speaker_source: crate::audio::speaker::alignment::SpeakerSource::Auto,
             synth_atom: false,
             synth_parent: None,
+            token_walls: None,
         }
     }
 

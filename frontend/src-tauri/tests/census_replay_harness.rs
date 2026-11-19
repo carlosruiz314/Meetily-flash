@@ -101,6 +101,7 @@ impl RowSpec {
             speaker_source: SpeakerSource::Auto,
             synth_atom: self.synth_atom,
             synth_parent: None,
+            token_walls: None,
         }
     }
 }
@@ -390,6 +391,7 @@ proptest! {
             speaker_source: SpeakerSource::Auto,
             synth_atom: false,
             synth_parent: None,
+            token_walls: None,
         }];
         let synthesis = SpanSynthesis {
             span: (span0 as f64 / 1000.0, span1 as f64 / 1000.0),
