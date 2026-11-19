@@ -109,20 +109,48 @@ in ONE transaction — (1) load the meeting's manually-corrected rendering rows
 inside a surviving manual row's time span; (3) DELETE all rendering rows of the meeting
 except the surviving manual rows; (4) INSERT every non-suppressed aligned segment as a
 fresh-UUID row — split text, clamped timing, resolved `speaker_label`,
-`speaker_source = 'auto'`, `duration` recomputed from its own timing,
-`token_timestamps = NULL`, and every other column copied from its SOURCE row (joined
-via the segment's source-row id); (5) if the aligned output is empty while the source
-table is non-empty, abort the transaction (a degenerate run never wipes the rendering).
-A scheme that mutates prior rendering rows by id lookup (last-writer-wins UPDATE, or a
-delete-by-input-id sweep that treats previous output as absorbed) SHALL be considered
-NON-CONFORMANT: input row ids identify SOURCE rows, and rendering row ids have no
-stable relationship to them across runs.
+`speaker_source = 'auto'`, `duration` recomputed from its own timing, and every other
+column copied from its SOURCE row (joined via the segment's source-row id) EXCEPT
+`token_timestamps`, which the row carries from the alignment: when the segment's text
+derives from token-walled source words, the row persists the per-word walls of exactly
+the words its text holds (the `TokenWord` JSON shape the source carries), and when the
+segment derives from token-less source words it persists `token_timestamps = NULL`;
+(5) if the aligned output is empty while the source table is non-empty, abort the
+transaction (a degenerate run never wipes the rendering). A scheme that mutates prior
+rendering rows by id lookup (last-writer-wins UPDATE, or a delete-by-input-id sweep
+that treats previous output as absorbed) SHALL be considered NON-CONFORMANT: input row
+ids identify SOURCE rows, and rendering row ids have no stable relationship to them
+across runs.
 
-Rows carrying `token_timestamps = NULL` in the rendering is expected and permanent —
-rendering rows do not carry engine internals; the aligner no longer reads them. A
-persisted row's `previous_label` SHALL be NULL (previous_label is rendering history
-carried by manually-labeled rows, which survive regeneration untouched; fresh
-regenerated rows have no label history).
+Rendering rows from regeneration carry their aligned token walls; `token_timestamps =
+NULL` persists ONLY where the segment's words derived from token-less source rows
+(the legacy fallback). Rows spliced by the repair path (synth atoms) are owned by the
+repair capability and persist as it specifies (NULL walls today) — this requirement
+governs regeneration output only. A persisted row's `previous_label` SHALL be NULL
+(previous_label is rendering history carried by manually-labeled rows, which survive
+regeneration untouched; fresh regenerated rows have no label history).
+
+Both merge layers that build persisted rows SHALL preserve walls verbatim: the
+engine-side same-label fragment merge (`merge_same_label_fragments`, applied between
+alignment and persist) and the post-persist consolidation merge
+(`consolidate_meeting_turns`) concatenate the merged rows' token walls in row order —
+never re-normalized, re-stamped, or re-derived; any wall-less member (or unparseable
+wall JSON) fails the whole list closed to NULL (a merged row mixing walled and
+wall-less pieces cannot carry a wall-faithful list). Wall integrity SHALL hold for
+every persisted row carrying walls: each token wall sits within the row's own
+`audio_start_time`/`audio_end_time` bounds, the start times are monotone
+non-decreasing in list order, and no wall ends before it starts. The wall list SHALL
+be wall-faithful to the row's text: the alphanumeric words of the row's text equal
+the alphanumeric words of its persisted token list in order, compared AFTER the same
+detokenize reflow the render's own turn text underwent (the ear gate's token
+semantics — a reflow that joins two wall words into one text word, e.g. "don" + "'t"
+rendering as "don't", is wall-faithful, not a violation). The integrity check SHALL
+be one shared predicate for every check site (the post-persist census and the
+persist gate), so the sites cannot drift. The no-diarization passthrough path has no
+validator gate in front of it, so it SHALL apply the integrity check directly: a
+passthrough row persists its source walls only when the row's own text spells them
+(and they satisfy bounds, monotonicity, and end >= start); otherwise it persists
+NULL.
 
 A rendering row whose `speaker_source = 'manual'` SHALL survive regeneration untouched
 (not deleted, not relabeled), preserving user corrections; aligned segments whose
@@ -138,9 +166,7 @@ Re-diarization idempotency is RE-DERIVATION, not shape-freezing: every run align
 same immutable source, so the auto rendering is a pure function of (source rows,
 diarization segments, manual overlay). Unlike the previous doctrine, a split MAY
 re-expand or re-shape on a later run when the engine's segments change — the split
-shape is derived, never accumulated. The prior rationale for this clause (split rows
-carrying NULL tokens to freeze their shape against a decaying input) is superseded:
-the input no longer decays.
+shape is derived, never accumulated.
 
 Re-transcription is clean-slate for BOTH tables: the re-transcription path does
 `DELETE FROM transcripts WHERE meeting_id=?` AND `DELETE FROM transcript_sources WHERE
@@ -161,7 +187,9 @@ and audio claimed by a surviving manually-corrected rendering row (the manual ro
 renders its own text instead, and a suppressed straddling segment's out-of-span words
 remain in source only). This generalizes the earlier per-row split guarantee (the
 whitespace-joined split text equaled the source row's text) to the sentence-atom
-pipeline, where words legitimately move between rows via reattribution.
+pipeline, where words legitimately move between rows via reattribution. Where the
+source rows carry token walls, the per-row form is strengthened: each rendering row's
+walls cover exactly its own text's alphanumeric words, in order.
 
 Source rows with no internal whitespace (e.g. CJK text without spaces) SHALL be
 divided across speakers by the proportional path (character ratio proportional to
@@ -198,9 +226,70 @@ rendering reflects a single consistent pass rather than an interleaving of two.
 - **WHEN** the diarization processor aligns and persists
 - **THEN** the rendering holds two rows: text from tokens 5.0–5.4 under "Speaker 0"
   (5.0–7.1) and text from tokens 7.3–7.7 under "Speaker 1" (7.2–9.0), each with a fresh
-  id, recomputed duration, `token_timestamps = NULL`
+  id and recomputed duration
+- **AND** each persisted row carries its own words' token walls under
+  `token_timestamps` (the Speaker 0 row carries the walls of tokens 5.0–5.4, the
+  Speaker 1 row the walls of tokens 7.3–7.7)
 - **AND** every other column equals the SOURCE row's values (copied from
   `transcript_sources`, not from any prior rendering row)
+
+#### Scenario: Consolidation merge concatenates token walls verbatim
+
+- **GIVEN** two rendering segments under the same badge whose gaps sit inside the
+  consolidation merge cap, each carrying its own token walls
+- **WHEN** consolidation merges them into one row
+- **THEN** the merged row's `token_timestamps` is the concatenation of the two lists
+  in row order, with each wall preserved verbatim
+- **AND** the merged row's walls satisfy wall integrity (inside the merged row's own
+  bounds, monotone non-decreasing, matching the merged text's alphanumeric words)
+
+#### Scenario: Run log records a token-only wall census after consolidation
+
+- **GIVEN** a Speakers run that persisted and consolidated a meeting's rendering
+- **WHEN** the run completes
+- **THEN** the run log carries a census line with the meeting's row count, the
+  walled-row count, the NULL-wall count, and the wall-integrity violation count
+  (token-only: counts and row bounds, never content)
+
+#### Scenario: Detokenize reflow is wall-faithful, not a violation
+
+- **GIVEN** a persisted row whose text reads "don't" (one detokenized word) and
+  whose wall list holds "don" and "'t" as two entries
+- **WHEN** wall integrity is evaluated (census or invariant)
+- **THEN** the row is wall-faithful — both sides are compared after the same
+  detokenize reflow, and the row counts as walled with no violation
+
+#### Scenario: Wall integrity holds on every walled row
+
+- **GIVEN** a meeting whose source rows carry token timestamps
+- **WHEN** the Speakers pipeline persists any regeneration
+- **THEN** every persisted row with non-NULL `token_timestamps` satisfies: each token
+  start/end within the row's own audio bounds, start times monotone non-decreasing,
+  no wall ending before it starts, and the list's alphanumeric words equal the row
+  text's alphanumeric words in order
+- **AND** a row whose segment derived from token-less source words persists NULL and
+  renders by the unchanged proportional fallback
+
+#### Scenario: Passthrough rows persist only walls their own text spells
+
+- **GIVEN** a run whose diarization output is empty (the passthrough path), where one
+  source row's wall list names words its text does not spell (a measured real-corpus
+  shape: source chunk [1010.07,1032.31] carries 68 wall pieces against 50 text words)
+  and another source row's walls match its text
+- **WHEN** alignment runs the passthrough and persists
+- **THEN** the mismatched row persists `token_timestamps = NULL` (fail closed, no
+  partial claim) while the matching row carries its walls verbatim (eot markers
+  dropped)
+
+#### Scenario: Fragment merge concatenates token walls verbatim
+
+- **GIVEN** two adjacent fragments under the same speaker label, each carrying its
+  own token walls
+- **WHEN** the engine-side fragment merge joins them into one segment
+- **THEN** the merged segment's wall list is the concatenation of the two lists in
+  fragment order, each wall preserved verbatim
+- **AND** a merge mixing a walled fragment with a wall-less fragment fails closed to
+  a wall-less (NULL) segment
 
 #### Scenario: Second consecutive run does not shrink or corrupt the rendering
 
@@ -208,7 +297,7 @@ rendering reflects a single consistent pass rather than an interleaving of two.
   a previous Speakers run (fresh-UUID rows that share no ids with the source rows)
 - **WHEN** the Speakers pipeline runs again with the same diarization segments
 - **THEN** the rendering is rebuilt to the same row count and the same (text, span,
-  badge) multiset as before the run
+  badge, token-wall) multiset as before the run
 - **AND** no output row is deleted as "absorbed" and no aligned segment is discarded
   for lack of a rendering row with the source row's id
 

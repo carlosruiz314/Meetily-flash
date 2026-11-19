@@ -79,8 +79,12 @@
       wall carrier named in the delta (with the reflow-comparator and
       census scenarios), design D2 writer inventory corrected, D4
       enumeration corrected; validator green.]
-- [ ] 3.6 `/opsx:archive` on the user's go (commits and pushes only on
-      the user's explicit word).
+- [x] 3.6 `/opsx:archive` on the user's go (commits and pushes only on
+      the user's explicit word). [DONE 2026-11-19: archived to
+      openspec/changes/archive/2026-11-19-render-token-walls; delta synced
+      to the main speaker-diarization spec first (MODIFIED requirement
+      body applied; 15/15 specs validate); no push — pushes stay on the
+      user's explicit word.]
 - [x] 3.7 Code review to convergence (requesting-code-review +
       receiving-code-review, the user's completion bar). [DONE
       2026-11-19: round 1 verdict "With fixes" — 1 Important (passthrough
