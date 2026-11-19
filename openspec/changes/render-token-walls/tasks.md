@@ -65,11 +65,14 @@
       recorded. [VERIFIED 2026-11-19: both covering specs pass —
       diarization-speaker-split-persistence + diarization-label-quality,
       2 passed / 0 failed.]
-- [ ] 3.4 Handoff: re-run the paused `talkover-word-order-repair`
-      probe's baseline check on the new render (the S16 mega-row now
-      carries walls; baseline pins still hold) — the user's go then
+- [x] 3.4 Handoff: re-run the paused `talkover-word-order-repair`
+      probe's baseline check on the new render — the user's go then
       resumes its §3 attested-route wiring with the token-split straddle
-      policy.
+      policy. [DONE 2026-11-19: handoff-note.md — baseline pins hold
+      (S16 2/2, S18 7/7), the S16 mega-row is wall-bearing, and a
+      measured re-cut [1024.75,1056.50] (~31.75s ≤ cap, west edge
+      row-aligned, east edge token-aligned at 1056.50) covers both
+      needles with no erase; probe record sha256 6bc84ab0…]
 - [ ] 3.5 Before archive: re-read the live spec + design against what
       landed; amend the delta first if the implementation evolved.
 - [ ] 3.6 `/opsx:archive` on the user's go (commits and pushes only on
