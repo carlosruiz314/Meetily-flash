@@ -1234,6 +1234,20 @@ pub async fn run_diarization_for_meeting(
         absorbed,
         turns
     );
+    // Wall census (render-token-walls 3.2): the run log records the
+    // persisted shape's wall state token-only — counts and violations,
+    // never content.
+    match crate::database::repositories::speaker::wall_integrity_census(pool, meeting_id).await {
+        Ok((rows_n, walled, null_walls, violations)) => log::info!(
+            "TOKENWALLS-CENSUS meeting={} rows={} walled={} null={} violations={}",
+            meeting_id,
+            rows_n,
+            walled,
+            null_walls,
+            violations
+        ),
+        Err(e) => log::warn!("TOKENWALLS-CENSUS failed for {meeting_id}: {e}"),
+    }
 
     if let Some(turns) = &engine_turns {
         stamp_continuation_facts(pool, meeting_id, turns).await?;

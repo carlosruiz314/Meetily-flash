@@ -42,18 +42,21 @@
 
 ## 3. Verification + handoff
 
-- [ ] 3.1 Full `cargo test` green at `-j 2` (no concurrent cargo during
-      live runs).
+- [x] 3.1 Full `cargo test` green at `-j 2` (no concurrent cargo during
+      live runs). [DONE 2026-11-19: all targets ok, 0 failed — lib 801
+      passed / 20 ignored.]
 - [ ] 3.2 One production Speakers re-run (heartbeat): text byte-identical
       to the pre-change render for every row; the run log records a
       wall-integrity census line (walled rows, NULL rows, violations=0);
       `transcript_sources` byte-identity.
-- [ ] 3.3 Smoke-spec deliverable decision (AGENTS.md §3, made at
+- [x] 3.3 Smoke-spec deliverable decision (AGENTS.md §3, made at
       proposal time): no new frontend wiring — the visible outcome
       (rows, text, badges) is unchanged and pinned by the existing
       Speakers smoke specs; the token column is engine-side and
       structurally invisible to Playwright. No new smoke spec; rationale
-      recorded; the covering specs verified passing.
+      recorded. [VERIFIED 2026-11-19: both covering specs pass —
+      diarization-speaker-split-persistence + diarization-label-quality,
+      2 passed / 0 failed.]
 - [ ] 3.4 Handoff: re-run the paused `talkover-word-order-repair`
       probe's baseline check on the new render (the S16 mega-row now
       carries walls; baseline pins still hold) — the user's go then

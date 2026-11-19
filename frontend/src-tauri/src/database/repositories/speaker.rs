@@ -11,6 +11,84 @@ const MAX_EMBEDDING_DIM: usize = 1024;
 
 pub struct SpeakerRepository;
 
+/// Post-run wall census (render-token-walls 3.2): counts the meeting's
+/// final rendering rows by wall state and checks wall integrity on every
+/// walled row (walls cover exactly the row's own alphanumeric words, sit
+/// inside the row's bounds, start monotone). Token-only (counts + row
+/// bounds, no content); the run log prints it after consolidation so the
+/// persisted shape is auditable per run. Returns
+/// (rows, walled, null_walls, violations).
+pub async fn wall_integrity_census(
+    pool: &SqlitePool,
+    meeting_id: &str,
+) -> Result<(usize, usize, usize, usize)> {
+    #[derive(sqlx::FromRow)]
+    struct Row {
+        audio_start_time: Option<f64>,
+        audio_end_time: Option<f64>,
+        transcript: String,
+        token_timestamps: Option<String>,
+    }
+    let rows = sqlx::query_as::<_, Row>(
+        "SELECT audio_start_time, audio_end_time, transcript, token_timestamps \
+         FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time, audio_end_time",
+    )
+    .bind(meeting_id)
+    .fetch_all(pool)
+    .await?;
+    let norm =
+        |s: &str| -> String { s.chars().filter(|c| c.is_alphanumeric()).collect() };
+    let mut walled = 0usize;
+    let mut null_walls = 0usize;
+    let mut violations = 0usize;
+    for r in &rows {
+        let Some(json) = &r.token_timestamps else {
+            null_walls += 1;
+            continue;
+        };
+        let parsed: Result<Vec<crate::audio::speaker::alignment::TokenWord>, _> =
+            serde_json::from_str(json);
+        let walls = match parsed {
+            Ok(w) if !w.is_empty() => w,
+            _ => {
+                // Malformed or empty JSON persisted where a wall list (or
+                // NULL) was claimed — count it as a violation, never skip.
+                violations += 1;
+                continue;
+            }
+        };
+        walled += 1;
+        let text_words: Vec<String> = r
+            .transcript
+            .split_whitespace()
+            .map(|w| norm(w))
+            .filter(|w| !w.is_empty())
+            .collect();
+        let wall_words: Vec<String> = walls
+            .iter()
+            .map(|w| norm(&w.word))
+            .filter(|w| !w.is_empty())
+            .collect();
+        if wall_words != text_words {
+            violations += 1;
+            continue;
+        }
+        let s_ms = r.audio_start_time.unwrap_or(0.0) * 1000.0;
+        let e_ms = r.audio_end_time.unwrap_or(f64::MAX) * 1000.0;
+        if walls
+            .iter()
+            .any(|w| (w.start_ms as f64) < s_ms - 1.0 || (w.end_ms as f64) > e_ms + 1.0)
+        {
+            violations += 1;
+            continue;
+        }
+        if walls.windows(2).any(|p| p[0].start_ms > p[1].start_ms) {
+            violations += 1;
+        }
+    }
+    Ok((rows.len(), walled, null_walls, violations))
+}
+
 /// Concatenate merged rows' token walls verbatim in row order (render-
 /// token-walls 1.2). Any wall-less member fails the whole list to None: a
 /// merged row mixing walled and wall-less pieces could not carry a wall-
