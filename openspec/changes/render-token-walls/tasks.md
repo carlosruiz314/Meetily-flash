@@ -73,7 +73,11 @@
       measured re-cut [1024.75,1056.50] (~31.75s ≤ cap, west edge
       row-aligned, east edge token-aligned at 1056.50) covers both
       needles with no erase; probe record sha256 6bc84ab0…]
-- [ ] 3.5 Before archive: re-read the live spec + design against what
+- [x] 3.5 Before archive: re-read the live spec + design against what
       landed; amend the delta first if the implementation evolved.
+      [DONE 2026-11-19: three evolutions folded — the fragment-merge
+      wall carrier named in the delta (with the reflow-comparator and
+      census scenarios), design D2 writer inventory corrected, D4
+      enumeration corrected; validator green.]
 - [ ] 3.6 `/opsx:archive` on the user's go (commits and pushes only on
       the user's explicit word).
