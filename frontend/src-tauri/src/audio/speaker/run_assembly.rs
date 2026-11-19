@@ -4130,6 +4130,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn synth_rows_carry_no_walls() {
+        // render-token-walls 2.4: repair-spliced stream rows persist NULL —
+        // the stream decode's wall shape is the paused change's surface,
+        // and the legacy splice stays byte-identical.
+        let rows = vec![seg("r1", "alpha beta gamma delta epsilon zeta", 0, 6_000, "Speaker 0")];
+        let synthesis = SpanSynthesis {
+            span: (0.0, 6.0),
+            streams: [
+                ev(1, 0.3, Some("one two")),
+                ev(3, 0.2, Some("three four")),
+            ],
+            covered_atoms: Vec::new(),
+        };
+        let cluster_speaker = |c: u32| Some(format!("Speaker {c}"));
+        let out = repair_overlap_rows_checked(&rows, &synthesis, &cluster_speaker)
+            .expect("clean evidence splices");
+        assert!(out.iter().all(|r| r.synth_atom), "every output row is a stream row");
+        assert!(
+            out.iter().all(|r| r.token_walls.is_none()),
+            "synth rows carry no walls"
+        );
+    }
+
     fn ev(cluster: u32, margin: f32, text: Option<&str>) -> StreamEvidence {
         StreamEvidence { cluster, margin, rms_ratio: 1.0, text: text.map(str::to_string), utterances: Vec::new() }
     }

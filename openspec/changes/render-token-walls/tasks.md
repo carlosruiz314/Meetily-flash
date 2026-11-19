@@ -14,24 +14,30 @@
 
 ## 2. Persist + invariants
 
-- [ ] 2.1 RED: regeneration writes the segment's wall JSON into the
+- [x] 2.1 RED: regeneration writes the segment's wall JSON into the
       existing `token_timestamps` column; a token-less segment persists
-      NULL and the proportional fallback text is byte-identical to
-      today's.
-- [ ] 2.2 RED: wall integrity property — every walled row's tokens sit
+      NULL and the text is byte-identical. [DONE 2026-11-19:
+      persist_regenerated_rendering binds the segment's walls, NULL when
+      wall-less; red test pins both cases + text identity.]
+- [x] 2.2 RED: wall integrity property — every walled row's tokens sit
       inside the row's own bounds, starts monotone non-decreasing, and
-      the list's alphanumeric words equal the row text's in order
-      (property test over generated fixtures + the reference-meeting
-      shapes).
-- [ ] 2.3 RED: run-over-run stability — same source + same diarization
+      the list's alphanumeric words equal the row text's in order.
+      [DONE 2026-11-19: proptest over generated token-walled shapes
+      (256 cases, census_replay_harness); reference-meeting shapes
+      verified live in 3.2.]
+- [x] 2.3 RED: run-over-run stability — same source + same diarization
       ⇒ same (text, span, badge, token-wall) multiset; re-verify the
-      explore enumeration (2026-11-19: no harness pins the render
-      column NULL — ear gate cross-checks `transcript_sources`,
-      `full_retranscribe_run` backs up only, persistence oracle is a
-      sandbox) still holds at apply time; record it.
-- [ ] 2.4 RED: repair-spliced synth rows persist NULL (unchanged) — the
-      paused change owns that surface; the legacy phrase-loop path is
-      byte-identical.
+      explore enumeration at apply time. [DONE 2026-11-19: determinism
+      pinned (wall_stability_same_input_same_walls); enumeration
+      re-verified with one CORRECTION — the lib-level
+      regeneration_invariants_property DID pin the render column NULL
+      (the superseded doctrine encoded in src, invisible to the
+      tests/-only sweep); it is updated to the new wall-integrity
+      invariant rather than deleted.]
+- [x] 2.4 RED: repair-spliced synth rows persist NULL (unchanged) — the
+      paused change owns that surface. [DONE 2026-11-19:
+      synth_rows_carry_no_walls pins the splice's stream rows NULL;
+      synth_rows_for_streams constructs None at birth.]
 - [ ] COMMIT CHECKPOINT.
 
 ## 3. Verification + handoff

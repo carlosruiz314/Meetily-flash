@@ -3006,6 +3006,39 @@ Yeah, for Paulina, right?";
     }
 
     #[test]
+    fn wall_stability_same_input_same_walls() {
+        // render-token-walls 2.3: alignment is a pure function of its
+        // inputs — the same source + diarization derive the same walls,
+        // run over run (nothing accumulates).
+        let mk = || {
+            transcript_with_tokens(
+                "tw",
+                "Hello there. That is interesting.",
+                10_000,
+                16_000,
+                vec![
+                    token("Hello", 10_100, 10_500),
+                    token("there", 10_600, 11_000),
+                    token(".", 11_000, 11_100),
+                    token("That", 12_000, 12_300),
+                    token("is", 12_400, 12_600),
+                    token("interesting", 12_700, 13_500),
+                    token(".", 13_500, 13_600),
+                ],
+            )
+        };
+        let diarization = vec![seg(10_000, 11_500, 0), seg(11_500, 16_000, 1)];
+        let a = align_transcripts_with_diarization(vec![mk()], &diarization, &[], &[]);
+        let b = align_transcripts_with_diarization(vec![mk()], &diarization, &[], &[]);
+        let ser = |rows: &[AlignedSegment]| -> Vec<String> {
+            rows.iter()
+                .map(|r| serde_json::to_string(&r.token_walls).unwrap())
+                .collect()
+        };
+        assert_eq!(ser(&a), ser(&b), "same input derives the same walls");
+    }
+
+    #[test]
     fn duplicate_survivor_keeps_its_walls_absorbed_lose_theirs() {
         // render-token-walls 1.3: the survivor's walls travel with its text
         // (the union extends only the span — its own walls stay in bounds);

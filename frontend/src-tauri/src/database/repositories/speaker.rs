@@ -551,7 +551,7 @@ impl SpeakerRepository {
                    (id, meeting_id, transcript, timestamp, summary, action_items, key_points, \
                     speaker, audio_start_time, audio_end_time, duration, speaker_label, \
                     speaker_source, token_timestamps, previous_label, synth_atom, continues_previous, synth_parent) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', NULL, NULL, ?, ?, ?)",
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'auto', ?, NULL, ?, ?, ?)",
             )
             .bind(uuid::Uuid::new_v4().to_string())
             .bind(&t.meeting_id)
@@ -565,6 +565,13 @@ impl SpeakerRepository {
             .bind(audio_end)
             .bind(duration)
             .bind(&seg.speaker)
+            // The segment's own aligned walls (render-token-walls 2.1):
+            // None persists NULL — nothing estimates walls at persist.
+            .bind(
+                seg.token_walls
+                    .as_ref()
+                    .and_then(|w| serde_json::to_string(w).ok()),
+            )
             .bind(if seg.synth_atom { Some(1i64) } else { None::<i64> })
             // Synth rows carry their own mid-sentence fact at INSERT (the
             // engine-turn stamping pass doesn't know them). The engine stamp
@@ -1830,12 +1837,47 @@ mod tests {
             );
             assert!(!r.transcript.is_empty(), "no empty-text row");
         }
-        // Rendering rows never carry engine internals.
+        // Rendering rows carry their aligned walls when their words derive
+        // from token-walled sources (render-token-walls 2.1 — the old
+        // "always NULL" doctrine is superseded); wall-less rows persist
+        // NULL. Wall integrity: a carried list covers exactly the row's
+        // own words, inside the row's bounds, monotone non-decreasing.
         for r in &rows {
-            assert!(
-                r.token_timestamps.is_none(),
-                "rendering row token_timestamps must be NULL"
-            );
+            let Some(json) = &r.token_timestamps else {
+                continue;
+            };
+            let s = r.audio_start_time.unwrap_or(src_start);
+            let e = r.audio_end_time.unwrap_or(src_end);
+            let walls: Vec<crate::audio::speaker::alignment::TokenWord> =
+                serde_json::from_str(json).expect("persisted walls are valid JSON");
+            let norm = |s: &str| -> String { s.chars().filter(|c| c.is_alphanumeric()).collect() };
+            let text_words: Vec<String> = r
+                .transcript
+                .split_whitespace()
+                .map(|w| norm(w))
+                .filter(|w| !w.is_empty())
+                .collect();
+            let wall_words: Vec<String> = walls
+                .iter()
+                .map(|w| norm(&w.word))
+                .filter(|w| !w.is_empty())
+                .collect();
+            assert_eq!(wall_words, text_words, "walls cover exactly the row's words");
+            let s_ms = s * 1000.0;
+            let e_ms = e * 1000.0;
+            for w in &walls {
+                assert!(
+                    w.start_ms as f64 >= s_ms - 1.0 && w.end_ms as f64 <= e_ms + 1.0,
+                    "wall [{},{}] within the row bounds [{},{}]",
+                    w.start_ms,
+                    w.end_ms,
+                    s_ms,
+                    e_ms
+                );
+            }
+            for pair in walls.windows(2) {
+                assert!(pair[0].start_ms <= pair[1].start_ms, "walls monotone");
+            }
         }
         // Persistence contract: each AlignedSegment's text is stored verbatim —
         // no words lost or duplicated. Word ORDER across rows is an alignment
@@ -2057,6 +2099,47 @@ mod tests {
 
     // 2.3(c) — a consolidation-shaped prior rendering is REBUILT from source,
     // not swept by id (its ids share nothing with the source rows).
+    #[tokio::test]
+    async fn persist_writes_segment_walls_and_null_for_wall_less() {
+        // render-token-walls 2.1: regeneration persists each segment's own
+        // wall JSON into the existing column; a wall-less segment persists
+        // NULL and its text is byte-identical.
+        let pool = transcripts_test_pool().await;
+        seed_row(&pool, "src-a", "meet-1", "alpha beta gamma.", 5.0, 9.0, None, None).await;
+        seed_row(&pool, "src-b", "meet-1", "delta epsilon.", 9.0, 13.0, None, None).await;
+
+        let mut walled = aligned("src-a", "alpha beta", 5000, 8000, "Speaker 0");
+        walled.token_walls = Some(vec![
+            wall("alpha", 5_000, 5_600),
+            wall("beta", 5_700, 6_200),
+        ]);
+        let wall_less = aligned("src-b", "delta epsilon.", 9000, 13000, "Speaker 0");
+
+        SpeakerRepository::persist_regenerated_rendering(&pool, "meet-1", vec![walled, wall_less], false)
+            .await
+            .unwrap();
+
+        let rows: Vec<(f64, Option<String>, String)> = sqlx::query_as(
+            "SELECT audio_start_time, token_timestamps, transcript FROM transcripts              WHERE meeting_id = 'meet-1' ORDER BY audio_start_time",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        // Walled segment: the walls persist verbatim as the source-shape JSON.
+        let walls: Vec<crate::audio::speaker::alignment::TokenWord> =
+            serde_json::from_str(rows[0].1.as_deref().expect("walled segment persists its walls"))
+                .unwrap();
+        assert_eq!(walls.len(), 2);
+        assert_eq!(walls[0].word, "alpha");
+        assert_eq!(walls[0].start_ms, 5_000);
+        assert_eq!(walls[1].end_ms, 6_200);
+        assert_eq!(rows[0].2, "alpha beta", "text untouched");
+        // Wall-less segment: NULL, text byte-identical.
+        assert!(rows[1].1.is_none(), "wall-less segment persists NULL");
+        assert_eq!(rows[1].2, "delta epsilon.");
+    }
+
     #[tokio::test]
     async fn regeneration_rebuilds_consolidation_shaped_rendering() {
         let pool = transcripts_test_pool().await;

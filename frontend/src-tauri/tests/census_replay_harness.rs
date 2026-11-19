@@ -473,6 +473,7 @@ proptest! {
                 speaker_source: SpeakerSource::Auto,
                 synth_atom: false,
                 synth_parent: None,
+                token_walls: None,
             },
             AlignedSegment {
                 original_id: "src2".into(),
@@ -483,6 +484,7 @@ proptest! {
                 speaker_source: SpeakerSource::Auto,
                 synth_atom: false,
                 synth_parent: None,
+                token_walls: None,
             },
         ];
         let w0 = 1_000i64.saturating_sub(window_pad);
@@ -523,6 +525,80 @@ proptest! {
         prop_assert_eq!(applied2, 0, "re-applying is rejected: the region is already per-voice");
         prop_assert!(rows_eq(&out1, &out2), "the repaired render is a fixpoint");
         prop_assert!(out1.iter().any(|r| r.original_id == "src2"), "the untouched row survives");
+    }
+
+    // ── render-token-walls 2.2: wall integrity over generated shapes ──
+
+    #[test]
+    fn aligned_wall_integrity_holds_for_generated_token_walled_rows(
+        words in prop::collection::vec("[a-z]{2,8}", 3..=12),
+        split in 1usize..12,
+        base in 10_000i64..60_000,
+    ) {
+        prop_assume!(split < words.len() - 1);
+        use app_lib::audio::speaker::alignment::{
+            align_transcripts_with_diarization, DiarizationSegment, TokenWord, TranscriptInput,
+        };
+        // Two sentences (split at `split`), per-piece walls: word piece +
+        // "." piece at each sentence end — the validator's raw matching.
+        let mut text_words: Vec<String> = Vec::new();
+        let mut pieces: Vec<TokenWord> = Vec::new();
+        let mut word_starts: Vec<i64> = Vec::new();
+        let mut t = base;
+        for (i, w) in words.iter().enumerate() {
+            let is_end = i == split || i == words.len() - 1;
+            word_starts.push(t);
+            text_words.push(if is_end { format!("{w}.") } else { w.clone() });
+            pieces.push(TokenWord { word: w.clone(), start_ms: t, end_ms: t + 150 });
+            t += 150;
+            if is_end {
+                pieces.push(TokenWord { word: ".".into(), start_ms: t, end_ms: t + 60 });
+                t += 100;
+            }
+            t += 40;
+        }
+        let text = text_words.join(" ");
+        let input = TranscriptInput {
+            id: "src-tw".into(),
+            text: text.clone(),
+            audio_start_ms: base,
+            audio_end_ms: t + 500,
+            token_words: Some(pieces.clone()),
+        };
+        // Voice change between the sentences: atom-majority assigns whole.
+        let mid = word_starts[split + 1] - 1;
+        let diarization = vec![
+            DiarizationSegment { start_ms: base, end_ms: mid, speaker_id: 0, sustained_split: false },
+            DiarizationSegment { start_ms: mid, end_ms: t + 500, speaker_id: 1, sustained_split: false },
+        ];
+        let out = align_transcripts_with_diarization(vec![input], &diarization, &[], &[]);
+        prop_assert!(!out.is_empty(), "tokened row aligns");
+        let norm = |s: &str| -> String { s.chars().filter(|c| c.is_alphanumeric()).collect() };
+        for row in &out {
+            let walls = row.token_walls.as_ref().expect("token-walled rows carry walls");
+            let text_words_norm: Vec<String> = row
+                .text
+                .split_whitespace()
+                .map(|w| norm(w))
+                .filter(|w| !w.is_empty())
+                .collect();
+            let wall_words: Vec<String> = walls
+                .iter()
+                .map(|w| norm(&w.word))
+                .filter(|w| !w.is_empty())
+                .collect();
+            prop_assert_eq!(wall_words, text_words_norm, "walls cover exactly the row's own words");
+            for w in walls {
+                prop_assert!(
+                    w.start_ms >= row.audio_start_ms && w.end_ms <= row.audio_end_ms,
+                    "wall [{},{}] inside the row [{},{}]",
+                    w.start_ms, w.end_ms, row.audio_start_ms, row.audio_end_ms
+                );
+            }
+            for pair in walls.windows(2) {
+                prop_assert!(pair[0].start_ms <= pair[1].start_ms, "wall starts monotone");
+            }
+        }
     }
 }
 
