@@ -58,17 +58,30 @@ pub async fn wall_integrity_census(
             }
         };
         walled += 1;
-        let text_words: Vec<String> = r
-            .transcript
-            .split_whitespace()
-            .map(|w| norm(w))
-            .filter(|w| !w.is_empty())
-            .collect();
-        let wall_words: Vec<String> = walls
-            .iter()
-            .map(|w| norm(&w.word))
-            .filter(|w| !w.is_empty())
-            .collect();
+        // Both sides go through the SAME detokenize reflow the
+        // consolidation turn text went through (render-token-walls 3.2):
+        // reflow can join two wall words into one text word ("don" + "'t"
+        // -> "don't"), which is wall-faithful, not a violation. Comparing
+        // detokenized streams mirrors the ear gate's own token semantics.
+        let reflow = |words: &[String]| -> Vec<String> {
+            crate::audio::speaker::turns::detokenize(&words.join(" "))
+                .split_whitespace()
+                .map(|w| norm(w))
+                .filter(|w| !w.is_empty())
+                .collect()
+        };
+        let text_words = reflow(
+            &r.transcript
+                .split_whitespace()
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        );
+        let wall_words = reflow(
+            &walls
+                .iter()
+                .map(|w| w.word.clone())
+                .collect::<Vec<_>>(),
+        );
         if wall_words != text_words {
             violations += 1;
             continue;
@@ -1810,6 +1823,44 @@ mod tests {
             tt.is_none(),
             "a mixed merge cannot carry a faithful list — fail closed to NULL"
         );
+    }
+
+    #[tokio::test]
+    async fn census_counts_detokenized_reflow_as_faithful() {
+        // render-token-walls 3.2: consolidation's turn text is detokenized
+        // (punctuation reflow can join two wall words into one text word,
+        // e.g. "don" + "'t" -> "don't"). The census comparator applies the
+        // SAME reflow to both sides — the reflowed row is wall-faithful,
+        // not a violation.
+        let pool = transcripts_test_pool().await;
+        let walls = vec![
+            wall("I", 5_000, 5_100),
+            wall("don", 5_100, 5_400),
+            wall("'t", 5_400, 5_600),
+            wall("know.", 5_700, 5_950),
+        ];
+        sqlx::query(
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, \
+             audio_end_time, duration, speaker_label, speaker_source, token_timestamps) \
+             VALUES ('a', 'meet-1', 'I don''t know.', '2026-07-25T00:00:00Z', 5.0, 6.0, 1.0, 'Speaker 0', 'auto', ?)",
+        )
+        .bind(serde_json::to_string(&walls).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let (rows, walled, null_walls, violations) =
+            crate::database::repositories::speaker::wall_integrity_census(&pool, "meet-1")
+                .await
+                .unwrap();
+        assert_eq!((rows, walled, null_walls, violations), (1, 1, 0, 0));
+        // The reflowed words keep their real walls: two wall entries
+        // ("don" + "'t") under one detokenized text word is faithful.
+        let (tt,): (Option<String>,) =
+            sqlx::query_as("SELECT token_timestamps FROM transcripts WHERE id = 'a'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(tt.is_some());
     }
 
     #[tokio::test]

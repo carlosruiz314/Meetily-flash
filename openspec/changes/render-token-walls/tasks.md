@@ -45,10 +45,18 @@
 - [x] 3.1 Full `cargo test` green at `-j 2` (no concurrent cargo during
       live runs). [DONE 2026-11-19: all targets ok, 0 failed — lib 801
       passed / 20 ignored.]
-- [ ] 3.2 One production Speakers re-run (heartbeat): text byte-identical
+- [x] 3.2 One production Speakers re-run (heartbeat): text byte-identical
       to the pre-change render for every row; the run log records a
-      wall-integrity census line (walled rows, NULL rows, violations=0);
-      `transcript_sources` byte-identity.
+      wall-integrity census line; `transcript_sources` byte-identity.
+      [DONE 2026-11-19: two runs, both 0 text/span/badge/synth diffs over
+      269 rows vs the pre-change render; sources sha256 unchanged. Run 1
+      census rows=269 walled=194 null=75 violations=119 — RED: traced to
+      merge_same_label_fragments dropping merged fragments' walls (fixed,
+      389f3dba). Run 2 violations=2 — the detokenize-reflow case
+      (consolidation joins two wall words into one text word; joined
+      content identical); census comparator now applies the same reflow
+      to both sides (the ear gate's own semantics), red-first pinned;
+      local replica on the live DB: violations=0.]
 - [x] 3.3 Smoke-spec deliverable decision (AGENTS.md §3, made at
       proposal time): no new frontend wiring — the visible outcome
       (rows, text, badges) is unchanged and pinned by the existing
