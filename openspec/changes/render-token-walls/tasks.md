@@ -79,8 +79,10 @@
       wall carrier named in the delta (with the reflow-comparator and
       census scenarios), design D2 writer inventory corrected, D4
       enumeration corrected; validator green.]
+- [ ] 3.6 `/opsx:archive` on the user's go (commits and pushes only on
+      the user's explicit word).
 - [x] 3.7 Code review to convergence (requesting-code-review +
-      receiving-code-review, the user's completion bar). [IN PROGRESS
+      receiving-code-review, the user's completion bar). [DONE
       2026-11-19: round 1 verdict "With fixes" — 1 Important (passthrough
       path persisted unvalidated source walls, bypassing the validator
       gate) + 7 Minor. All claims verified against the code; Important
@@ -90,8 +92,10 @@
       `#[test]` removed; stability signature covers the wall JSON;
       census warn-level on violations>0; design D2 deduped, D3 amended;
       delta spec amended (end>=start, passthrough-gate + fragment-merge
-      scenarios). Pushback: hoisting `concat_token_walls` deferred — two
-      sites, both test-pinned, repo rule is three repeats before
-      abstraction. Round 2 pending.]
-- [ ] 3.6 `/opsx:archive` on the user's go (commits and pushes only on
-      the user's explicit word).
+      scenarios). Pushback upheld: hoisting `concat_token_walls` deferred
+      — two sites, both test-pinned, repo rule is three repeats before
+      abstraction. Round 2 verdict "Ready to merge: Yes" — all round-1
+      findings verified resolved in dd9078c, pushbacks accepted, lib 805
+      green at -j 2 independently re-verified; no Critical/Important
+      open, both round-2 Minors no-action (3.7/3.6 file order closed
+      here; test-helper strict-check loops conformant as-is).]
