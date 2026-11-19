@@ -42,13 +42,21 @@ governs regeneration output only. A persisted row's `previous_label` SHALL be NU
 (previous_label is rendering history carried by manually-labeled rows, which survive
 regeneration untouched; fresh regenerated rows have no label history).
 
-Consolidation merges SHALL preserve walls verbatim: a merged row's token walls are the
-concatenation of the merged rows' token walls in row order — never re-normalized,
-re-stamped, or re-derived. Wall integrity SHALL hold for every persisted row carrying
-walls: each token wall sits within the row's own `audio_start_time`/`audio_end_time`
-bounds, and the start times are monotone non-decreasing in list order. The wall list
-SHALL be wall-faithful to the row's text: the alphanumeric words of the row's text
-equal the alphanumeric words of its persisted token list, in order.
+Both merge layers that build persisted rows SHALL preserve walls verbatim: the
+engine-side same-label fragment merge (`merge_same_label_fragments`, applied between
+alignment and persist) and the post-persist consolidation merge
+(`consolidate_meeting_turns`) concatenate the merged rows' token walls in row order —
+never re-normalized, re-stamped, or re-derived; any wall-less member (or unparseable
+wall JSON) fails the whole list closed to NULL (a merged row mixing walled and
+wall-less pieces cannot carry a wall-faithful list). Wall integrity SHALL hold for
+every persisted row carrying walls: each token wall sits within the row's own
+`audio_start_time`/`audio_end_time` bounds, and the start times are monotone
+non-decreasing in list order. The wall list SHALL be wall-faithful to the row's
+text: the alphanumeric words of the row's text equal the alphanumeric words of its
+persisted token list in order, compared AFTER the same detokenize reflow the
+render's own turn text underwent (the ear gate's token semantics — a reflow that
+joins two wall words into one text word, e.g. "don" + "'t" rendering as "don't",
+is wall-faithful, not a violation).
 
 A rendering row whose `speaker_source = 'manual'` SHALL survive regeneration untouched
 (not deleted, not relabeled), preserving user corrections; aligned segments whose
@@ -140,6 +148,22 @@ rendering reflects a single consistent pass rather than an interleaving of two.
   in row order, with each wall preserved verbatim
 - **AND** the merged row's walls satisfy wall integrity (inside the merged row's own
   bounds, monotone non-decreasing, matching the merged text's alphanumeric words)
+
+#### Scenario: Run log records a token-only wall census after consolidation
+
+- **GIVEN** a Speakers run that persisted and consolidated a meeting's rendering
+- **WHEN** the run completes
+- **THEN** the run log carries a census line with the meeting's row count, the
+  walled-row count, the NULL-wall count, and the wall-integrity violation count
+  (token-only: counts and row bounds, never content)
+
+#### Scenario: Detokenize reflow is wall-faithful, not a violation
+
+- **GIVEN** a persisted row whose text reads "don't" (one detokenized word) and
+  whose wall list holds "don" and "'t" as two entries
+- **WHEN** wall integrity is evaluated (census or invariant)
+- **THEN** the row is wall-faithful — both sides are compared after the same
+  detokenize reflow, and the row counts as walled with no violation
 
 #### Scenario: Wall integrity holds on every walled row
 

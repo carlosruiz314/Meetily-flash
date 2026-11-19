@@ -67,12 +67,16 @@ INSERT writes the segment's wall list (the `TokenWord` JSON shape the
 source carries) into `token_timestamps`; token-less segments persist NULL
 and the legacy proportional fallback is byte-identical. Repair-spliced
 synth rows keep NULL (owned by the paused change). Manual rows survive
-untouched as today. Writer inventory (explore pass, 2026-11-19): the
-render table has exactly two production persist paths —
-`insert_transcription_row` (Enhance/retranscribe; ALREADY wall-bearing
-from the source) and `persist_regenerated_rendering` (Speakers
-regeneration; the NULL-walled site this change modifies). The generation
-path is what erases walls today; no other site needs touching.
+untouched as today. Writer inventory (explore pass 2026-11-19, corrected at
+apply): the render table's production writers are the transcription
+writer `insert_transcription_row` (Enhance/retranscribe; ALREADY
+wall-bearing from the source) and the Speakers-side path — persist
+(`persist_regenerated_rendering`, the NULL-walled site this change
+modifies) PLUS its two merge layers, which the apply revealed: the
+engine-side same-label fragment merge (`merge_same_label_fragments`)
+was silently dropping merged fragments' walls (live census
+violations=119; fixed 389f3dba with the same concat/fail-closed
+doctrine), and consolidation (concatenates verbatim).
 
 **D3 — Wall integrity as a pinned invariant.** Every walled row: each
 token wall within the row's own bounds, start times monotone
@@ -88,11 +92,11 @@ estimates walls into the render.
 
 **D4 — Run-over-run stability.** Same source + same diarization ⇒ the
 same (text, span, badge, token-wall) multiset. Consumer enumeration
-(explore pass, 2026-11-19): NO harness pins the render column NULL —
-the ear-gate snapshot cross-checks `transcript_sources` (untouched),
-`full_retranscribe_run` backs both tables up without asserting wall
-state, and the persistence oracle uses a sandbox schema; the apply's
-stability task RE-VERIFIES this enumeration rather than assuming it.
+(explore pass, re-verified at apply): the tests/-only sweep found no
+harness pinning NULL, but the apply CAUGHT a lib-level property test
+(`regeneration_invariants_property`) pinning the render column NULL —
+the superseded doctrine encoded in src; it was updated to the
+wall-integrity invariant rather than deleted (task 2.3's record).
 
 **D5 — Bright lines inherited.** Token walls are numbers keyed to words
 in the LOCAL DB only — nothing meeting-derived enters the repo; records
