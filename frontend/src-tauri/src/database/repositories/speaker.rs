@@ -36,8 +36,6 @@ pub async fn wall_integrity_census(
     .bind(meeting_id)
     .fetch_all(pool)
     .await?;
-    let norm =
-        |s: &str| -> String { s.chars().filter(|c| c.is_alphanumeric()).collect() };
     let mut walled = 0usize;
     let mut null_walls = 0usize;
     let mut violations = 0usize;
@@ -58,44 +56,14 @@ pub async fn wall_integrity_census(
             }
         };
         walled += 1;
-        // Both sides go through the SAME detokenize reflow the
-        // consolidation turn text went through (render-token-walls 3.2):
-        // reflow can join two wall words into one text word ("don" + "'t"
-        // -> "don't"), which is wall-faithful, not a violation. Comparing
-        // detokenized streams mirrors the ear gate's own token semantics.
-        let reflow = |words: &[String]| -> Vec<String> {
-            crate::audio::speaker::turns::detokenize(&words.join(" "))
-                .split_whitespace()
-                .map(|w| norm(w))
-                .filter(|w| !w.is_empty())
-                .collect()
-        };
-        let text_words = reflow(
-            &r.transcript
-                .split_whitespace()
-                .map(str::to_string)
-                .collect::<Vec<_>>(),
-        );
-        let wall_words = reflow(
-            &walls
-                .iter()
-                .map(|w| w.word.clone())
-                .collect::<Vec<_>>(),
-        );
-        if wall_words != text_words {
-            violations += 1;
-            continue;
-        }
+        // Integrity is the shared `walls_match_row` predicate — the same
+        // definition the passthrough persist gate checks (review round 1),
+        // so the two sites cannot drift. It compares both sides after the
+        // detokenize reflow (render-token-walls 3.2), checks bounds
+        // (±1 ms), start monotonicity, and end >= start.
         let s_ms = r.audio_start_time.unwrap_or(0.0) * 1000.0;
         let e_ms = r.audio_end_time.unwrap_or(f64::MAX) * 1000.0;
-        if walls
-            .iter()
-            .any(|w| (w.start_ms as f64) < s_ms - 1.0 || (w.end_ms as f64) > e_ms + 1.0)
-        {
-            violations += 1;
-            continue;
-        }
-        if walls.windows(2).any(|p| p[0].start_ms > p[1].start_ms) {
+        if !crate::audio::speaker::alignment::walls_match_row(&walls, &r.transcript, s_ms, e_ms) {
             violations += 1;
         }
     }
@@ -869,6 +837,13 @@ impl SpeakerRepository {
                 // The merged row's walls are the merged rows' wall lists
                 // concatenated verbatim in row order; any wall-less member
                 // fails the whole list to NULL (render-token-walls 1.2).
+                // The concat rides row order (g.row_indexes is assembled in
+                // row order), assuming wall-time order follows. `assemble_groups`
+                // does admit negative-gap same-speaker merges whose concatenated
+                // lists could interleave, but wall-bearing members only reach
+                // consolidation from persist output (seam-clipped, monotone),
+                // so a non-monotone concat is unreachable today — and the
+                // census's monotone check would flag it if that ever changes.
                 let merged_walls = concat_token_walls(
                     &g.row_indexes
                         .iter()
@@ -1574,10 +1549,10 @@ mod tests {
         .unwrap()
     }
 
-    /// (text, start_ms, end_ms, badge) multiset of a rendering — ids excluded
-    /// (fresh per run).
-    fn signature(rows: &[ReadRow]) -> Vec<(String, i64, i64, String)> {
-        let mut sig: Vec<(String, i64, i64, String)> = rows
+    /// (text, start_ms, end_ms, badge, token-wall JSON) multiset of a
+    /// rendering — ids excluded (fresh per run).
+    fn signature(rows: &[ReadRow]) -> Vec<(String, i64, i64, String, Option<String>)> {
+        let mut sig: Vec<(String, i64, i64, String, Option<String>)> = rows
             .iter()
             .map(|r| {
                 (
@@ -1585,6 +1560,7 @@ mod tests {
                     (r.audio_start_time.unwrap_or(0.0) * 1000.0).round() as i64,
                     (r.audio_end_time.unwrap_or(0.0) * 1000.0).round() as i64,
                     r.speaker_label.clone().unwrap_or_default(),
+                    r.token_timestamps.clone(),
                 )
             })
             .collect();
@@ -1864,6 +1840,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn census_counts_end_before_start_as_violation() {
+        // Review round 1: bounds + start-monotonicity alone let a wall with
+        // end_ms < start_ms pass. The invariant counts it as a violation —
+        // only JSON corruption reaches this shape today, and the census
+        // counts every malformed shape, never skips.
+        let pool = transcripts_test_pool().await;
+        let walls = vec![wall("hello.", 5_500, 5_100)];
+        sqlx::query(
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, \
+             audio_end_time, duration, speaker_label, speaker_source, token_timestamps) \
+             VALUES ('a', 'meet-1', 'hello.', '2026-07-25T00:00:00Z', 5.0, 6.0, 1.0, 'Speaker 0', 'auto', ?)",
+        )
+        .bind(serde_json::to_string(&walls).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+        let (rows, walled, null_walls, violations) =
+            crate::database::repositories::speaker::wall_integrity_census(&pool, "meet-1")
+                .await
+                .unwrap();
+        assert_eq!((rows, walled, null_walls, violations), (1, 1, 0, 1));
+    }
+
+    #[tokio::test]
     async fn consolidation_untouched_rows_keep_their_walls() {
         let pool = transcripts_test_pool().await;
         let walls = vec![wall("alpha", 5_000, 5_500), wall("beta", 5_600, 6_000)];
@@ -2072,11 +2072,20 @@ mod tests {
         seed_row(&pool, "row-b", "meet-1", "second row text", 9.0, 13.0, None, None).await;
 
         let run_segs = || {
-            vec![
+            let mut segs = vec![
                 aligned("row-a", "hello world", 5000, 7000, "Speaker 0"),
                 aligned("row-a", "foo bar", 7000, 9000, "Speaker 1"),
                 aligned("row-b", "second row text", 9000, 13000, "Speaker 0"),
-            ]
+            ];
+            // One wall-bearing segment: the signature's token-wall element is
+            // exercised run-over-run, not just carried (task 2.3 names the
+            // wall multiset in the stability guarantee).
+            segs[2].token_walls = Some(vec![
+                wall("second", 9_100, 9_500),
+                wall("row", 9_600, 9_800),
+                wall("text", 9_900, 10_500),
+            ]);
+            segs
         };
         SpeakerRepository::persist_regenerated_rendering(&pool, "meet-1", run_segs(), false)
             .await
@@ -2092,7 +2101,7 @@ mod tests {
         assert!(written2 > 0, "second run must re-insert, never silently Ok(0)");
         let rows2 = read_rows(&pool, "meet-1").await;
         assert_eq!(rows2.len(), rows1.len(), "no absorbed-sweep shrink");
-        assert_eq!(signature(&rows2), sig1, "(text, span, badge) multiset identical");
+        assert_eq!(signature(&rows2), sig1, "(text, span, badge, token-wall) multiset identical");
 
         // Row ids are fresh per run: no run's output feeds any later run.
         let ids1: std::collections::HashSet<&str> = rows1.iter().map(|r| r.id.as_str()).collect();

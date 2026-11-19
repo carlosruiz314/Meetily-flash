@@ -60,13 +60,6 @@ INSERT writes the segment's wall list (the `TokenWord` JSON shape the
 source carries) into `token_timestamps`; token-less segments persist NULL
 and the legacy proportional fallback is byte-identical. Repair-spliced
 synth rows keep NULL (owned by the paused change). Manual rows survive
-untouched as today.
-
-**D2 — Persist: the existing column, the existing shape.** Regeneration's
-INSERT writes the segment's wall list (the `TokenWord` JSON shape the
-source carries) into `token_timestamps`; token-less segments persist NULL
-and the legacy proportional fallback is byte-identical. Repair-spliced
-synth rows keep NULL (owned by the paused change). Manual rows survive
 untouched as today. Writer inventory (explore pass 2026-11-19, corrected at
 apply): the render table's production writers are the transcription
 writer `insert_transcription_row` (Enhance/retranscribe; ALREADY
@@ -80,9 +73,20 @@ doctrine), and consolidation (concatenates verbatim).
 
 **D3 — Wall integrity as a pinned invariant.** Every walled row: each
 token wall within the row's own bounds, start times monotone
-non-decreasing, and the list's alphanumeric words equal the row text's
-alphanumeric words in order. The word-survival guarantee extends to
-walls (per-row form strengthened where the source is walled). For
+non-decreasing, no wall ending before it starts (added at review round 1
+— only JSON corruption reaches an inverted wall today, and the census
+counts malformed shapes, never skips), and the list's alphanumeric words
+equal the row text's alphanumeric words in order. The invariant lives in
+ONE shared predicate (`walls_match_row` in `audio::speaker::alignment`)
+used by both the census and the passthrough persist gate, so the check
+sites cannot drift. The empty-diarization passthrough has no validator
+gate in front of it, so it checks D3 directly at `clean_source_walls`
+(review round 1: a passthrough row persists its source walls only when
+the row's own text spells them — measured precedent: source chunk
+[1010.07,1032.31] carries a wall list its text doesn't spell, and
+`valid_token_words` acceptance alone would NOT suffice because backtrack
+skips leave extras in the raw list). The word-survival guarantee extends
+to walls (per-row form strengthened where the source is walled). For
 validator-accepted walls this invariant is a CONSTRUCTION POSTCONDITION,
 not a new stricter semantics: `valid_token_words` matches pieces to text
 words one-for-one (skipped pieces are extras the text does not spell),

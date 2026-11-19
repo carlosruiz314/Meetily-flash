@@ -50,13 +50,19 @@ never re-normalized, re-stamped, or re-derived; any wall-less member (or unparse
 wall JSON) fails the whole list closed to NULL (a merged row mixing walled and
 wall-less pieces cannot carry a wall-faithful list). Wall integrity SHALL hold for
 every persisted row carrying walls: each token wall sits within the row's own
-`audio_start_time`/`audio_end_time` bounds, and the start times are monotone
-non-decreasing in list order. The wall list SHALL be wall-faithful to the row's
-text: the alphanumeric words of the row's text equal the alphanumeric words of its
-persisted token list in order, compared AFTER the same detokenize reflow the
-render's own turn text underwent (the ear gate's token semantics — a reflow that
-joins two wall words into one text word, e.g. "don" + "'t" rendering as "don't",
-is wall-faithful, not a violation).
+`audio_start_time`/`audio_end_time` bounds, the start times are monotone
+non-decreasing in list order, and no wall ends before it starts. The wall list SHALL
+be wall-faithful to the row's text: the alphanumeric words of the row's text equal
+the alphanumeric words of its persisted token list in order, compared AFTER the same
+detokenize reflow the render's own turn text underwent (the ear gate's token
+semantics — a reflow that joins two wall words into one text word, e.g. "don" + "'t"
+rendering as "don't", is wall-faithful, not a violation). The integrity check SHALL
+be one shared predicate for every check site (the post-persist census and the
+persist gate), so the sites cannot drift. The no-diarization passthrough path has no
+validator gate in front of it, so it SHALL apply the integrity check directly: a
+passthrough row persists its source walls only when the row's own text spells them
+(and they satisfy bounds, monotonicity, and end >= start); otherwise it persists
+NULL.
 
 A rendering row whose `speaker_source = 'manual'` SHALL survive regeneration untouched
 (not deleted, not relabeled), preserving user corrections; aligned segments whose
@@ -171,9 +177,31 @@ rendering reflects a single consistent pass rather than an interleaving of two.
 - **WHEN** the Speakers pipeline persists any regeneration
 - **THEN** every persisted row with non-NULL `token_timestamps` satisfies: each token
   start/end within the row's own audio bounds, start times monotone non-decreasing,
-  and the list's alphanumeric words equal the row text's alphanumeric words in order
+  no wall ending before it starts, and the list's alphanumeric words equal the row
+  text's alphanumeric words in order
 - **AND** a row whose segment derived from token-less source words persists NULL and
   renders by the unchanged proportional fallback
+
+#### Scenario: Passthrough rows persist only walls their own text spells
+
+- **GIVEN** a run whose diarization output is empty (the passthrough path), where one
+  source row's wall list names words its text does not spell (a measured real-corpus
+  shape: source chunk [1010.07,1032.31] carries 68 wall pieces against 50 text words)
+  and another source row's walls match its text
+- **WHEN** alignment runs the passthrough and persists
+- **THEN** the mismatched row persists `token_timestamps = NULL` (fail closed, no
+  partial claim) while the matching row carries its walls verbatim (eot markers
+  dropped)
+
+#### Scenario: Fragment merge concatenates token walls verbatim
+
+- **GIVEN** two adjacent fragments under the same speaker label, each carrying its
+  own token walls
+- **WHEN** the engine-side fragment merge joins them into one segment
+- **THEN** the merged segment's wall list is the concatenation of the two lists in
+  fragment order, each wall preserved verbatim
+- **AND** a merge mixing a walled fragment with a wall-less fragment fails closed to
+  a wall-less (NULL) segment
 
 #### Scenario: Second consecutive run does not shrink or corrupt the rendering
 

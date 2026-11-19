@@ -1238,14 +1238,21 @@ pub async fn run_diarization_for_meeting(
     // persisted shape's wall state token-only — counts and violations,
     // never content.
     match crate::database::repositories::speaker::wall_integrity_census(pool, meeting_id).await {
-        Ok((rows_n, walled, null_walls, violations)) => log::info!(
-            "TOKENWALLS-CENSUS meeting={} rows={} walled={} null={} violations={}",
-            meeting_id,
-            rows_n,
-            walled,
-            null_walls,
-            violations
-        ),
+        Ok((rows_n, walled, null_walls, violations)) => {
+            let line = format!(
+                "TOKENWALLS-CENSUS meeting={} rows={} walled={} null={} violations={}",
+                meeting_id, rows_n, walled, null_walls, violations
+            );
+            // The census's whole job is mechanical detection — the live
+            // fragment-merge bug was caught by reading this line, so a
+            // violated census must not sit at info level next to healthy
+            // ones (review round 1).
+            if violations > 0 {
+                log::warn!("{line}");
+            } else {
+                log::info!("{line}");
+            }
+        }
         Err(e) => log::warn!("TOKENWALLS-CENSUS failed for {meeting_id}: {e}"),
     }
 
@@ -2237,7 +2244,6 @@ mod tests {
         }
     }
 
-    #[test]
     #[test]
     fn merge_same_label_fragments_concatenates_token_walls() {
         // render-token-walls: the fragment merge concatenates the merged

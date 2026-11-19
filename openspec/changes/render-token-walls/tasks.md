@@ -10,7 +10,7 @@
       merged row's text is unchanged.
 - [x] 1.3 RED: duplicate-cluster resolution keeps the survivor's walls
       with its text; absorbed members' walls vanish with their text.
-- [ ] COMMIT CHECKPOINT.
+- [x] COMMIT CHECKPOINT. [DONE 2026-11-19: 6e7d926c.]
 
 ## 2. Persist + invariants
 
@@ -38,7 +38,7 @@
       paused change owns that surface. [DONE 2026-11-19:
       synth_rows_carry_no_walls pins the splice's stream rows NULL;
       synth_rows_for_streams constructs None at birth.]
-- [ ] COMMIT CHECKPOINT.
+- [x] COMMIT CHECKPOINT. [DONE 2026-11-19: a76e47cd.]
 
 ## 3. Verification + handoff
 
@@ -79,5 +79,19 @@
       wall carrier named in the delta (with the reflow-comparator and
       census scenarios), design D2 writer inventory corrected, D4
       enumeration corrected; validator green.]
+- [x] 3.7 Code review to convergence (requesting-code-review +
+      receiving-code-review, the user's completion bar). [IN PROGRESS
+      2026-11-19: round 1 verdict "With fixes" — 1 Important (passthrough
+      path persisted unvalidated source walls, bypassing the validator
+      gate) + 7 Minor. All claims verified against the code; Important
+      fixed via the shared `walls_match_row` integrity predicate
+      (red-first: passthrough rejects mismatched/inverted/out-of-bounds
+      walls; census gains the end>=start clause the same way); duplicate
+      `#[test]` removed; stability signature covers the wall JSON;
+      census warn-level on violations>0; design D2 deduped, D3 amended;
+      delta spec amended (end>=start, passthrough-gate + fragment-merge
+      scenarios). Pushback: hoisting `concat_token_walls` deferred — two
+      sites, both test-pinned, repo rule is three repeats before
+      abstraction. Round 2 pending.]
 - [ ] 3.6 `/opsx:archive` on the user's go (commits and pushes only on
       the user's explicit word).

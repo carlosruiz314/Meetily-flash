@@ -1013,16 +1013,64 @@ fn owner_row_id(words: &[UnitWord], transcripts: &[TranscriptInput]) -> String {
         .unwrap_or_default()
 }
 
+/// The D3 wall-integrity invariant checked against a row's own text and
+/// span — the one definition every check site shares (review round 1:
+/// the census and the passthrough must not drift apart). Wall-faithful
+/// means: the list's alphanumeric words equal the row text's after the
+/// same detokenize reflow the turn text went through, every wall sits
+/// inside the row's bounds (±1 ms, the census's rounding tolerance),
+/// starts are monotone non-decreasing, and no wall ends before it starts.
+pub fn walls_match_row(
+    walls: &[TokenWord],
+    text: &str,
+    row_start_ms: f64,
+    row_end_ms: f64,
+) -> bool {
+    let norm = |s: &str| -> String { s.chars().filter(|c| c.is_alphanumeric()).collect() };
+    let reflow = |words: &[String]| -> Vec<String> {
+        crate::audio::speaker::turns::detokenize(&words.join(" "))
+            .split_whitespace()
+            .map(|w| norm(w))
+            .filter(|w| !w.is_empty())
+            .collect()
+    };
+    let text_words = reflow(&text.split_whitespace().map(str::to_string).collect::<Vec<_>>());
+    let wall_words = reflow(&walls.iter().map(|w| w.word.clone()).collect::<Vec<_>>());
+    if wall_words != text_words {
+        return false;
+    }
+    walls.iter().all(|w| {
+        (w.start_ms as f64) >= row_start_ms - 1.0
+            && (w.end_ms as f64) <= row_end_ms + 1.0
+            && w.end_ms >= w.start_ms
+    }) && walls.windows(2).all(|p| p[0].start_ms <= p[1].start_ms)
+}
+
 /// Source walls fit for persisting (render-token-walls 1.1): eot markers
 /// drop; an empty remainder is None — the source's own walls ride along
-/// verbatim, nothing re-derives or estimates.
-fn clean_source_walls(walls: Option<&[TokenWord]>) -> Option<Vec<TokenWord>> {
+/// verbatim, nothing re-derives or estimates. The passthrough path has no
+/// validator gate in front of it, so the D3 invariant is checked here
+/// directly (review round 1): a list the row's own text doesn't spell —
+/// or that violates bounds/monotonicity — stays NULL, fail closed.
+fn clean_source_walls(
+    walls: Option<&[TokenWord]>,
+    text: &str,
+    row_start_ms: i64,
+    row_end_ms: i64,
+) -> Option<Vec<TokenWord>> {
     let filtered: Vec<TokenWord> = walls?
         .iter()
         .filter(|w| !crate::audio::speaker::token_timestamps::is_eot_marker(w.word.trim()))
         .cloned()
         .collect();
-    (!filtered.is_empty()).then_some(filtered)
+    (!filtered.is_empty()
+        && walls_match_row(
+            &filtered,
+            text,
+            row_start_ms as f64,
+            row_end_ms as f64,
+        ))
+    .then_some(filtered)
 }
 
 fn join_words(words: &[UnitWord]) -> String {
@@ -1076,7 +1124,12 @@ pub fn align_transcripts_with_diarization(
                 synth_parent: None,
                 // The passthrough keeps the source's own walls (render-
                 // token-walls 1.1): eot markers drop, nothing re-derives.
-                token_walls: clean_source_walls(t.token_words.as_deref()),
+                token_walls: clean_source_walls(
+                    t.token_words.as_deref(),
+                    &t.text,
+                    t.audio_start_ms,
+                    t.audio_end_ms,
+                ),
             })
             .collect();
     }
@@ -2976,6 +3029,46 @@ Yeah, for Paulina, right?";
         let bare = transcript("bare", "Just words.", 10_000, 12_000);
         let out = align_transcripts_with_diarization(vec![bare], &[], &[], &[]);
         assert!(out[0].token_walls.is_none());
+    }
+
+    #[test]
+    fn empty_diarization_passthrough_rejects_integrity_violations() {
+        // The passthrough bypasses the validator gate the diarization path
+        // sits behind, so it checks the D3 invariant directly: walls the
+        // row's own text doesn't spell, out-of-bounds walls, and inverted
+        // walls stay NULL — fail closed, never a persisted partial claim.
+        // (Measured precedent: source chunk [1010.07,1032.31] carries a
+        // wall list its text doesn't spell.)
+        let mismatched = transcript_with_tokens(
+            "mm",
+            "Hello there.",
+            10_000,
+            12_000,
+            vec![token("Goodbye", 10_100, 10_500), token("world", 10_600, 11_000)],
+        );
+        let out = align_transcripts_with_diarization(vec![mismatched], &[], &[], &[]);
+        assert!(
+            out[0].token_walls.is_none(),
+            "walls the row's own text doesn't spell stay NULL"
+        );
+        let inverted = transcript_with_tokens(
+            "iv",
+            "Hello there.",
+            10_000,
+            12_000,
+            vec![token("Hello", 10_500, 10_100), token("there", 10_600, 11_000)],
+        );
+        let out = align_transcripts_with_diarization(vec![inverted], &[], &[], &[]);
+        assert!(out[0].token_walls.is_none(), "inverted walls stay NULL");
+        let outside = transcript_with_tokens(
+            "ob",
+            "Hello there.",
+            10_000,
+            12_000,
+            vec![token("Hello", 9_100, 9_500), token("there", 10_600, 11_000)],
+        );
+        let out = align_transcripts_with_diarization(vec![outside], &[], &[], &[]);
+        assert!(out[0].token_walls.is_none(), "out-of-bounds walls stay NULL");
     }
 
     #[test]
