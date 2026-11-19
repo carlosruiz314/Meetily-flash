@@ -1380,6 +1380,20 @@ pub fn merge_same_label_fragments(
                     last.text.push(' ');
                     last.text.push_str(&seg.text);
                 }
+                // Walls ride the merge (render-token-walls): the merged
+                // fragment's walls are both lists concatenated verbatim;
+                // any wall-less member fails the whole list to None — the
+                // same fail-closed rule as consolidation.
+                last.token_walls = match (last.token_walls.take(), seg.token_walls) {
+                    (Some(mut merged), extra) => match extra {
+                        Some(mut more) => {
+                            merged.append(&mut more);
+                            Some(merged)
+                        }
+                        None => None,
+                    },
+                    (None, _) => None,
+                };
                 continue;
             }
         }
@@ -2221,6 +2235,48 @@ mod tests {
             synth_parent: None,
             token_walls: None,
         }
+    }
+
+    #[test]
+    #[test]
+    fn merge_same_label_fragments_concatenates_token_walls() {
+        // render-token-walls: the fragment merge concatenates the merged
+        // fragments' wall lists verbatim; any wall-less member fails the
+        // whole list closed to None (a merged row mixing walled and
+        // wall-less pieces cannot carry a faithful list).
+        let tw = |word: &str, start_ms: i64, end_ms: i64| {
+            crate::audio::speaker::alignment::TokenWord {
+                word: word.to_string(),
+                start_ms,
+                end_ms,
+            }
+        };
+        let mut a = frag("r1", "Okay.", 1000, 1300, "Speaker 0");
+        a.token_walls = Some(vec![tw("Okay.", 1000, 1300)]);
+        let mut b = frag("r1", "so we start", 1350, 2000, "Speaker 0");
+        b.token_walls = Some(vec![
+            tw("so", 1350, 1500),
+            tw("we", 1500, 1700),
+            tw("start", 1700, 2000),
+        ]);
+        let merged = merge_same_label_fragments(vec![a, b]);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].text, "Okay. so we start");
+        let walls = merged[0].token_walls.as_ref().expect("merged walls concatenate");
+        assert_eq!(walls.len(), 4);
+        assert_eq!(walls[0].start_ms, 1000);
+        assert_eq!(walls[3].word, "start");
+        assert_eq!(walls[3].end_ms, 2000, "walls verbatim, never re-stamped");
+
+        let c = frag("r2", "alpha beta", 3000, 3600, "Speaker 1");
+        let mut d = frag("r2", "gamma", 3650, 3900, "Speaker 1");
+        d.token_walls = Some(vec![tw("gamma", 3650, 3900)]);
+        let merged2 = merge_same_label_fragments(vec![c, d]);
+        assert_eq!(merged2.len(), 1);
+        assert!(
+            merged2[0].token_walls.is_none(),
+            "mixed walled/wall-less merge fails closed to NULL"
+        );
     }
 
     #[test]
