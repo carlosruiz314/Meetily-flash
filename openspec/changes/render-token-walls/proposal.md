@@ -25,6 +25,20 @@ the token-walls change runs FIRST as the unblock path.
 - Split-faithfulness is pinned: word multiset AND wall integrity
   (each row's token walls sit inside the row's own walls, monotone
   non-decreasing) extend the existing word-survival guarantee.
+- Explore-pass scope finding (2026-11-19): exactly ONE production writer
+  changes wall behavior — `persist_regenerated_rendering` (the Speakers
+  regeneration). The transcription writer (`insert_transcription_row`,
+  Enhance/retranscribe rows) already persists source walls; manual rows
+  survive untouched; repair-spliced synth rows keep NULL (the paused
+  change's surface). No consumer pins the render column to NULL: the
+  ear-gate snapshot cross-checks `transcript_sources` (not the render),
+  `full_retranscribe_run` only backs the tables up, and the persistence
+  oracle uses a sandbox schema.
+- Explore-pass premise check (2026-11-19): both source chunks covering
+  the S16 region ([1032.31,1057.44], [1057.44,1083.46]) carry
+  validator-clean token walls (congruent with text, monotone, in-bounds)
+  — the rendered pieces would carry real walls, not proportional
+  estimates.
 - No new consumer ships in this change: the paused
   `talkover-word-order-repair` change resumes its §3 attested-route
   wiring on top (its straddle policy splits a token-walled straddling

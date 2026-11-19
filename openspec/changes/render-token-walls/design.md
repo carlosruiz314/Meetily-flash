@@ -62,22 +62,59 @@ and the legacy proportional fallback is byte-identical. Repair-spliced
 synth rows keep NULL (owned by the paused change). Manual rows survive
 untouched as today.
 
+**D2 — Persist: the existing column, the existing shape.** Regeneration's
+INSERT writes the segment's wall list (the `TokenWord` JSON shape the
+source carries) into `token_timestamps`; token-less segments persist NULL
+and the legacy proportional fallback is byte-identical. Repair-spliced
+synth rows keep NULL (owned by the paused change). Manual rows survive
+untouched as today. Writer inventory (explore pass, 2026-11-19): the
+render table has exactly two production persist paths —
+`insert_transcription_row` (Enhance/retranscribe; ALREADY wall-bearing
+from the source) and `persist_regenerated_rendering` (Speakers
+regeneration; the NULL-walled site this change modifies). The generation
+path is what erases walls today; no other site needs touching.
+
 **D3 — Wall integrity as a pinned invariant.** Every walled row: each
 token wall within the row's own bounds, start times monotone
 non-decreasing, and the list's alphanumeric words equal the row text's
 alphanumeric words in order. The word-survival guarantee extends to
-walls (per-row form strengthened where the source is walled).
+walls (per-row form strengthened where the source is walled). For
+validator-accepted walls this invariant is a CONSTRUCTION POSTCONDITION,
+not a new stricter semantics: `valid_token_words` matches pieces to text
+words one-for-one (skipped pieces are extras the text does not spell),
+so each formed segment's walls equal exactly its own text's words;
+fallback (proportional) rows carry no walls and persist NULL — nothing
+estimates walls into the render.
 
 **D4 — Run-over-run stability.** Same source + same diarization ⇒ the
-same (text, span, badge, token-wall) multiset — the replay/persistence-
-oracle harnesses gain the wall dimension (checked at apply: any harness
-pinning NULL today is updated with the same red-first discipline).
+same (text, span, badge, token-wall) multiset. Consumer enumeration
+(explore pass, 2026-11-19): NO harness pins the render column NULL —
+the ear-gate snapshot cross-checks `transcript_sources` (untouched),
+`full_retranscribe_run` backs both tables up without asserting wall
+state, and the persistence oracle uses a sandbox schema; the apply's
+stability task RE-VERIFIES this enumeration rather than assuming it.
 
 **D5 — Bright lines inherited.** Token walls are numbers keyed to words
 in the LOCAL DB only — nothing meeting-derived enters the repo; records
 stay token-only (counts, wall coordinates, sha256); no fixture reads in
 production; probes env-gated with loud evidence-home skips; `cargo test
 -j 2`; no concurrent cargo during live runs.
+
+**D6 — Handoff contract to the paused change (consumer sketch, no code
+here).** With walls persisted, `talkover-word-order-repair`'s attested
+route gains a wall-split straddle policy: a straddling render row splits
+at the token boundary nearest the attested wall (real words move with
+their real audio — the D7 absorb-whole trap dissolves for wall-bearing
+rows; no erase, no resurface). Sketch on the S16 geometry: the attested
+walls [1024.61,1057.30] split the mega-row [1042.40,1074.42] at a real
+token boundary east (occurrence #2's tokens stay in the untouched east
+piece) and the row [982.17,1024.75] at a real boundary west; the
+separator margins at that window shape are already measured good
+(0.578/0.217, occurrence #1 recovered — probe run 1). Two notes carry
+over: the pinned change's `render_sha256` content hash SHOULD cover the
+wall payload (walls are part of the render's identity; regeneration
+re-derives them), and its comparison invariant should reuse the
+validator's matching semantics (D3), not a stricter re-definition.
 
 ## Risks / Trade-offs
 

@@ -24,8 +24,11 @@
       (property test over generated fixtures + the reference-meeting
       shapes).
 - [ ] 2.3 RED: run-over-run stability — same source + same diarization
-      ⇒ same (text, span, badge, token-wall) multiset; update any
-      replay/persistence-oracle harness pinning NULL walls (red-first).
+      ⇒ same (text, span, badge, token-wall) multiset; re-verify the
+      explore enumeration (2026-11-19: no harness pins the render
+      column NULL — ear gate cross-checks `transcript_sources`,
+      `full_retranscribe_run` backs up only, persistence oracle is a
+      sandbox) still holds at apply time; record it.
 - [ ] 2.4 RED: repair-spliced synth rows persist NULL (unchanged) — the
       paused change owns that surface; the legacy phrase-loop path is
       byte-identical.
