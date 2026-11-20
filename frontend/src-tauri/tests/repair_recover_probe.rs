@@ -79,7 +79,7 @@ struct Shape {
     trigger: (f64, f64),
     pin_entry: Option<&'static str>,
 }
-const SHAPES: [Shape; 5] = [
+const SHAPES: [Shape; 6] = [
     Shape {
         name: "validated",
         window: (1024.61, 1057.30),
@@ -108,6 +108,20 @@ const SHAPES: [Shape; 5] = [
     Shape {
         name: "validated-recut",
         window: (1024.75, 1056.50),
+        trigger: (1056.90, 1057.30),
+        pin_entry: Some("S16_ads_overlap_1056"),
+    },
+    // Search candidate 2 (2026-11-20, unattended window search): the
+    // attested walls' west edge with the east edge at the first real
+    // token boundary PAST the broken second occurrence — the wall
+    // payload holds the second occurrence's tail as a degenerate
+    // zero-duration cluster at 1057.43–1057.438, and candidate 1's
+    // window [..,1057.30] split the mega-row before it. One extra real
+    // token (1057.59-1057.76) rides inside for decode context; the
+    // trigger stays contained.
+    Shape {
+        name: "attested-east",
+        window: (1024.61, 1057.76),
         trigger: (1056.90, 1057.30),
         pin_entry: Some("S16_ads_overlap_1056"),
     },
