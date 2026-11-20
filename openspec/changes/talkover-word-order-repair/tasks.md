@@ -197,7 +197,7 @@
 
 ## 4. Ear-gate auditability
 
-- [ ] 4.1 RED→GREEN (plain `cargo test`; reads the evidence-home fixture
+- [x] 4.1 RED→GREEN (plain `cargo test`; reads the evidence-home fixture
       via `evidence_fixture`, loud skip when absent; negative cases use
       invented walls and synthetic pins — no real pin content transcribed
       into test files): allowlist entry with no matching fixture pin fails
@@ -207,6 +207,20 @@
       the cross-check; overlapping-but-unequal walls and cross-meeting
       matches are unpinned; entries unique by (meeting, walls) — duplicates
       fail; `attested_date` parses YYYY-MM-DD or fails naming the entry.
+      [DONE 2026-11-20: tests/repair_attestation_gate.rs — the ledger lint
+      (exact-wall same-meeting pin match mirroring the runtime gate's
+      semantics; stale render_sha256/profile_fp fails naming the window;
+      duplicates by (meeting, walls) fail; strict YYYY-MM-DD lint naming
+      the entry; the promoted-span reverse rule over census-recorded
+      spans with the legacy path structurally absent from that list) +
+      the LIVE cross-check: reads the fixture via evidence_fixture (loud
+      skip) and the local scheduler-settings store (env MEETIFY_SCHEDULER_
+      STORE override, standard app-config default, fail-closed parse via
+      the production attested_repair_windows_from_value). The ledger is
+      empty on both sides today (the §5.3 round fills it) — the gate is
+      real the moment the first pin+entry land. The live promoted-span
+      scan rides §5.2 when the first promoted span exists; the lint is
+      pinned with synthetic spans now. 6/6 green.]
 
 ## 5. Verification + closure
 
