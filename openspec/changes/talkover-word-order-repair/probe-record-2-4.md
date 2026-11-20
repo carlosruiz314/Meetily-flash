@@ -244,3 +244,41 @@ walls [1024.61,1057.30] cover both REAL occurrences and have never been
 measured on the wall-bearing render (the 2026-11-18 erase verdict was on
 the wall-less render, where the wall-split straddle policy did not
 exist). The search opens there.
+
+## Addendum 3 — the window search measured (2026-11-20, three candidates)
+
+Correction to addendum 2's mapping: pin0 = the needle the or-needle token list ×1 (the audible "or" the user ruled real on 2026-11-16 —
+the old repair dropped it); pin1 = the question-needle token list ×2. The probe's joined
+scope is the ENTRY span over the SPLICED rows — a mixture east piece
+touching the window edge exactly is excluded (strict-overlap predicate),
+so all needle counts come from the STREAM rows alone.
+
+Candidates (all on the wall-bearing render, leg A = leg B everywhere,
+guards clean, no retry):
+- **c1 "validated" [1024.61,1057.30]** (the originally attested walls):
+  pin0 PASS — the "the or-needle" RENDERS (the 2026-11-16
+  complaint repaired); pin1 got=1 FAIL.
+- **c2 "attested-east" [1024.61,1057.76]** (east edge past the degenerate
+  cluster): identical streams, identical verdict — the extra east context
+  changed nothing.
+- **c3 "attested-west" [1024.61,1056.90]** (east edge before occurrence
+  #2): pin0 got=0 (the or-needle phrase needs the stream audio past 1056.90;
+  the east mixture piece is scope-excluded) and pin1 got=1; stream B's
+  decode also read "for" instead of "or" with the truncated context.
+
+**The measured blocker:** pin1's second "the question needle" run is buried under
+the overlapping speech at ~1054 (the user's first occurrence) — the
+separator+whisper never render it as a contiguous run in ANY candidate
+(stream token counts identical across all three windows). The user's
+ear-attested second occurrence (broken, with the sorry tail) decodes only
+as a clipped fragment that does not satisfy the needle. want=2 is
+measured UNATTAINABLE per-stream on today's separation+decode.
+
+**The decision this puts to the user (their word, per the pin doctrine):**
+(a) amend pin1 want 2→1 with the dated reasoning and ship c1's shape —
+recovers the "the or-needle" (a real Nov 16 complaint) and
+the third speaker's clean "the question needle", at the measured cost of the buried first
+occurrence staying swallowed (word loss of crosstalk-buried words); or
+(b) keep S16 mixture — the limitation stands documented. The runtime
+hash gate keeps every un-amended entry fail-closed meanwhile; trigger
+containment holds for c1/c2.

@@ -79,7 +79,7 @@ struct Shape {
     trigger: (f64, f64),
     pin_entry: Option<&'static str>,
 }
-const SHAPES: [Shape; 6] = [
+const SHAPES: [Shape; 7] = [
     Shape {
         name: "validated",
         window: (1024.61, 1057.30),
@@ -122,6 +122,23 @@ const SHAPES: [Shape; 6] = [
     Shape {
         name: "attested-east",
         window: (1024.61, 1057.76),
+        trigger: (1056.90, 1057.30),
+        pin_entry: Some("S16_ads_overlap_1056"),
+    },
+    // Search candidate 3 (2026-11-20): east edge at the REAL boundary
+    // 1056.90 — just before occurrence #2's "What" (1056.99). The west
+    // piece's streams recover occurrence #1 (candidates 1-2 proved they
+    // do); the east mixture piece KEEPS occurrence #2's text under its
+    // real walls — the broken second occurrence stays mixture (its
+    // degenerate zero-duration wall cluster mirrors the broken delivery
+    // the user heard; a per-stream decode already failed to carry it in
+    // candidates 1-2). Trigger-containment note: the census trigger
+    // [1056.90,1057.30] STRADDLES this window's east edge, so the
+    // runtime attested route (containment) would not seed it — a design
+    // question recorded for the user, never hand-waved.
+    Shape {
+        name: "attested-west",
+        window: (1024.61, 1056.90),
         trigger: (1056.90, 1057.30),
         pin_entry: Some("S16_ads_overlap_1056"),
     },
