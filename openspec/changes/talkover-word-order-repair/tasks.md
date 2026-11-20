@@ -256,15 +256,23 @@
       tokens, retry count, verdict date); one confirmation listen per span;
       dated verdicts become fixture pins (`repair_attestation` kind) +
       allowlist entries (user's word each time). Stands-down on verdict
-      keep mixture rows permanently. [STATE 2026-11-20: the S16 half is
-      MEASURED-BLOCKED — the re-cut probe (addendum, sha 4cdafb01…)
-      RECOVERED=NO at its own walls, STOP stands, no entry exists to
-      attest; the user re-plans before any S16 entry. The two decode-
-      tripped windows ([1421.21-1453.63], [2535.17-2559.11]) fired and
-      await the user's ear: their attestation round (clip cuts + listens)
-      runs on the user's word naming which windows they want heard — the
-      rebuild evidence must be re-derived per window (probe run) before
-      clips are cut. Awaiting the user.]
+      keep mixture rows permanently. [STATE 2026-11-20, updated: the S16
+      half's re-cut RECOVERED=NO verdict is EXPLAINED AND VOID as
+      geometry — the user's dated ear ruling (earcheck-3, count 2
+      CONFIRMED, second broken with a sorry tail) reconciled with the
+      real wall payload: occurrence #1 at 1053.62–1054.08, occurrence #2
+      at 1056.99–1057.43; the 2026-11-19 handoff's wall positions were
+      phantoms and the re-cut [1024.75,1056.50] ends before the real
+      occurrence #2 (probe record addendum 2). The needle pins stand
+      unchanged; the sorry tail is attested-not-pinned (rides
+      certification). The search opens at the originally attested walls
+      [1024.61,1057.30] on the wall-bearing render — unmeasured there.
+      The two decode-tripped windows ([1421.21-1453.63],
+      [2535.17-2559.11]) fired and await the user's ear: their
+      attestation round (clip cuts + listens) runs on the user's word
+      naming which windows they want heard — the rebuild evidence must
+      be re-derived per window (probe run) before clips are cut.
+      Awaiting the search results + the user's certification listens.]
 - [x] 5.4 Smoke-spec deliverable decision (AGENTS.md §3, made at proposal
       time): the promotion adds NO new frontend wiring — the visible
       outcome (rows replaced by finer distinct-speaker rows after a

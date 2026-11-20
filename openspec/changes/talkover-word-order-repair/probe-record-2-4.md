@@ -215,3 +215,32 @@ byte-identical degrade everywhere, the runtime gate fails closed. The
 two decode-tripped windows from the 2026-11-20 live run
 ([1421.21-1453.63], [2535.17-2559.11]) rebuilt cleanly and await the
 user's ear round (their attestation is the user's word, per-window).
+
+## Addendum 2 — the re-cut was aimed at phantom walls; the ruling finalizes the pin (2026-11-20)
+
+**User ruling (earcheck-3 listen, dated 2026-11-20):** occurrence count 2
+CONFIRMED — first "the question needle" at clip 0:12 (~1054.0), second at 14–15s
+(~1056.9–1057.3), the second broken in delivery with an audible "sorry?"
+tail. This upgrades the 2026-11-16 "probably yes" to a confirmed count;
+the needle pins (want=1, want=2) stand unchanged. The "sorry?" tail is
+attested but deliberately NOT a needle pin (broken delivery — whisper may
+transcribe it differently); it rides the final certification listen.
+Fixture note amended in the evidence home.
+
+**Wall reconciliation (the RECOVERED=NO root cause):** the real wall
+payload (mega-row, token-only positions) holds occurrence #1 at
+1053.62–1054.08 (its "What" token carries no wall) and occurrence #2 at
+1056.99–1057.29 plus degenerate zero-duration entries at 1057.43/1057.44
+— matching the user's ear exactly. The 2026-11-19 handoff's claimed
+positions ("occurrence #1 ends 1056.50; occurrence #2 spans
+[1058.41,1059.17]") are NOT in the wall payload and were wrong; the
+re-cut [1024.75,1056.50] was built on them and structurally ends BEFORE
+the real occurrence #2 — its RECOVERED=NO verdict is explained and void
+as a geometry verdict (the wiring verdicts stand: builder exact, guards
+clean, fail-closed live behavior).
+
+**Consequence — the first search candidate:** the originally attested
+walls [1024.61,1057.30] cover both REAL occurrences and have never been
+measured on the wall-bearing render (the 2026-11-18 erase verdict was on
+the wall-less render, where the wall-split straddle policy did not
+exist). The search opens there.
