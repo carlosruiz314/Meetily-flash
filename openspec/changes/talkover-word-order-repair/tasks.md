@@ -135,7 +135,7 @@
       (both routes seed; decode-tripped overlapping attested dedupes into
       it; manual-row-wins), exact-match gate quadruple + fractional-walls
       round-trip, apply ordering + class lockstep. Lib 813 green at -j 2.]
-- [ ] 3.3 RED→GREEN: the attestation gate — `attestedRepairWindows` in the
+- [x] 3.3 RED→GREEN: the attestation gate — `attestedRepairWindows` in the
       Tauri store (`settings.json` scheduler-settings mechanism): entries
       exactly `{meeting_id, start_s, end_s, attested_date, render_sha256,
       profile_fp}`; `deny_unknown_fields` (unknown field ⇒ treated as
@@ -145,7 +145,27 @@
       mixture render byte-identical + `awaiting-attestation`; production
       never reads the evidence fixture (structural test); phrase-loop
       windows splice WITHOUT an allowlist entry (RED test pins the
-      class-scoping).
+      class-scoping). [DONE 2026-11-20: `load_attested_windows` reads the
+      scheduler-settings store file under its own `attestedRepairWindows`
+      key (tauri_plugin_store, the D2 mechanism), parse fail-closed
+      (`attested_repair_windows_from_value`: missing/wrong-shape/unknown-
+      field/any-entry-bad ⇒ whole setting empty + loud warn — the whole
+      setting, not per-entry, pinned); the full verdict gate
+      `attestation_verdict` = exact walls + `repair_render_sha256`
+      (content hash over the spliced per-voice text, deterministic,
+      absent-stream marker) + `repair_profile_fp` (strict/no-retry +
+      rebuild widths + loaded model id via get_current_model) — Stale
+      surfaces both hashes/fps and never splices; `repairs_admissible_
+      for_splice` replaces the fold's walls-only filter (legacy class
+      splices with an EMPTY allowlist — the class-scoping pin);
+      awaiting-attestation logs loudly in the fold; signature threading:
+      run_diarization_for_meeting(+_auto) and run_speakers_reset_standalone
+      take the parsed entries (command callers read the store; UI-free
+      flows pass exactly what the store holds); structural bright-line
+      pin moved to tests/production_fixture_brightline.rs (it scans src/
+      for the fixture markers and must not self-detect inside src);
+      sha2 moved dev-deps → deps. Lib 817 green at -j 2, all targets
+      compile.]
 - [ ] 3.4 RED→GREEN: census outcomes per SEED (enumerated upstream of
       candidate filtering) — `fired+attested`, `awaiting-attestation`,
       `stale-attestation`, `stood-down:<guard>` (manual-row-wins mapped),

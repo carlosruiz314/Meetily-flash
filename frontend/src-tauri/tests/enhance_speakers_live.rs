@@ -218,6 +218,7 @@ async fn enhance_then_speakers_cde5c264_live() {
         MEETING_ID,
         threshold_fp,
         registry,
+        Vec::new(),
     )
     .await
     .expect("diarization");

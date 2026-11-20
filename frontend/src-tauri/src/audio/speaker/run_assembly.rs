@@ -2856,6 +2856,184 @@ pub fn attested_entry_for_span<'a>(
         .find(|e| e.meeting_id == meeting_id && entry_walls_ms(e) == span_ms)
 }
 
+/// The `attestedRepairWindows` setting parsed FAIL-CLOSED (design D2):
+/// a missing key, a wrong shape, or any entry failing deserialization
+/// (`deny_unknown_fields` refuses foreign fields) makes the whole setting
+/// empty for that run — a partial pin list never splices half-heard
+/// windows.
+pub fn attested_repair_windows_from_value(
+    value: Option<&serde_json::Value>,
+) -> Vec<AttestedWindowEntry> {
+    let Some(v) = value else {
+        return Vec::new();
+    };
+    match serde_json::from_value::<Vec<AttestedWindowEntry>>(v.clone()) {
+        Ok(entries) => entries,
+        Err(e) => {
+            log::warn!(
+                "attestedRepairWindows malformed ({e}) — treated as empty for this run"
+            );
+            Vec::new()
+        }
+    }
+}
+
+/// The pin's content hash (design D1: the pin binds CONTENT, not walls):
+/// deterministic over the per-voice text the splice would render — each
+/// stream's decode in stream order; a quarantined/absent stream
+/// contributes a distinct marker (its absence changes the render).
+/// Deterministic under the strict profile, so the same walls re-decode to
+/// the same hash — and ANY decode-affecting change moves it, which is the
+/// pin invalidating exactly as designed.
+pub fn repair_render_sha256(s: &SpanSynthesis) -> String {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    for st in &s.streams {
+        match &st.text {
+            Some(t) => {
+                h.update(b"text:");
+                h.update(t.as_bytes());
+            }
+            None => h.update(b"absent"),
+        }
+        h.update(b"\n");
+    }
+    format!("{:x}", h.finalize())
+}
+
+/// The decode-profile fingerprint (design D1): names everything that
+/// changes what a rebuild decodes to — the repair strict profile with no
+/// retry (the 2.4 ladder measured leg A sufficient everywhere; leg B never
+/// shipped), the rebuild-width constants, and the loaded whisper model id.
+/// A retry shipping, a width change, or a model swap invalidates pins
+/// mechanically.
+pub fn repair_profile_fp(model_id: &str) -> String {
+    format!(
+        "repair/strict/no-retry/width-{}-chain-{}/model-{model_id}",
+        OVERLAP_MAX_SPAN_SECS, REPAIR_CHAIN_CAP_SECS
+    )
+}
+
+/// The splice-side attestation verdict (talkover-word-order-repair 3.3,
+/// design D1/D2): exact wall equality + matching content hash + matching
+/// decode-profile fingerprint, within the same meeting.
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttestationVerdict<'a> {
+    /// Every pin dimension matches — the repair splices.
+    Attested(&'a AttestedWindowEntry),
+    /// Walls match an entry but the decode's content hash or profile
+    /// fingerprint differs — a stale pin never splices a never-heard
+    /// decode; both hashes surface for the loud log.
+    Stale {
+        entry_sha: String,
+        decode_sha: String,
+        entry_fp: String,
+        decode_fp: String,
+    },
+    /// No entry for these walls — the user has not attested this window.
+    Unpinned,
+}
+
+pub fn attestation_verdict<'a>(
+    span_ms: (i64, i64),
+    render_sha256: &str,
+    profile_fp: &str,
+    entries: &'a [AttestedWindowEntry],
+    meeting_id: &str,
+) -> AttestationVerdict<'a> {
+    let Some(e) = attested_entry_for_span(span_ms, entries, meeting_id) else {
+        return AttestationVerdict::Unpinned;
+    };
+    if e.render_sha256 == render_sha256 && e.profile_fp == profile_fp {
+        AttestationVerdict::Attested(e)
+    } else {
+        AttestationVerdict::Stale {
+            entry_sha: e.render_sha256.clone(),
+            decode_sha: render_sha256.to_string(),
+            entry_fp: e.profile_fp.clone(),
+            decode_fp: profile_fp.to_string(),
+        }
+    }
+}
+
+/// Why a talk-over repair may not splice (talkover-word-order-repair 3.3;
+/// the 3.4 census maps these 1:1: Unpinned → `awaiting-attestation`,
+/// Stale → `stale-attestation`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum AttestationRejection {
+    Unpinned,
+    Stale {
+        entry_sha: String,
+        decode_sha: String,
+        entry_fp: String,
+        decode_fp: String,
+    },
+}
+
+/// Which repairs may splice (talkover-word-order-repair 3.3): legacy
+/// windows keep their splice-without-entry status (the class-scoping pin —
+/// the phrase-loop path's own requirement governs them); a talk-over
+/// window splices only on a full attestation verdict. Returns the
+/// admissible subset in order, plus the rejected talk-over windows with
+/// their rejection evidence.
+pub fn repairs_admissible_for_splice(
+    repairs: &[SpanSynthesis],
+    classes: &[RepairSeedClass],
+    entries: &[AttestedWindowEntry],
+    meeting_id: &str,
+    model_id: &str,
+) -> (
+    Vec<SpanSynthesis>,
+    Vec<((f64, f64), AttestationRejection)>,
+) {
+    assert_eq!(
+        repairs.len(),
+        classes.len(),
+        "one class per repair — the fold builds them in parallel"
+    );
+    let fp = repair_profile_fp(model_id);
+    let mut admissible = Vec::new();
+    let mut rejected = Vec::new();
+    for (s, c) in repairs.iter().zip(classes) {
+        match c {
+            RepairSeedClass::Legacy => admissible.push(s.clone()),
+            RepairSeedClass::TalkoverAttested | RepairSeedClass::TalkoverDecodeTripped => {
+                let span_ms = ((s.span.0 * 1000.0) as i64, (s.span.1 * 1000.0) as i64);
+                match attestation_verdict(span_ms, &repair_render_sha256(s), &fp, entries, meeting_id)
+                {
+                    AttestationVerdict::Attested(_) => admissible.push(s.clone()),
+                    AttestationVerdict::Stale { entry_sha, decode_sha, entry_fp, decode_fp } => {
+                        log::warn!(
+                            "DIARIZATION: talk-over window [{:.2}-{:.2}] stale-attestation: \
+                             entry sha {} vs decode sha {}, entry fp {} vs decode fp {} — \
+                             mixture render kept",
+                            s.span.0,
+                            s.span.1,
+                            &entry_sha[..8.min(entry_sha.len())],
+                            &decode_sha[..8.min(decode_sha.len())],
+                            &entry_fp[..24.min(entry_fp.len())],
+                            &decode_fp[..24.min(decode_fp.len())]
+                        );
+                        rejected.push((
+                            s.span,
+                            AttestationRejection::Stale {
+                                entry_sha,
+                                decode_sha,
+                                entry_fp,
+                                decode_fp,
+                            },
+                        ));
+                    }
+                    AttestationVerdict::Unpinned => {
+                        rejected.push((s.span, AttestationRejection::Unpinned));
+                    }
+                }
+            }
+        }
+    }
+    (admissible, rejected)
+}
+
 /// Fold-level composition (talkover-word-order-repair 3.2): both seed
 /// routes feed the class-aware builder — decode-tripped seeds from the
 /// duration-passing synthesis evidence, attested seeds from the pre-floor
@@ -5087,7 +5265,153 @@ mod tests {
         );
     }
 
-    // ---- empty stream decode (talkover-word-order-repair 2.2) ----
+    // ---- attestation gate (talkover-word-order-repair 3.3) ----
+
+    #[test]
+    fn attested_windows_setting_parses_fail_closed() {
+        // D2: a missing key, a wrong shape, or ANY entry failing
+        // deserialization (deny_unknown_fields refuses foreign fields)
+        // makes the WHOLE setting empty for that run — a partial pin list
+        // never splices half-heard windows.
+        assert!(attested_repair_windows_from_value(None).is_empty());
+        let not_array = serde_json::json!({ "meeting_id": "m1" });
+        assert!(attested_repair_windows_from_value(Some(&not_array)).is_empty());
+        let unknown_field = serde_json::json!([
+            { "meeting_id": "m1", "start_s": 21.0, "end_s": 24.0,
+              "attested_date": "2026-11-20", "render_sha256": "a", "profile_fp": "p",
+              "note": "a foreign field" }
+        ]);
+        assert!(
+            attested_repair_windows_from_value(Some(&unknown_field)).is_empty(),
+            "an unknown field fails the whole setting, not just its entry"
+        );
+        let wrong_type = serde_json::json!([
+            { "meeting_id": "m1", "start_s": 21.0, "end_s": 24.0,
+              "attested_date": 20261120, "render_sha256": "a", "profile_fp": "p" }
+        ]);
+        assert!(attested_repair_windows_from_value(Some(&wrong_type)).is_empty());
+        let valid = serde_json::json!([
+            { "meeting_id": "m1", "start_s": 21.0, "end_s": 24.0,
+              "attested_date": "2026-11-20", "render_sha256": "a", "profile_fp": "p" }
+        ]);
+        let entries = attested_repair_windows_from_value(Some(&valid));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].meeting_id, "m1");
+    }
+
+    #[test]
+    fn gate_stale_on_hash_or_fingerprint_mismatch() {
+        // D1: the pin binds CONTENT. Exact walls with a different content
+        // hash or decode-profile fingerprint is a STALE pin — both hashes
+        // surface and the window never splices a never-heard decode.
+        let entries = vec![attested_entry("meet-1", 21.0, 24.0)];
+        let ok = attestation_verdict(
+            (21_000, 24_000),
+            &"a".repeat(64),
+            "fp",
+            &entries,
+            "meet-1",
+        );
+        assert!(matches!(ok, AttestationVerdict::Attested(_)), "{ok:?}");
+        let wrong_sha =
+            attestation_verdict((21_000, 24_000), &"b".repeat(64), "fp", &entries, "meet-1");
+        match wrong_sha {
+            AttestationVerdict::Stale { entry_sha, decode_sha, .. } => {
+                assert_eq!(entry_sha, "a".repeat(64));
+                assert_eq!(decode_sha, "b".repeat(64));
+            }
+            other => panic!("wrong hash must be Stale: {other:?}"),
+        }
+        let wrong_fp =
+            attestation_verdict((21_000, 24_000), &"a".repeat(64), "other-fp", &entries, "meet-1");
+        assert!(matches!(wrong_fp, AttestationVerdict::Stale { .. }), "{wrong_fp:?}");
+        let unpinned =
+            attestation_verdict((25_000, 26_000), &"a".repeat(64), "fp", &entries, "meet-1");
+        assert!(matches!(unpinned, AttestationVerdict::Unpinned), "{unpinned:?}");
+    }
+
+    #[test]
+    fn repair_render_sha256_deterministic_and_content_bound() {
+        // The pin's hash: deterministic over the spliced per-voice text —
+        // same synthesis, same hash; any decode difference, different hash.
+        let s = synth_cov(
+            (2.0, 4.0),
+            ev(1, 0.3, Some("the question needle")),
+            ev(3, 0.2, Some("the tail phrase")),
+            &[(2_000, 4_000)],
+        );
+        let again = s.clone();
+        assert_eq!(repair_render_sha256(&s), repair_render_sha256(&again));
+        let different = synth_cov(
+            (2.0, 4.0),
+            ev(1, 0.3, Some("the question needle")),
+            ev(3, 0.2, Some("the or-needle")),
+            &[(2_000, 4_000)],
+        );
+        assert_ne!(repair_render_sha256(&s), repair_render_sha256(&different));
+        // A quarantined/absent stream contributes a distinct marker — its
+        // absence changes the render, so it must change the pin.
+        let absent = synth_cov(
+            (2.0, 4.0),
+            ev(1, 0.3, Some("the question needle")),
+            ev(3, 0.2, None),
+            &[(2_000, 4_000)],
+        );
+        assert_ne!(repair_render_sha256(&s), repair_render_sha256(&absent));
+    }
+
+    #[test]
+    fn legacy_repairs_splice_without_entry_talkover_need_full_match() {
+        // The class-scoping pin (delta: "Phrase-loop repairs are unaffected
+        // by the gate"): a legacy window splices with an EMPTY allowlist; a
+        // talk-over window needs walls + hash + fingerprint all matching.
+        let legacy_synth = synth_cov(
+            (0.0, 5.0),
+            ev(1, 0.3, Some("alpha")),
+            ev(3, 0.2, Some("beta")),
+            &[],
+        );
+        let talkover_synth = synth_cov(
+            (21.0, 24.0),
+            ev(1, 0.3, Some("the question needle")),
+            ev(3, 0.2, Some("the tail phrase")),
+            &[],
+        );
+        let repairs = vec![legacy_synth.clone(), talkover_synth.clone()];
+        let classes = [RepairSeedClass::Legacy, RepairSeedClass::TalkoverDecodeTripped];
+
+        let (admissible, rejected) =
+            repairs_admissible_for_splice(&repairs, &classes, &[], "meet-1", "model-x");
+        assert_eq!(admissible.len(), 1, "legacy splices with no entries");
+        assert_eq!(admissible[0].span, (0.0, 5.0));
+        assert_eq!(rejected.len(), 1, "the talkover window is unpinned: {rejected:?}");
+        assert!(matches!(rejected[0].1, AttestationRejection::Unpinned));
+
+        // A matching entry (walls + hash + fp) admits the talkover window.
+        let mut entry = attested_entry("meet-1", 21.0, 24.0);
+        entry.render_sha256 = repair_render_sha256(&talkover_synth);
+        entry.profile_fp = repair_profile_fp("model-x");
+        let entries = vec![entry];
+        let (admissible, rejected) =
+            repairs_admissible_for_splice(&repairs, &classes, &entries, "meet-1", "model-x");
+        assert_eq!(admissible.len(), 2, "fully attested talkover splices");
+        assert!(rejected.is_empty(), "{rejected:?}");
+
+        // A different loaded model ⇒ fingerprint mismatch ⇒ stale, with
+        // both fingerprints surfaced for the loud log.
+        let (admissible, rejected) =
+            repairs_admissible_for_splice(&repairs, &classes, &entries, "meet-1", "model-y");
+        assert_eq!(admissible.len(), 1);
+        match &rejected[0].1 {
+            AttestationRejection::Stale { decode_fp, entry_fp, .. } => {
+                assert!(decode_fp.contains("model-y"));
+                assert!(entry_fp.contains("model-x"));
+            }
+            other => panic!("model mismatch is Stale: {other:?}"),
+        }
+    }
+
+// ---- empty stream decode (talkover-word-order-repair 2.2) ----
 
     #[test]
     fn empty_stream_decode_never_replaces_mixture_rows() {

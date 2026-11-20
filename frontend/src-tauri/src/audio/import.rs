@@ -720,6 +720,7 @@ async fn run_import<R: Runtime>(
             threshold_fp,
             app_state.speaker_registry.clone(),
             crate::audio::speaker::commands::ManualNamesPolicy::None,
+            crate::audio::speaker::commands::load_attested_windows(&app),
         ).await;
         match &diarize_result {
             Ok(r) => {

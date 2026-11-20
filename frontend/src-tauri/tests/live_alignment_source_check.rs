@@ -238,6 +238,7 @@ async fn live_double_run_source_byte_stability() {
             MEETING_ID,
             threshold_fp,
             registry,
+            Vec::new(),
         )
         .await
         .unwrap_or_else(|e| panic!("{label} failed: {e}"));

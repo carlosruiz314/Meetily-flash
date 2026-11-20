@@ -104,6 +104,7 @@ async fn speakers_rederive_check() {
             &meeting_id,
             threshold_fp,
             registry,
+            Vec::new(),
         )
         .await
         .expect("Speakers run failed");

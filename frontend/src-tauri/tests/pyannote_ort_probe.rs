@@ -1724,6 +1724,7 @@ async fn pyannote_cde5c264_real_persist() {
     eprintln!("PERSIST: running run_diarization_for_meeting...");
     let result = app_lib::audio::speaker::commands::run_diarization_for_meeting_auto(
         &pool, meeting_id, threshold_fp, registry,
+        Vec::new(),
     ).await.expect("run_diarization_for_meeting");
     eprintln!("PERSIST: {} speakers, {} segments labeled",
         result.speaker_count, result.segments_labeled);

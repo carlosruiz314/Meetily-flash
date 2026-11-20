@@ -272,13 +272,14 @@ pub async fn rediarize_meeting<R: tauri::Runtime>(
 
     let app_clone = app.clone();
     let mid = meeting_id.clone();
+    let attested_windows = load_attested_windows(&app);
     // Surface diarization failure to the frontend: the task returns its result
     // so the command can return Err on failure. Without this a failure logs
     // silently and returns Ok(0), the diarization-complete event the frontend
     // awaits to clear its isRediarizing spinner never fires, and the spinner
     // hangs indefinitely.
     let join_result = tokio::spawn(async move {
-        let result = run_diarization_for_meeting(&pool, &mid, threshold_fp, registry, ManualNamesPolicy::Enumerate).await;
+        let result = run_diarization_for_meeting(&pool, &mid, threshold_fp, registry, ManualNamesPolicy::Enumerate, attested_windows).await;
         match &result {
             Ok(r) => {
                 let _ = app_clone.emit("diarization-complete", serde_json::json!({
@@ -314,6 +315,7 @@ pub async fn run_speakers_reset_standalone(
     meeting_id: &str,
     threshold_fp: u32,
     registry: Arc<Mutex<Option<CosineRegistryAdapter>>>,
+    attested_windows: Vec<crate::audio::speaker::run_assembly::AttestedWindowEntry>,
 ) -> Result<DiarizationResult, String> {
     let pre_run_manual_labels = SpeakerRepository::list_manual_speaker_labels(pool, meeting_id)
         .await
@@ -327,6 +329,7 @@ pub async fn run_speakers_reset_standalone(
         threshold_fp,
         registry,
         ManualNamesPolicy::PreCleared(pre_run_manual_labels),
+        attested_windows,
     )
     .await
 }
@@ -354,10 +357,11 @@ pub async fn reset_speaker_labels<R: tauri::Runtime>(
 
     let app_clone = app.clone();
     let mid = meeting_id.clone();
+    let attested_windows = load_attested_windows(&app);
     // Return Err on diarization failure so the frontend's isRediarizing spinner
     // clears (its catch block runs) instead of hanging on a silent Ok(0).
     let join_result = tokio::spawn(async move {
-        let result = run_diarization_for_meeting(&pool, &mid, threshold_fp, registry, ManualNamesPolicy::PreCleared(pre_run_manual_labels)).await;
+        let result = run_diarization_for_meeting(&pool, &mid, threshold_fp, registry, ManualNamesPolicy::PreCleared(pre_run_manual_labels), attested_windows).await;
         match &result {
             Ok(r) => {
                 let _ = app_clone.emit("diarization-complete", serde_json::json!({
@@ -464,6 +468,28 @@ pub(crate) enum ManualNamesPolicy {
     PreCleared(Vec<String>),
 }
 
+/// The `attestedRepairWindows` allowlist read from the app's local store
+/// (talkover-word-order-repair 3.3, design D2): the settings.json
+/// scheduler-settings store mechanism, its own key — local-only, never
+/// synced or committed. Parse is fail-closed: any malformation empties the
+/// setting for that run (see `attested_repair_windows_from_value`).
+pub fn load_attested_windows<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Vec<crate::audio::speaker::run_assembly::AttestedWindowEntry> {
+    use tauri_plugin_store::StoreExt;
+    const STORE_FILE: &str = "scheduler_settings.json";
+    const STORE_KEY: &str = "attestedRepairWindows";
+    match app.store(STORE_FILE) {
+        Ok(store) => crate::audio::speaker::run_assembly::attested_repair_windows_from_value(
+            store.get(STORE_KEY).as_ref(),
+        ),
+        Err(e) => {
+            log::warn!("attestedRepairWindows store unavailable ({e}) — no pinned windows this run");
+            Vec::new()
+        }
+    }
+}
+
 /// Public pass-through for external test harnesses (ignored live tests):
 /// `ManualNamesPolicy` is `pub(crate)`, so out-of-crate callers use this
 /// automatic write-path wrapper.
@@ -472,6 +498,7 @@ pub async fn run_diarization_for_meeting_auto(
     meeting_id: &str,
     threshold_fp: u32,
     registry: Arc<Mutex<Option<CosineRegistryAdapter>>>,
+    attested_windows: Vec<crate::audio::speaker::run_assembly::AttestedWindowEntry>,
 ) -> Result<DiarizationResult, String> {
     run_diarization_for_meeting(
         pool,
@@ -479,6 +506,7 @@ pub async fn run_diarization_for_meeting_auto(
         threshold_fp,
         registry,
         ManualNamesPolicy::None,
+        attested_windows,
     )
     .await
 }
@@ -489,6 +517,7 @@ pub async fn run_diarization_for_meeting(
     threshold_fp: u32,
     registry: Arc<Mutex<Option<CosineRegistryAdapter>>>,
     manual_policy: ManualNamesPolicy,
+    attested_windows: Vec<crate::audio::speaker::run_assembly::AttestedWindowEntry>,
 ) -> Result<DiarizationResult, String> {
     let meeting_lock = diarization_lock_for(meeting_id).await;
     let _diarization_guard = meeting_lock.lock().await;
@@ -1065,22 +1094,21 @@ pub async fn run_diarization_for_meeting(
         &manual_spans,
         crate::audio::speaker::run_assembly::OVERLAP_MAX_SPAN_SECS,
     );
-    // Talk-over promotion (talkover-word-order-repair 3.2, design D4):
+    // Talk-over promotion (talkover-word-order-repair 3.2/3.3, design D4):
     // both seed routes feed the class-aware builder — decode-tripped
     // (duration-passing decodes tripping rate-fiction or stutter) and
     // attested-window (trigger-fired spans inside allowlist entries; the
     // census proved the attested moments stand down at the duration
-    // floor, so only this route sees them). The allowlist is read from
-    // the local store in 3.3 — until that lands this runs fail-closed
-    // with no entries: windows build and their decode evidence collects,
-    // nothing splices.
-    let attested_entries: Vec<crate::audio::speaker::run_assembly::AttestedWindowEntry> =
-        Vec::new();
+    // floor, so only this route sees them). The allowlist is the caller's
+    // parsed `attestedRepairWindows` (the Tauri-command callers read the
+    // store via load_attested_windows; the UI-free standalone flows pass
+    // exactly what the store holds).
+    let attested_entries = &attested_windows;
     let talkover_candidates = crate::audio::speaker::run_assembly::talkover_repair_candidates(
         &aligned,
         &span_synthesis,
         &overlap_spans,
-        &attested_entries,
+        attested_entries,
         meeting_id,
         &manual_spans,
         crate::audio::speaker::run_assembly::OVERLAP_MAX_SPAN_SECS,
@@ -1154,27 +1182,43 @@ pub async fn run_diarization_for_meeting(
         // region-already-per-voice check, never the reverse.
         let (ordered_repairs, ordered_classes) =
             crate::audio::speaker::run_assembly::order_repairs_for_apply(repairs, &repair_classes);
-        // The splice-side gate: talk-over windows apply ONLY on an exact
-        // entry match (same meeting, exact walls). Unattested windows drop
-        // here — the render keeps the mixture rows byte-identically; their
-        // decode evidence feeds the census (3.4).
-        let applicable: Vec<crate::audio::speaker::run_assembly::SpanSynthesis> =
-            ordered_repairs
-                .into_iter()
-                .zip(&ordered_classes)
-                .filter(|(s, c)| match c {
-                    crate::audio::speaker::run_assembly::RepairSeedClass::Legacy => true,
-                    _ => {
-                        crate::audio::speaker::run_assembly::attested_entry_for_span(
-                            ((s.span.0 * 1000.0) as i64, (s.span.1 * 1000.0) as i64),
-                            &attested_entries,
-                            meeting_id,
-                        )
-                        .is_some()
-                    }
-                })
-                .map(|(s, _)| s)
-                .collect();
+        // The splice-side gate (talkover-word-order-repair 3.3): legacy
+        // windows keep their splice-without-entry status (the class-
+        // scoping pin); talk-over windows need walls + content hash +
+        // decode-profile fingerprint all matching an entry. Failures keep
+        // the mixture rows byte-identically — stale-attestation logs both
+        // hashes inside the gate, awaiting-attestation logs here.
+        let repair_model_id = match crate::whisper_engine::commands::WHISPER_ENGINE
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+        {
+            Some(engine) => engine
+                .get_current_model()
+                .await
+                .unwrap_or_else(|| "unloaded".to_string()),
+            None => "unloaded".to_string(),
+        };
+        let (applicable, gate_rejected) =
+            crate::audio::speaker::run_assembly::repairs_admissible_for_splice(
+                &ordered_repairs,
+                &ordered_classes,
+                attested_entries,
+                meeting_id,
+                &repair_model_id,
+            );
+        for (span, rejection) in &gate_rejected {
+            if matches!(
+                rejection,
+                crate::audio::speaker::run_assembly::AttestationRejection::Unpinned
+            ) {
+                log::warn!(
+                    "DIARIZATION: talk-over window [{:.2}-{:.2}] awaiting-attestation — mixture render kept",
+                    span.0,
+                    span.1
+                );
+            }
+        }
         let (next, applied, rejected) =
             crate::audio::speaker::run_assembly::apply_loop_repairs(aligned, &applicable, &cluster_speaker);
         for (span, reason) in &rejected {
@@ -2671,7 +2715,7 @@ mod tests {
         let threshold_fp = (0.40f32 * 65536.0) as u32;
         let meeting_id = "meeting-00000000-0000-4000-8000-000000000003";
 
-        let result = run_diarization_for_meeting(&pool, meeting_id, threshold_fp, registry, ManualNamesPolicy::None).await;
+        let result = run_diarization_for_meeting(&pool, meeting_id, threshold_fp, registry, ManualNamesPolicy::None, Vec::new()).await;
 
         match &result {
             Ok(r) => eprintln!(
@@ -2719,7 +2763,7 @@ mod tests {
 
         let threshold_fp = (0.65f32 * 65536.0) as u32;
         let registry = Arc::new(Mutex::new(None));
-        let result = run_diarization_for_meeting(&pool, meeting_id, threshold_fp, registry, ManualNamesPolicy::None)
+        let result = run_diarization_for_meeting(&pool, meeting_id, threshold_fp, registry, ManualNamesPolicy::None, Vec::new())
             .await
             .expect("diarization");
 
@@ -2915,7 +2959,7 @@ mod tests {
 
         let threshold_fp = (0.65f32 * 65536.0) as u32;
         let registry = Arc::new(Mutex::new(None));
-        let result = run_diarization_for_meeting(&pool, meeting_id, threshold_fp, registry, ManualNamesPolicy::None)
+        let result = run_diarization_for_meeting(&pool, meeting_id, threshold_fp, registry, ManualNamesPolicy::None, Vec::new())
             .await
             .expect("diarization");
 
@@ -2992,7 +3036,7 @@ mod tests {
 
         let threshold_fp = (0.40f32 * 65536.0) as u32;
         let registry = Arc::new(Mutex::new(None));
-        let result = run_diarization_for_meeting(&pool, meeting_id, threshold_fp, registry, ManualNamesPolicy::None)
+        let result = run_diarization_for_meeting(&pool, meeting_id, threshold_fp, registry, ManualNamesPolicy::None, Vec::new())
             .await
             .expect("diarization");
         eprintln!(

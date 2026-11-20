@@ -68,6 +68,7 @@ xz2 = "0.1"           # XZ decompression (Linux)
 
 
 [dependencies]
+sha2 = "0.10"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 anyhow = "1.0"
@@ -223,7 +224,6 @@ futures-channel = "0.3.31"
 
 [dev-dependencies]
 tempfile = "3.3.0"
-sha2 = "0.10"
 infer = "0.15"
 criterion = { version = "0.5.1", features = ["async_tokio"] }
 memory-stats = "1.0"

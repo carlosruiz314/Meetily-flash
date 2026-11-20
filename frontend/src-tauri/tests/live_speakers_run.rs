@@ -93,6 +93,7 @@ async fn live_speakers_run_cde5c264() {
         MEETING_ID,
         threshold_fp,
         registry,
+        Vec::new(),
     )
     .await
     .expect("diarization run failed");
