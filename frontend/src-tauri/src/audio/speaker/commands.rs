@@ -1104,15 +1104,16 @@ pub async fn run_diarization_for_meeting(
     // store via load_attested_windows; the UI-free standalone flows pass
     // exactly what the store holds).
     let attested_entries = &attested_windows;
-    let talkover_candidates = crate::audio::speaker::run_assembly::talkover_repair_candidates(
-        &aligned,
-        &span_synthesis,
-        &overlap_spans,
-        attested_entries,
-        meeting_id,
-        &manual_spans,
-        crate::audio::speaker::run_assembly::OVERLAP_MAX_SPAN_SECS,
-    );
+    let (talkover_candidates, talkover_seeds) =
+        crate::audio::speaker::run_assembly::talkover_repair_candidates(
+            &aligned,
+            &span_synthesis,
+            &overlap_spans,
+            attested_entries,
+            meeting_id,
+            &manual_spans,
+            crate::audio::speaker::run_assembly::OVERLAP_MAX_SPAN_SECS,
+        );
     if !talkover_candidates.is_empty() {
         log::warn!(
             "DIARIZATION: {} talk-over repair window(s) promoted (decode-tripped/attested)",
@@ -1129,8 +1130,11 @@ pub async fn run_diarization_for_meeting(
             .chain(talkover_candidates.iter().map(|c| c.seed_class))
             .collect();
     let mut all_candidates = repair_candidates;
-    all_candidates.extend(talkover_candidates);
-    if !all_candidates.is_empty() {
+    all_candidates.extend(talkover_candidates.clone());
+    // The census records seeds even when nothing survived candidate
+    // building (window-not-built is a real outcome) — so the batch block
+    // also runs when talk-over seeds exist without any candidate.
+    if !all_candidates.is_empty() || !talkover_seeds.is_empty() {
         let repair_spans: Vec<(f64, f64)> = all_candidates
             .iter()
             .map(|c| (c.span.0 as f64 / 1000.0, c.span.1 as f64 / 1000.0))
@@ -1140,16 +1144,25 @@ pub async fn run_diarization_for_meeting(
             all_candidates.len()
         );
         let centroids_for_repair = centroids.clone();
-        let repairs = tokio::task::spawn_blocking(
-            move || -> Vec<super::run_assembly::SpanSynthesis> {
+        let rebuild_batch = if all_candidates.is_empty() {
+            // Nothing to rebuild — no separation runs; the census below
+            // still records every seed's outcome (window-not-built /
+            // manual stood-down).
+            Ok((Vec::new(), true))
+        } else {
+            tokio::task::spawn_blocking(
+            move || -> (Vec<super::run_assembly::SpanSynthesis>, bool) {
+                // The bool is `separation_ok`: the machinery itself was
+                // available (a model-less environment reports
+                // separation-unavailable instead of an empty success).
                 let Some(separator) = super::separation::ConvTasNetSeparator::from_models_dir()
                 else {
-                    return Vec::new();
+                    return (Vec::new(), false);
                 };
                 let Ok(extractor) = super::nemo_extractor::NemoEmbeddingExtractor::new(
                     embedding_path_for_repair.to_str().unwrap_or(""),
                 ) else {
-                    return Vec::new();
+                    return (Vec::new(), false);
                 };
                 let cent_pairs: Vec<(u32, Vec<f32>)> = centroids_for_repair
                     .iter()
@@ -1168,11 +1181,26 @@ pub async fn run_diarization_for_meeting(
                     &repair_spans,
                 );
                 let decoder = StreamDecoder::from_static();
-                decode_span_synthesis(inputs, &|s: &[f32]| decoder.decode_utterances(s))
+                (
+                    decode_span_synthesis(inputs, &|s: &[f32]| decoder.decode_utterances(s)),
+                    true,
+                )
             },
         )
         .await
-        .unwrap_or_default();
+        };
+        // The recorded-abort path (talkover-word-order-repair 3.4): a
+        // panicked or failed rebuild is a census outcome for every seed,
+        // never an empty continuation (the old unwrap_or_default swallow).
+        let (repairs, separation_ok, rebuild_aborted) = match rebuild_batch {
+            Ok((repairs, separation_ok)) => (repairs, separation_ok, false),
+            Err(join_err) => {
+                log::warn!(
+                    "DIARIZATION: repair rebuild join failed ({join_err}) — every seed records rebuild-aborted"
+                );
+                (Vec::new(), true, true)
+            }
+        };
         let cluster_speaker = |c: u32| -> Option<String> {
             Some(resolve_label(&format!("Speaker {c}"), &label_map))
         };
@@ -1233,6 +1261,70 @@ pub async fn run_diarization_for_meeting(
             log::warn!(
                 "DIARIZATION: repaired {applied}/{} repair window(s) per-voice",
                 applicable.len()
+            );
+        }
+        // Per-seed census (talkover-word-order-repair 3.4): every seed's
+        // outcome token, enumerated upstream of candidate filtering. The
+        // applied set is the admissible batch minus the apply-rejected
+        // spans (apply_loop_repairs either applies or rejects each one).
+        let applicable_spans: Vec<(f64, f64)> =
+            applicable.iter().map(|s| s.span).collect();
+        let rejected_spans: Vec<(f64, f64)> = rejected.iter().map(|(s, _)| *s).collect();
+        let applied_spans: Vec<(f64, f64)> = applicable_spans
+            .iter()
+            .filter(|s| !rejected_spans.contains(s))
+            .copied()
+            .collect();
+        let rebuilt_spans: Vec<(f64, f64)> = ordered_repairs.iter().map(|s| s.span).collect();
+        let apply_rejections: Vec<((f64, f64), String)> = rejected
+            .iter()
+            .map(|(s, r)| (*s, (*r).to_string()))
+            .collect();
+        let census_rows = crate::audio::speaker::run_assembly::talkover_seed_census(
+            crate::audio::speaker::run_assembly::TalkoverCensusInputs {
+                seeds: &talkover_seeds,
+                candidates: &talkover_candidates,
+                manual_spans: &manual_spans,
+                repairs_present: true,
+                separation_ok,
+                rebuilt_spans: &rebuilt_spans,
+                gate_rejections: &gate_rejected,
+                apply_rejections: &apply_rejections,
+                applied_spans: &applied_spans,
+                rebuild_aborted,
+            },
+        );
+        let census_line =
+            crate::audio::speaker::run_assembly::format_talkover_seed_census(&census_rows);
+        let outcome_census = census_rows.iter().filter(|r| {
+            matches!(
+                r.outcome,
+                crate::audio::speaker::run_assembly::TalkoverSeedOutcome::StaleAttestation { .. }
+                    | crate::audio::speaker::run_assembly::TalkoverSeedOutcome::SeparationUnavailable
+                    | crate::audio::speaker::run_assembly::TalkoverSeedOutcome::RebuildAborted
+            )
+        });
+        if outcome_census.count() > 0 {
+            log::warn!("DIARIZATION: {census_line}");
+        } else {
+            log::info!("DIARIZATION: {census_line}");
+        }
+        // Surfacing duty (design D2): a pinned window whose walls matched
+        // no live window this run must not go silent (wall drift or a
+        // stale render — the user re-attests with one listen).
+        let live_windows: Vec<(i64, i64)> = talkover_candidates
+            .iter()
+            .filter(|c| c.seed_class == crate::audio::speaker::run_assembly::RepairSeedClass::TalkoverAttested)
+            .map(|c| c.span)
+            .collect();
+        for entry in crate::audio::speaker::run_assembly::allowlist_entries_matching_no_window(
+            attested_entries,
+            &live_windows,
+        ) {
+            log::warn!(
+                "DIARIZATION: attestedRepairWindows entry [{:.2}-{:.2}] matched no live window this run — awaiting geometry",
+                entry.start_s,
+                entry.end_s
             );
         }
         aligned = next;

@@ -166,14 +166,34 @@
       for the fixture markers and must not self-detect inside src);
       sha2 moved dev-deps → deps. Lib 817 green at -j 2, all targets
       compile.]
-- [ ] 3.4 RED→GREEN: census outcomes per SEED (enumerated upstream of
+- [x] 3.4 RED→GREEN: census outcomes per SEED (enumerated upstream of
       candidate filtering) — `fired+attested`, `awaiting-attestation`,
       `stale-attestation`, `stood-down:<guard>` (manual-row-wins mapped),
       `window-not-built`, `separation-unavailable`, `rebuild-aborted`;
       replace the repair fold's `unwrap_or_default` with the recorded-abort
       path; loud runtime census line for allowlist entries that matched no
-      live window this run.
-- [ ] COMMIT CHECKPOINT: commit the wiring + gate before §4.
+      live window this run. [DONE 2026-11-20: `talkover_seed_census`
+      assembles one row per talk-over seed — global outcomes (rebuild-
+      aborted via the former unwrap_or_default swallow, now a join-failure
+      match; separation-unavailable via the batch's new separation_ok
+      flag) rank above per-seed stages (coverage ⇒ manual stood-down /
+      window-not-built; decode-dropped stood-down for a built window with
+      no synthesis back; gate rejections map 1:1 to awaiting/stale with
+      the hashes; apply guards map to stood-down:<reason>; applied ⇒
+      fired+attested); `format_talkover_seed_census` is the token-only
+      TALKOVER-SEED-CENSUS line (info, escalating to warn on
+      stale/separation/aborted — the TOKENWALLS precedent); the fold
+      runs it whenever talk-over seeds exist (even with zero surviving
+      candidates — window-not-built is a real outcome), skips the
+      separation spawn when there is nothing to rebuild; `allowlist_
+      entries_matching_no_window` surfaces unmatched entries loudly
+      (design D2 surfacing duty). Census scope note: the per-seed tokens
+      cover the TALKOVER seeds; the legacy phrase-loop fold keeps its
+      existing per-window applied/degraded logs (its own requirement's
+      coverage). Tests: the exhaustive outcome map (7 shapes + both
+      global outcomes), unmatched-entries surfacing, composition test
+      updated for the seeds-carrying return. Lib 819 green at -j 2.]
+- [x] COMMIT CHECKPOINT: commit the wiring + gate before §4.
 
 ## 4. Ear-gate auditability
 

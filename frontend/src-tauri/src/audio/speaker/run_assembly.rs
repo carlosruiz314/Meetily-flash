@@ -3034,12 +3034,193 @@ pub fn repairs_admissible_for_splice(
     (admissible, rejected)
 }
 
+/// Per-seed promotion outcome (talkover-word-order-repair 3.4, the delta's
+/// exhaustive token list) — one record per talk-over seed, enumerated
+/// upstream of candidate filtering, never carrying decode text (D6).
+#[derive(Debug, Clone, PartialEq)]
+pub enum TalkoverSeedOutcome {
+    FiredAttested,
+    AwaitingAttestation,
+    StaleAttestation {
+        entry_sha: String,
+        decode_sha: String,
+        entry_fp: String,
+        decode_fp: String,
+    },
+    StoodDown { guard: String },
+    WindowNotBuilt,
+    SeparationUnavailable,
+    RebuildAborted,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TalkoverSeedCensusRow {
+    pub seed_span_ms: (i64, i64),
+    pub kind: TalkoverSeedKind,
+    pub outcome: TalkoverSeedOutcome,
+}
+
+/// Everything the fold accumulated about the promotion batch (talkover-
+/// word-order-repair 3.4). Spans on the repair side are seconds (the
+/// synthesis pipeline's unit), converted here with the same /1000.0 the
+/// batch was built with, so exact equality matches.
+pub struct TalkoverCensusInputs<'a> {
+    pub seeds: &'a [TalkoverSeed],
+    pub candidates: &'a [LoopRepairCandidate],
+    pub manual_spans: &'a [(i64, i64)],
+    /// The re-synthesis batch returned (false = the spawn failed or the
+    /// separator was unavailable — every seed resolves to the global
+    /// outcome before per-seed stages are consulted).
+    pub repairs_present: bool,
+    pub separation_ok: bool,
+    /// Spans that produced a SpanSynthesis.
+    pub rebuilt_spans: &'a [(f64, f64)],
+    pub gate_rejections: &'a [((f64, f64), AttestationRejection)],
+    /// `apply_loop_repairs`' rejected list, reasons owned.
+    pub apply_rejections: &'a [((f64, f64), String)],
+    pub applied_spans: &'a [(f64, f64)],
+    /// The rebuild join failed or panicked (replaces the old
+    /// `unwrap_or_default` swallow).
+    pub rebuild_aborted: bool,
+}
+
+fn span_overlaps_seed(seed: (i64, i64), s: f64, e: f64) -> bool {
+    let (fs, fe) = (seed.0 as f64 / 1000.0, seed.1 as f64 / 1000.0);
+    fs < e && s < fe
+}
+
+/// Assemble the per-seed census rows (talkover-word-order-repair 3.4).
+/// Priority: a global rebuild failure outranks everything; then
+/// separation; then per-seed stages — candidate coverage (uncovered ⇒
+/// stood-down on a manual span else window-not-built), rebuild output,
+/// the attestation gate, the apply guards, and finally the splice.
+pub fn talkover_seed_census(i: TalkoverCensusInputs) -> Vec<TalkoverSeedCensusRow> {
+    let covered_by_candidate =
+        |seed: (i64, i64)| -> bool {
+            i.candidates.iter().any(|c| {
+                span_overlaps_seed(seed, c.span.0 as f64 / 1000.0, c.span.1 as f64 / 1000.0)
+            })
+        };
+    let outcome_for = |seed: &TalkoverSeed| -> TalkoverSeedOutcome {
+        if i.rebuild_aborted {
+            return TalkoverSeedOutcome::RebuildAborted;
+        }
+        if !i.separation_ok {
+            return TalkoverSeedOutcome::SeparationUnavailable;
+        }
+        if !covered_by_candidate(seed.span) {
+            if i.manual_spans
+                .iter()
+                .any(|&(a, b)| seed.span.0 < b && a < seed.span.1)
+            {
+                return TalkoverSeedOutcome::StoodDown {
+                    guard: "manual-row-wins".to_string(),
+                };
+            }
+            return TalkoverSeedOutcome::WindowNotBuilt;
+        }
+        if !i
+            .rebuilt_spans
+            .iter()
+            .any(|&(s, e)| span_overlaps_seed(seed.span, s, e))
+        {
+            return TalkoverSeedOutcome::StoodDown {
+                guard: "decode-dropped".to_string(),
+            };
+        }
+        if let Some((_, rejection)) = i
+            .gate_rejections
+            .iter()
+            .find(|((s, e), _)| span_overlaps_seed(seed.span, *s, *e))
+        {
+            return match rejection {
+                AttestationRejection::Unpinned => TalkoverSeedOutcome::AwaitingAttestation,
+                AttestationRejection::Stale {
+                    entry_sha,
+                    decode_sha,
+                    entry_fp,
+                    decode_fp,
+                } => TalkoverSeedOutcome::StaleAttestation {
+                    entry_sha: entry_sha.clone(),
+                    decode_sha: decode_sha.clone(),
+                    entry_fp: entry_fp.clone(),
+                    decode_fp: decode_fp.clone(),
+                },
+            };
+        }
+        if let Some((_, guard)) = i
+            .apply_rejections
+            .iter()
+            .find(|((s, e), _)| span_overlaps_seed(seed.span, *s, *e))
+        {
+            return TalkoverSeedOutcome::StoodDown {
+                guard: (*guard).to_string(),
+            };
+        }
+        if i
+            .applied_spans
+            .iter()
+            .any(|&(s, e)| span_overlaps_seed(seed.span, s, e))
+        {
+            return TalkoverSeedOutcome::FiredAttested;
+        }
+        // Covered, rebuilt, gate-passed — the apply pass either applies or
+        // rejects every repair it is given, so this is unreachable;
+        // recorded honestly rather than skipped.
+        TalkoverSeedOutcome::StoodDown {
+            guard: "unapplied".to_string(),
+        }
+    };
+    i.seeds
+        .iter()
+        .map(|seed| TalkoverSeedCensusRow {
+            seed_span_ms: seed.span,
+            kind: seed.kind,
+            outcome: outcome_for(seed),
+        })
+        .collect()
+}
+
+/// The token-only census line (talkover-word-order-repair 3.4): outcome
+/// counts plus per-seed wall coordinates and outcome tokens — never text
+/// (D6's exhaustive schema: counts and ratios keyed by wall coordinates).
+pub fn format_talkover_seed_census(rows: &[TalkoverSeedCensusRow]) -> String {
+    let count = |p: &dyn Fn(&TalkoverSeedOutcome) -> bool| {
+        rows.iter().filter(|r| p(&r.outcome)).count()
+    };
+    format!(
+        "TALKOVER-SEED-CENSUS total={} attested={} awaiting={} stale={} stood={} notbuilt={} separation={} aborted={}",
+        rows.len(),
+        count(&|o| matches!(o, TalkoverSeedOutcome::FiredAttested)),
+        count(&|o| matches!(o, TalkoverSeedOutcome::AwaitingAttestation)),
+        count(&|o| matches!(o, TalkoverSeedOutcome::StaleAttestation { .. })),
+        count(&|o| matches!(o, TalkoverSeedOutcome::StoodDown { .. })),
+        count(&|o| matches!(o, TalkoverSeedOutcome::WindowNotBuilt)),
+        count(&|o| matches!(o, TalkoverSeedOutcome::SeparationUnavailable)),
+        count(&|o| matches!(o, TalkoverSeedOutcome::RebuildAborted)),
+    )
+}
+
+/// Allowlist entries whose walls matched NO live window this run (design
+/// D2's surfacing duty): the user attested them, so silence on wall drift
+/// or a stale render is a hole, not a success.
+pub fn allowlist_entries_matching_no_window<'a>(
+    entries: &'a [AttestedWindowEntry],
+    live_windows_ms: &[(i64, i64)],
+) -> Vec<&'a AttestedWindowEntry> {
+    entries
+        .iter()
+        .filter(|e| !live_windows_ms.contains(&entry_walls_ms(e)))
+        .collect()
+}
+
 /// Fold-level composition (talkover-word-order-repair 3.2): both seed
 /// routes feed the class-aware builder — decode-tripped seeds from the
 /// duration-passing synthesis evidence, attested seeds from the pre-floor
 /// trigger spans inside meeting-scoped allowlist entries. All existing
 /// rejection guards (manual rows, synth atoms, caps, chain rules) apply
-/// inside the builder, unchanged.
+/// inside the builder, unchanged. Returns the candidates WITH the seeds
+/// that entered (the 3.4 per-seed census enumerates from them).
 pub fn talkover_repair_candidates(
     rows: &[AlignedSegment],
     synths: &[SpanSynthesis],
@@ -3048,10 +3229,12 @@ pub fn talkover_repair_candidates(
     meeting_id: &str,
     manual_spans: &[(i64, i64)],
     max_span_secs: f64,
-) -> Vec<LoopRepairCandidate> {
+) -> (Vec<LoopRepairCandidate>, Vec<TalkoverSeed>) {
     let mut seeds = talkover_decode_tripped_seeds(synths);
     seeds.extend(talkover_attested_seeds(trigger_spans, entries, meeting_id));
-    repair_windows_from_talkover_seeds(rows, &seeds, manual_spans, max_span_secs)
+    let candidates =
+        repair_windows_from_talkover_seeds(rows, &seeds, manual_spans, max_span_secs);
+    (candidates, seeds)
 }
 
 /// Apply order for the repair batch (talkover-word-order-repair 3.2): an
@@ -5175,7 +5358,7 @@ mod tests {
         )];
         let trigger = vec![(21.2, 21.6)];
         let entries = vec![attested_entry("meet-1", 21.0, 24.0)];
-        let out = talkover_repair_candidates(
+        let (out, seeds) = talkover_repair_candidates(
             &rows,
             &synths,
             &trigger,
@@ -5190,16 +5373,17 @@ mod tests {
         assert_eq!(out.len(), 1, "attested claims the overlapping region: {out:?}");
         assert_eq!(out[0].seed_class, RepairSeedClass::TalkoverAttested);
         assert_eq!(out[0].span, (21_000, 24_000));
+        assert_eq!(seeds.len(), 2, "both routes' seeds return for the census");
 
         // Without the attested entry, the same decode evidence builds its
         // own window under the decode-tripped class.
-        let out = talkover_repair_candidates(&rows, &synths, &trigger, &[], "meet-1", &[], 20.0);
+        let (out, _) = talkover_repair_candidates(&rows, &synths, &trigger, &[], "meet-1", &[], 20.0);
         assert_eq!(out.len(), 1, "decode-tripped route seeds on its own: {out:?}");
         assert_eq!(out[0].seed_class, RepairSeedClass::TalkoverDecodeTripped);
 
         // A manual row inside the attested walls stands that seed down.
         let manual = vec![(21_000i64, 24_000i64)];
-        let out = talkover_repair_candidates(
+        let (out, _) = talkover_repair_candidates(
             &rows,
             &synths,
             &trigger,
@@ -5411,7 +5595,148 @@ mod tests {
         }
     }
 
-// ---- empty stream decode (talkover-word-order-repair 2.2) ----
+    // ---- per-seed census (talkover-word-order-repair 3.4) ----
+
+    #[test]
+    fn talkover_seed_census_maps_every_delta_outcome() {
+        // The delta's exhaustive outcome list, one seed each:
+        // fired+attested / awaiting-attestation / stale-attestation /
+        // stood-down:<guard> (manual-row-wins mapped) / window-not-built /
+        // separation-unavailable / rebuild-aborted.
+        let seeds = vec![
+            TalkoverSeed { span: (1_000, 2_000), kind: TalkoverSeedKind::Attested },     // fired
+            TalkoverSeed { span: (3_000, 4_000), kind: TalkoverSeedKind::DecodeTripped }, // awaiting
+            TalkoverSeed { span: (5_000, 6_000), kind: TalkoverSeedKind::DecodeTripped }, // stale
+            TalkoverSeed { span: (7_000, 8_000), kind: TalkoverSeedKind::Attested },     // manual stood-down
+            TalkoverSeed { span: (9_000, 10_000), kind: TalkoverSeedKind::DecodeTripped }, // not built
+            TalkoverSeed { span: (11_000, 12_000), kind: TalkoverSeedKind::DecodeTripped }, // guard stood-down
+            TalkoverSeed { span: (17_000, 18_000), kind: TalkoverSeedKind::DecodeTripped }, // decode-dropped
+        ];
+        let candidates = vec![
+            LoopRepairCandidate { span: (1_000, 2_000), donor_original_id: "d".into(), seed_class: RepairSeedClass::TalkoverAttested },
+            LoopRepairCandidate { span: (3_000, 4_000), donor_original_id: "d".into(), seed_class: RepairSeedClass::TalkoverDecodeTripped },
+            LoopRepairCandidate { span: (5_000, 6_000), donor_original_id: "d".into(), seed_class: RepairSeedClass::TalkoverDecodeTripped },
+            // (7_000,8_000) attested refused by the manual span — no candidate;
+            // (9_000,10_000) builder refused — no candidate.
+            LoopRepairCandidate { span: (11_000, 12_000), donor_original_id: "d".into(), seed_class: RepairSeedClass::TalkoverDecodeTripped },
+            LoopRepairCandidate { span: (17_000, 18_000), donor_original_id: "d".into(), seed_class: RepairSeedClass::TalkoverDecodeTripped },
+        ];
+        let rows = talkover_seed_census(TalkoverCensusInputs {
+            seeds: &seeds,
+            candidates: &candidates,
+            manual_spans: &[(7_000, 8_000)],
+            repairs_present: true,
+            separation_ok: true,
+            rebuilt_spans: &[(1.0, 2.0), (3.0, 4.0), (5.0, 6.0), (11.0, 12.0)],
+            gate_rejections: &[
+                ((3.0, 4.0), AttestationRejection::Unpinned),
+                (
+                    (5.0, 6.0),
+                    AttestationRejection::Stale {
+                        entry_sha: "e".into(),
+                        decode_sha: "d".into(),
+                        entry_fp: "ef".into(),
+                        decode_fp: "df".into(),
+                    },
+                ),
+            ],
+            apply_rejections: &[((11.0, 12.0), "region already per-voice (synth atom inside)".to_string())],
+            applied_spans: &[(1.0, 2.0)],
+            rebuild_aborted: false,
+        });
+        let by_seed = |ms: (i64, i64)| {
+            rows.iter()
+                .find(|r| r.seed_span_ms == ms)
+                .unwrap_or_else(|| panic!("no row for seed {ms:?}"))
+                .outcome
+                .clone()
+        };
+        assert_eq!(by_seed((1_000, 2_000)), TalkoverSeedOutcome::FiredAttested);
+        assert_eq!(by_seed((3_000, 4_000)), TalkoverSeedOutcome::AwaitingAttestation);
+        assert_eq!(
+            by_seed((5_000, 6_000)),
+            TalkoverSeedOutcome::StaleAttestation {
+                entry_sha: "e".into(),
+                decode_sha: "d".into(),
+                entry_fp: "ef".into(),
+                decode_fp: "df".into(),
+            }
+        );
+        assert_eq!(
+            by_seed((7_000, 8_000)),
+            TalkoverSeedOutcome::StoodDown { guard: "manual-row-wins".into() },
+            "manual-row-wins maps to stood-down, never window-not-built"
+        );
+        assert_eq!(by_seed((9_000, 10_000)), TalkoverSeedOutcome::WindowNotBuilt);
+        assert_eq!(
+            by_seed((11_000, 12_000)),
+            TalkoverSeedOutcome::StoodDown { guard: "region already per-voice (synth atom inside)".into() }
+        );
+        assert_eq!(
+            by_seed((17_000, 18_000)),
+            TalkoverSeedOutcome::StoodDown { guard: "decode-dropped".into() },
+            "a built window with no SpanSynthesis back is a stood-down, not an apply outcome"
+        );
+        // The two GLOBAL outcomes take every seed when they fire —
+        // separation down and a failed rebuild (the old
+        // unwrap_or_default swallow) rank above per-seed stages.
+        let mk_inputs = |sep_ok: bool, aborted: bool| TalkoverCensusInputs {
+            seeds: &seeds,
+            candidates: &candidates,
+            manual_spans: &[],
+            repairs_present: true,
+            separation_ok: sep_ok,
+            rebuilt_spans: &[],
+            gate_rejections: &[],
+            apply_rejections: &[],
+            applied_spans: &[],
+            rebuild_aborted: aborted,
+        };
+        let global_rows = talkover_seed_census(mk_inputs(false, false));
+        assert!(
+            global_rows
+                .iter()
+                .all(|r| r.outcome == TalkoverSeedOutcome::SeparationUnavailable)
+        );
+        let aborted_rows = talkover_seed_census(mk_inputs(true, true));
+        assert!(
+            aborted_rows
+                .iter()
+                .all(|r| r.outcome == TalkoverSeedOutcome::RebuildAborted)
+        );
+        // Token-only line: outcome tokens present with the counts.
+        let line = format_talkover_seed_census(&rows);
+        assert!(line.contains("TALKOVER-SEED-CENSUS"));
+        assert!(line.contains("total=7"));
+        assert!(line.contains("attested=1"));
+        assert!(line.contains("awaiting=1"));
+        assert!(line.contains("stale=1"));
+        assert!(line.contains("stood=3"));
+        assert!(line.contains("notbuilt=1"));
+        assert!(line.contains("separation=0"));
+        assert!(line.contains("aborted=0"));
+        let global_line = format_talkover_seed_census(&global_rows);
+        assert!(global_line.contains("separation=7"), "{global_line}");
+        let aborted_line = format_talkover_seed_census(&aborted_rows);
+        assert!(aborted_line.contains("aborted=7"), "{aborted_line}");
+    }
+
+    #[test]
+    fn unmatched_allowlist_entries_surface_loudly() {
+        // A pinned window whose walls matched no live window this run has
+        // surfacing duty (design D2): wall drift or a stale render must
+        // not silence a pin the user attested.
+        let entries = vec![
+            attested_entry("meet-1", 21.0, 24.0),
+            attested_entry("meet-1", 30.0, 32.0),
+        ];
+        let live = vec![(21_000i64, 24_000i64)];
+        let unmatched = allowlist_entries_matching_no_window(&entries, &live);
+        assert_eq!(unmatched.len(), 1);
+        assert_eq!(unmatched[0].start_s, 30.0);
+    }
+
+    // ---- empty stream decode (talkover-word-order-repair 2.2) ----
 
     #[test]
     fn empty_stream_decode_never_replaces_mixture_rows() {
