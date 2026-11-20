@@ -3072,6 +3072,21 @@ Yeah, for Paulina, right?";
     }
 
     #[test]
+    fn overlapping_token_similar_different_badge_pair_survives_duplicate_resolution() {
+        // The talk-over route's failure shape (design D4): the mixture row
+        // and its re-decoded stream row overlap in time with near-identical
+        // tokens under DIFFERENT badges — a same-audio double-decode is
+        // never a merge candidate, so both survive to the repair splice
+        // (pins the existing overlapping-pair guard against regression).
+        let a = dup_seg("mix", "alpha beta gamma delta epsilon", 10_000, 16_000, "Speaker 0");
+        let b = dup_seg("str", "alpha beta gamma delta epsilon", 12_000, 18_000, "Speaker 1");
+        let out = resolve_duplicate_clusters(vec![a, b]);
+        assert_eq!(out.len(), 2, "overlapping different-badge pair survives: {out:?}");
+        assert!(out.iter().any(|r| r.original_id == "mix"));
+        assert!(out.iter().any(|r| r.original_id == "str"));
+    }
+
+    #[test]
     fn seam_clip_clamps_the_clipped_rows_walls() {
         // The output seam clips an overlapping row's start to its
         // predecessor's end — the walls ride the same clip so wall

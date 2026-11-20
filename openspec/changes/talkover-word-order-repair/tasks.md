@@ -83,7 +83,7 @@
 > baseline pins hold (S16 2/2, S18 7/7), builder outcomes unchanged,
 > margins identical to 2026-11-18. §3 wires on that geometry.
 
-- [ ] 3.1 RED: two seed routes — (a) a duration-passing span whose
+- [x] 3.1 RED: two seed routes — (a) a duration-passing span whose
       separated decode trips rate-fiction or stutter; (b) an attested-window
       seed: a trigger-fired span whose walls fall within an allowlist entry,
       rebuilding REGARDLESS of the duration floor (RED test: a 0.4s
@@ -95,7 +95,23 @@
       the existing overlapping-pair guard against regression); the
       fiction-candidate seed filter is explicitly amended for the
       decode-tripped talk-over class — design D4's supersession of the
-      2026-10-07 ruling recorded.
+      2026-10-07 ruling recorded. [DONE 2026-11-20: RED confirmed as
+      compile-fail on the new API, then green — `RepairSeedClass`
+      {Legacy, TalkoverDecodeTripped, TalkoverAttested} on
+      `LoopRepairCandidate` (legacy builder stamps Legacy; talkover builder
+      re-tags by seed class); `talkover_decode_tripped_seeds` (rate-fiction
+      OR stutter on any stream — the D4 fiction-filter amendment for this
+      class only, why-comment at the fn; legacy stutter route's exclusion
+      untouched, its existing test stays green); `AttestedWindowEntry`
+      (six fields, `deny_unknown_fields` already — hardening tests land in
+      3.3) + `talkover_attested_seeds` (meeting-scoped, trigger span
+      CONTAINED in entry walls seeds the entry's exact walls; straddling
+      is not coverage); tests: attested sub-floor rebuild + four
+      fail-closed negatives, fiction/stutter/clean seed triple,
+      seed-class triple incl. negated reachability (legacy fold never
+      talkover-classed), overlapping different-badge pair survives
+      duplicate resolution (pinned existing guard — green immediately).
+      Lib 810 green at -j 2.]
 - [ ] 3.2 GREEN: route the promoted window through the live repair-window
       builder (separation + per-stream decode + per-voice splice with
       `synth_parent` links); all existing rejection guards apply unchanged

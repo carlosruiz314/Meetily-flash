@@ -2441,6 +2441,25 @@ pub const REPAIR_CHAIN_CAP_SECS: f64 = 35.0;
 pub struct LoopRepairCandidate {
     pub span: (i64, i64),
     pub donor_original_id: String,
+    /// Which seed route produced this candidate (talkover-word-order-
+    /// repair 3.1): the attestation gate binds ONLY to the talk-over
+    /// classes at splice time — legacy repairs (phrase-loop rows,
+    /// ear-ruled stutter promotions) keep their splice-without-entry
+    /// status under their own requirement.
+    pub seed_class: RepairSeedClass,
+}
+
+/// Seed-route discriminator for [`LoopRepairCandidate`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepairSeedClass {
+    /// Legacy ear-ruled repairs: phrase-loop rows and stutter-promoted
+    /// spans. Never attestation-gated.
+    Legacy,
+    /// Talk-over decode-tripped (design D4 route (a)): gated at splice.
+    TalkoverDecodeTripped,
+    /// Talk-over attested-window (design D4 route (b)): exact entry
+    /// walls; gated at splice.
+    TalkoverAttested,
 }
 
 /// Whole-row repair windows from phrase-loop rows: each loop row seeds the
@@ -2585,6 +2604,7 @@ fn build_repair_window_for_seed(
         Some(LoopRepairCandidate {
             span,
             donor_original_id: donor.unwrap(),
+            seed_class: RepairSeedClass::Legacy,
         })
 }
 
@@ -2597,11 +2617,13 @@ fn build_repair_window_for_seed(
 /// decode-tripped window overlapping an attested one dedupes into it (the
 /// attested walls are immovable — unioning would drift them and break the
 /// exact-wall splice match).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TalkoverSeedKind {
     DecodeTripped,
     Attested,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TalkoverSeed {
     pub span: (i64, i64),
     pub kind: TalkoverSeedKind,
@@ -2670,6 +2692,7 @@ pub fn repair_windows_from_talkover_seeds(
         out.push(LoopRepairCandidate {
             span: *seed,
             donor_original_id: donor,
+            seed_class: RepairSeedClass::TalkoverAttested,
         });
     }
     // Decode-tripped: legacy per-seed building, then class-aware overlap
@@ -2680,6 +2703,13 @@ pub fn repair_windows_from_talkover_seeds(
             build_repair_window_for_seed(rows, *seed, manual_spans, max_ms, gap_ms, chain_cap_ms)
         else {
             continue;
+        };
+        // The shared builder stamps Legacy; this route re-tags by its own
+        // seed class (unions only ever merge into a decode-tripped window
+        // — an attested overlap dedupes below without mutating it).
+        let cand = LoopRepairCandidate {
+            seed_class: RepairSeedClass::TalkoverDecodeTripped,
+            ..cand
         };
         let overlap = out.iter().position(|c| c.span.0 < cand.span.1 && cand.span.0 < c.span.1);
         match overlap {
@@ -2718,7 +2748,87 @@ pub fn repair_windows_from_talkover_seeds(
     out
 }
 
-/// Repair decode retry (talkover-word-order-repair 2.1): the FROZEN
+/// One ear-attested repair window (talkover-word-order-repair 3.1/3.3,
+/// design D2). Lives in the app's local Tauri store (the scheduler-settings
+/// settings.json mechanism — local-only, never synced or committed). EXACTLY
+/// these six fields: `deny_unknown_fields` makes a foreign field fail the
+/// whole setting closed to empty for that run.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AttestedWindowEntry {
+    pub meeting_id: String,
+    pub start_s: f64,
+    pub end_s: f64,
+    /// YYYY-MM-DD — the user's dated ear verdict for this window's content.
+    pub attested_date: String,
+    /// sha256 of the spliced per-voice render text the ear judged (D1: the
+    /// pin binds CONTENT, not walls — any decode change invalidates it).
+    pub render_sha256: String,
+    /// Decode-profile fingerprint (model id + retry variant + rebuild-width
+    /// class): a decode-affecting change invalidates pins mechanically.
+    pub profile_fp: String,
+}
+
+/// Decode-tripped talk-over seeds (talkover-word-order-repair 3.1, design
+/// D4 route (a)): a DURATION-PASSING span whose separated decode trips
+/// rate-fiction OR stutter seeds a repair rebuild. `synths` are the
+/// post-floor span-synthesis candidates (the MIN_SYNTH_DURATION_SECS floor
+/// already filtered upstream — sub-floor spans never reach separation), so
+/// no floor check lives here.
+///
+/// Fiction-filter amendment (design D4, superseding the 2026-10-07 ruling
+/// for THIS class only): a rate-fiction decode IS a trip here — the
+/// attestation gate at splice is the replacement safety the ruling lacked.
+/// The legacy stutter-seed route keeps its fiction exclusion unchanged.
+pub fn talkover_decode_tripped_seeds(synths: &[SpanSynthesis]) -> Vec<TalkoverSeed> {
+    synths
+        .iter()
+        .filter(|s| {
+            is_class_e_fiction(s)
+                || s.streams.iter().any(|st| {
+                    st.text
+                        .as_deref()
+                        .map(is_stuttering_decode)
+                        .unwrap_or(false)
+                })
+        })
+        .map(|s| TalkoverSeed {
+            span: ((s.span.0 * 1000.0) as i64, (s.span.1 * 1000.0) as i64),
+            kind: TalkoverSeedKind::DecodeTripped,
+        })
+        .collect()
+}
+
+/// Attested-window talk-over seeds (design D4 route (b)): a trigger-fired
+/// span (pre-floor `overlap_spans` — the census proved both attested
+/// moments stand down at the duration floor, so only this route sees them)
+/// whose walls fall WITHIN a meeting-scoped allowlist entry seeds the
+/// ENTRY's exact walls — the attestation is the prior ear evidence, and
+/// the rebuild ignores the duration floor. A trigger merely straddling the
+/// entry walls is not coverage: exact-wall splicing needs the fired span
+/// inside the pinned region.
+pub fn talkover_attested_seeds(
+    trigger_spans: &[(f64, f64)],
+    entries: &[AttestedWindowEntry],
+    meeting_id: &str,
+) -> Vec<TalkoverSeed> {
+    let mut out = Vec::new();
+    for e in entries {
+        if e.meeting_id != meeting_id {
+            continue;
+        }
+        if trigger_spans
+            .iter()
+            .any(|&(s, t)| s >= e.start_s && t <= e.end_s)
+        {
+            out.push(TalkoverSeed {
+                span: ((e.start_s * 1000.0) as i64, (e.end_s * 1000.0) as i64),
+                kind: TalkoverSeedKind::Attested,
+            });
+        }
+    }
+    out
+}
 /// selection rule between a rebuilt window's decode passes. Pass 1 stands
 /// unless it tripped a rejection guard AND the single alternate pass
 /// cleared every guard — a clean first pass can never be replaced, and a
@@ -4654,6 +4764,141 @@ mod tests {
         let manual = vec![(21_000i64, 24_000i64)];
         let out = repair_windows_from_talkover_seeds(&rows, &seeds, &manual, 20.0);
         assert!(out.is_empty(), "a manual row inside the attested walls stands the rebuild down: {out:?}");
+    }
+
+    // ---- talk-over seed routes (talkover-word-order-repair 3.1) ----
+
+    fn attested_entry(meeting: &str, start_s: f64, end_s: f64) -> AttestedWindowEntry {
+        AttestedWindowEntry {
+            meeting_id: meeting.to_string(),
+            start_s,
+            end_s,
+            attested_date: "2026-11-20".to_string(),
+            render_sha256: "a".repeat(64),
+            profile_fp: "fp".to_string(),
+        }
+    }
+
+    #[test]
+    fn attested_window_seed_route_rebuilds_sub_floor_trigger_span() {
+        // The census measured both attested moments (0.40s, 0.84s) standing
+        // down at the 1.5s duration floor BEFORE separation — the attested
+        // route's reason to exist: a trigger-fired span inside an allowlist
+        // entry seeds the ENTRY's exact walls and rebuilds regardless of
+        // the floor.
+        let trigger = vec![(21.2, 21.6)]; // 0.4s — sub-floor
+        let entries = vec![attested_entry("meet-1", 21.0, 24.0)];
+        let seeds = talkover_attested_seeds(&trigger, &entries, "meet-1");
+        assert_eq!(seeds.len(), 1, "the attested entry seeds: {seeds:?}");
+        assert_eq!(seeds[0].span, (21_000, 24_000), "seed walls = entry walls");
+        assert_eq!(seeds[0].kind, TalkoverSeedKind::Attested);
+        // The rebuild itself: the sub-floor span's window builds — the
+        // duration floor does not gate the attested route.
+        let out = repair_windows_from_talkover_seeds(&union_rows(), &seeds, &[], 20.0);
+        assert_eq!(out.len(), 1, "a 0.4s attested-window span rebuilds: {out:?}");
+        assert_eq!(out[0].span, (21_000, 24_000));
+    }
+
+    #[test]
+    fn attested_seed_requires_entry_coverage_for_the_meeting() {
+        // Fail-closed negatives: no entries, a trigger outside every
+        // entry, an entry for a DIFFERENT meeting, and a trigger merely
+        // straddling the entry walls — none seed (exact-wall splicing
+        // needs the trigger inside the pinned region).
+        let trigger = vec![(21.2, 21.6)];
+        assert!(talkover_attested_seeds(&trigger, &[], "meet-1").is_empty());
+        let outside = vec![(30.0, 30.5)];
+        let entries = vec![attested_entry("meet-1", 21.0, 24.0)];
+        assert!(talkover_attested_seeds(&outside, &entries, "meet-1").is_empty());
+        let other = vec![attested_entry("meet-2", 21.0, 24.0)];
+        assert!(talkover_attested_seeds(&trigger, &other, "meet-1").is_empty());
+        let straddling = vec![(20.5, 21.5)];
+        assert!(talkover_attested_seeds(&straddling, &entries, "meet-1").is_empty());
+    }
+
+    #[test]
+    fn decode_tripped_seed_route_includes_rate_fiction_trips() {
+        // Design D4 supersedes the 2026-10-07 ruling for THIS class: a
+        // duration-passing span whose separated decode trips rate-fiction
+        // OR stutter seeds a rebuild — the attestation gate at splice is
+        // the replacement safety. The LEGACY stutter filter keeps its
+        // fiction exclusion (class_e_fiction_candidates_seed_nothing
+        // stays green).
+        let flood = synth_cov(
+            (2.0, 4.0),
+            ev(
+                1,
+                0.30,
+                Some(
+                    "alpha beta gamma delta epsilon zeta ***REMOVED*** iota kappa \
+                     alpha beta gamma delta epsilon zeta ***REMOVED*** iota kappa",
+                ), // 20 words / 2.0s = 10 w/s > the 8.0 fiction bar
+            ),
+            ev(3, 0.20, Some("normal words here")),
+            &[(2_000, 4_000)],
+        );
+        assert!(is_class_e_fiction(&flood), "fixture must be fiction");
+        let seeds = talkover_decode_tripped_seeds(&[flood]);
+        assert_eq!(
+            seeds.len(),
+            1,
+            "a fiction-tripped decode seeds the talkover class"
+        );
+        assert_eq!(seeds[0].span, (2_000, 4_000), "millisecond walls");
+        assert_eq!(seeds[0].kind, TalkoverSeedKind::DecodeTripped);
+
+        // Stutter still trips (the original route's evidence class): a
+        // 2-word phrase repeats back-to-back.
+        let stutter = synth_cov(
+            (6.0, 9.0),
+            ev(1, 0.30, None),
+            ev(3, 0.20, Some("yeah man yeah man")),
+            &[(6_000, 9_000)],
+        );
+        assert!(!is_class_e_fiction(&stutter));
+        assert_eq!(talkover_decode_tripped_seeds(&[stutter]).len(), 1);
+
+        // A clean decode seeds nothing (the class is decode-TRIPPED only).
+        let clean = synth_cov(
+            (20.0, 24.0),
+            ev(1, 0.30, Some("plain sentence text")),
+            ev(3, 0.20, Some("other voice words")),
+            &[(20_000, 24_000)],
+        );
+        assert!(talkover_decode_tripped_seeds(&[clean]).is_empty());
+    }
+
+    #[test]
+    fn loop_repair_candidate_carries_seed_class() {
+        // The seed-class discriminator rides the candidate to the splice:
+        // the attestation gate binds ONLY to the talkover classes; legacy
+        // repairs splice without an entry (3.3 pins that scoping).
+        let rows = union_rows();
+        let attested = repair_windows_from_talkover_seeds(
+            &rows,
+            &[TalkoverSeed { span: (21_000, 24_000), kind: TalkoverSeedKind::Attested }],
+            &[],
+            20.0,
+        );
+        assert_eq!(attested[0].seed_class, RepairSeedClass::TalkoverAttested);
+        let tripped = repair_windows_from_talkover_seeds(
+            &rows,
+            &[TalkoverSeed { span: (36_000, 36_500), kind: TalkoverSeedKind::DecodeTripped }],
+            &[],
+            20.0,
+        );
+        assert_eq!(tripped[0].seed_class, RepairSeedClass::TalkoverDecodeTripped);
+        // Negated reachability (3.1): the legacy fold's builder never
+        // emits a talkover-classed candidate — the talkover promotion can
+        // only enter through the class-aware builder.
+        let legacy = repair_windows_from_seeds(&rows, &[(21_000, 21_500)], &[], 20.0);
+        assert!(!legacy.is_empty());
+        assert!(
+            legacy
+                .iter()
+                .all(|c| c.seed_class == RepairSeedClass::Legacy),
+            "legacy candidates are never talkover-classed: {legacy:?}"
+        );
     }
 
     // ---- empty stream decode (talkover-word-order-repair 2.2) ----
