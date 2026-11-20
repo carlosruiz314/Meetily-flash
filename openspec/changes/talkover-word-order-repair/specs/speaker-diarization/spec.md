@@ -147,11 +147,14 @@ walls to match an `attestedRepairWindows` entry (for rebuilt windows).
   no retry shipped); the S16 shape STOP'd on the then-current render
   geometry (absorb-whole erase, then separation collapse on the row-aligned
   re-cut — probe record + addendum), the user ruled the token-walls change
-  the unblock path, and its re-cut [1024.75,1056.50] is measured on the
-  wall-bearing render (no erase, both needles covered, margins unchanged)
-  with its entry firing only after its own decode re-measurement at those
-  walls (design D4's carried obligation — the runtime hash gate keeps it
-  fail-closed meanwhile)
+  the unblock path, and its wall-bearing-render re-cut [1024.75,1056.50]
+  was measured 2026-11-20 at its own walls and RECOVERED=NO — the rebuild
+  decodes cleanly (stream_tokens=[44, 39], guards clean) but the spliced
+  render fails the ear gate's own pins (occurrence #1 want=1 got=0,
+  occurrence #2 want=2 got=1): STOP stands, the S16 entry cannot be cut on
+  this geometry, and the user re-plans before any S16 entry ships (the
+  runtime hash gate never admits one meanwhile — probe record addendum,
+  sha 4cdafb01…)
 
 #### Scenario: Candidate census precedes render changes
 

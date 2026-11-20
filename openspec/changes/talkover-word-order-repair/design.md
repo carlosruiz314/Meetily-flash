@@ -74,9 +74,20 @@ row-aligned, east token-aligned — never hand-drawn, per the rule above).
 Two carried obligations from the handoff: (1) `render_sha256` SHOULD cover
 the wall payload — walls are part of the render's identity and
 regeneration re-derives them; (2) a decode re-measurement at the re-cut's
-own walls is owed before the S16 entry can fire (the 2026-11-18 margins
-were measured at the recorded shape; §3's wiring proceeds — the runtime
-hash gate keeps every un-re-measured entry fail-closed meanwhile). West
+own walls is owed before the S16 entry can fire. **Measured 2026-11-20
+(probe record addendum, sha 4cdafb01…): the re-cut RECOVERED=NO at its own
+walls.** The rebuild decodes cleanly (stream_tokens=[44, 39], guards
+clean, splice ok, leg B identical — the wiring is measured correct) but
+the spliced render FAILS the ear gate's own pins: occurrence #1 want=1
+got=0, occurrence #2 want=2 got=1 — the handoff's predicted needle
+coverage is falsified by the decode+pin evaluation. **STOP stands; the
+S16 entry cannot be cut on this geometry** — the user re-plans before any
+S16 entry ships (the runtime gate never admits one meanwhile). Two open
+re-plan questions recorded: the census trigger [1056.90,1057.30] sits
+east of the re-cut window (the attested route seeds on trigger
+containment — this entry could not fire even with pins held), and the
+east-edge token alignment (1056.50 vs attested 1057.30) interacts with
+the pin window's joined scope. West
 rows [982.17,1024.75]…[1027.86,1032.31] stay NULL-walled (source chunk
 [1010.07,1032.31] fails the validator's backtrack tolerance) — a dial-
 adjacent question for the user, never a unilateral move; no §3 path needs

@@ -167,3 +167,51 @@ row-aligned on the current render (candidate walls [1042.40,1074.42],
 32.02s ≤ the 35s chain cap, under the attested builder's rules) and
 re-run this probe on that shape (margins, pins, erase=0 expected) —
 then §3 wires against measured entries only.
+
+## Addendum — validated-recut on the wall-bearing render (2026-11-20)
+
+**Date:** 2026-11-20 (the D4-carried obligation: decode re-measurement at
+the re-cut's own walls, after render-token-walls landed)
+**Record sha256:** `4cdafb01fed265cbc49493441859ff3e06997737c8e92194244b376b602ca977`
+**Shape:** `validated-recut` — window [1024.75,1056.50] (the
+render-token-walls handoff's measured re-cut: west row-aligned with the
+NULL-walled row's end, east token-aligned at 1056.50 on the walled
+mega-row); trigger [1056.90,1057.30] recorded as the REAL census trigger.
+**Run env:** MEETIFY_LIVE_DIAG + MEETIFY_PROBE_SHAPES=validated-recut;
+the loud evidence-home skip fired once (relative path from src-tauri —
+absolute MEETILY_LOCAL_EVIDENCE_DIR required, the known Windows quirk).
+
+- Baseline pins: pin0 want=1 got=1 PASS; pin1 want=2 got=2 PASS —
+  today's mixture render still holds both needles; no drift.
+- Builder: candidates=1 walls_match=true walls=[1024750,1056500];
+  shipped-path would-fire.
+- Decode: leg A-strict stream_tokens=[44, 39] — both streams decode
+  substantial content, stutter=false fiction=false splice=ok; leg B
+  identical (no retry, consistent with the 2026-11-18 ladder).
+- **Render pins: pin0 want=1 got=0 FAIL; pin1 want=2 got=1 FAIL.**
+- **SHAPE-VERDICT: gated=true recovered=NO.**
+
+**Interpretation (token-only):** the re-cut geometry decodes cleanly and
+splices, but the SPLICED render loses occurrence #1 entirely at the pin
+window and one of occurrence #2's two occurrences — the handoff's
+predicted needle coverage (occurrence #1 recovered in-window, occurrence
+#2 surviving east) is FALSIFIED by the decode+pin evaluation. Not a
+decode-quality failure (44/39 tokens, guards clean) — a coverage/
+geometry failure at the splice output.
+
+**STOP stands, now measured at the re-cut's own walls.** The S16 entry
+cannot be cut on this geometry: the runtime hash gate would admit a
+render that fails the ear gate's own pins, and the probe fails it first.
+Per D3/D4 the user re-plans before any S16 entry ships. Two open
+questions for that re-plan, both recorded not decided: (1) the census
+trigger [1056.90,1057.30] sits EAST of the re-cut window, so the runtime
+attested route (trigger containment) could not fire this entry even if
+the pins held; (2) the east-edge token alignment (1056.50 vs the attested
+1057.30) interacts with the pin window [1055,1058] — occurrence #1's
+rebuilt walls land outside it in the spliced output.
+
+The wiring itself is measured CORRECT: builder exact, guards clean,
+byte-identical degrade everywhere, the runtime gate fails closed. The
+two decode-tripped windows from the 2026-11-20 live run
+([1421.21-1453.63], [2535.17-2559.11]) rebuilt cleanly and await the
+user's ear round (their attestation is the user's word, per-window).

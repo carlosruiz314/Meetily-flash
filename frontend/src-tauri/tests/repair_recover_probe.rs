@@ -35,7 +35,9 @@
 //! Env:
 //!   MEETIFY_LIVE_DIAG=1          (gate for any model load)
 //!   MEETIFY_PROBE_SHAPES         (optional comma list of
-//!                                 validated,clean,control; default all)
+//!                                 validated,validated-aligned,
+//!                                 validated-recut,clean,control;
+//!                                 default all)
 //!   MEETIFY_MEETING_DIR          (recording dir name for the samples cache)
 //!   MEETIFY_GATE_WHISPER_MODEL   (default large-v3-turbo-q5_0)
 //!   MEETIFY_GATE_LANG            (default en)
@@ -77,7 +79,7 @@ struct Shape {
     trigger: (f64, f64),
     pin_entry: Option<&'static str>,
 }
-const SHAPES: [Shape; 4] = [
+const SHAPES: [Shape; 5] = [
     Shape {
         name: "validated",
         window: (1024.61, 1057.30),
@@ -91,6 +93,21 @@ const SHAPES: [Shape; 4] = [
     Shape {
         name: "validated-aligned",
         window: (1042.40, 1074.42),
+        trigger: (1056.90, 1057.30),
+        pin_entry: Some("S16_ads_overlap_1056"),
+    },
+    // The wall-bearing-render re-cut (render-token-walls handoff, 2026-11-
+    // 19): west edge row-aligned with the NULL-walled row's end (no absorb,
+    // no erase), east edge token-aligned at 1056.50 on the walled mega-row
+    // — occurrence #1 inside the window, occurrence #2 surviving east.
+    // D4's owed decode re-measurement at these walls gates the S16 entry.
+    // The trigger field records the REAL census trigger — which sits east
+    // of the window; the runtime attested route seeds only on trigger
+    // CONTAINMENT, so the entry's firing geometry is an open question the
+    // record must carry, not hide (never hand-drawn).
+    Shape {
+        name: "validated-recut",
+        window: (1024.75, 1056.50),
         trigger: (1056.90, 1057.30),
         pin_entry: Some("S16_ads_overlap_1056"),
     },

@@ -256,7 +256,15 @@
       tokens, retry count, verdict date); one confirmation listen per span;
       dated verdicts become fixture pins (`repair_attestation` kind) +
       allowlist entries (user's word each time). Stands-down on verdict
-      keep mixture rows permanently.
+      keep mixture rows permanently. [STATE 2026-11-20: the S16 half is
+      MEASURED-BLOCKED — the re-cut probe (addendum, sha 4cdafb01…)
+      RECOVERED=NO at its own walls, STOP stands, no entry exists to
+      attest; the user re-plans before any S16 entry. The two decode-
+      tripped windows ([1421.21-1453.63], [2535.17-2559.11]) fired and
+      await the user's ear: their attestation round (clip cuts + listens)
+      runs on the user's word naming which windows they want heard — the
+      rebuild evidence must be re-derived per window (probe run) before
+      clips are cut. Awaiting the user.]
 - [x] 5.4 Smoke-spec deliverable decision (AGENTS.md §3, made at proposal
       time): the promotion adds NO new frontend wiring — the visible
       outcome (rows replaced by finer distinct-speaker rows after a
@@ -270,8 +278,16 @@
       this rationale recorded; the covering specs verified passing.
       [VERIFIED 2026-11-20: both covering specs pass — 2 passed / 0
       failed, chromium.]
-- [ ] 5.5 Before archive: re-read the live spec + design against what
+- [x] 5.5 Before archive: re-read the live spec + design against what
       landed; amend the delta/design first if the implementation evolved
-      (the two scenario amendments in the delta apply at archive).
+      (the two scenario amendments in the delta apply at archive). [DONE
+      2026-11-20: the retry-scenario amendment carries the measured chain
+      end-to-end (clean shape 7/7 leg A → S16 STOP on the old geometry →
+      wall-bearing-render re-cut RECOVERED=NO at its own walls, sha
+      4cdafb01… → STOP stands, user re-plans); design D4 amended with the
+      same measured verdict + the two open re-plan questions (trigger
+      containment east of the window; east-edge token alignment vs the
+      pin window's joined scope); probe record addendum written. Validator
+      green.]
 - [ ] 5.6 `/opsx:archive` on the user's go (commits and pushes only on the
       user's explicit word).
