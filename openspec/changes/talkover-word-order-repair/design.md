@@ -39,23 +39,48 @@ Two seed routes (census finding 2026-11-18: the attested talk-over moments — S
 `LoopRepairCandidate` gains a seed-class discriminator; the attestation gate binds ONLY to the talk-over seed class — live phrase-loop repairs keep their ear-ruled status and splice WITHOUT an allowlist entry (pinned by test), so gating does not silently disable the S18-validated phrase-loop path. The decode-tripped class's promotion explicitly SUPERSEDES the 2026-10-07 ruling that fiction candidates seed no repair (`commands.rs` seed filter amended in task 3.1) — the attestation gate is the replacement safety the ruling lacked; the attested-window class is itself the user's per-window ruling. Window rules: two seeds in one window union deterministically; the UNIONED interval re-runs the manual-row and synth-atom checks; a refused union falls back to the individual windows if individually clean, else `window-not-built`. The repair pass returns a PER-SEED outcome (not a silent `Vec` with `unwrap_or_default`); a rebuild panic/join error is a recorded `rebuild-aborted` outcome, not an empty continuation. Census outcomes, enumerated from SEEDS upstream of candidate filtering: `fired+attested`, `awaiting-attestation`, `stale-attestation`, `stood-down:<guard>` (manual-row-wins mapped here), `window-not-built`, `separation-unavailable`, `rebuild-aborted`. These extend the existing trigger-fired census record (one census, not a parallel one).
 Measured 2.4 finding (2026-11-18, `probe-record-2-4.md`): the attested walls MUST align to row
 boundaries on the hash-pinned render. The probe drove the recorded walls [1024.61,1057.30] — cut on
-the 2026-11-16 live geometry — against today's render, where the S16 moment sits mid-way inside a
-32s mega-row: the in-window content recovered on leg A, but the absorb-whole splice ERASED the
-mega-row's outside-window words (17.12s east) carrying needle occurrence #2 (want=2 got=1). At
+the 2026-11-16 live geometry — against the then-current render, where the S16 moment sat mid-way
+inside a 32s mega-row: the in-window content recovered on leg A, but the absorb-whole splice ERASED
+the mega-row's outside-window words (17.12s east) carrying needle occurrence #2 (want=2 got=1). At
 runtime D4's `render_sha256` gate fails exactly this scenario closed (`stale-attestation` →
 byte-identical mixture rows, no regression) — the probe measured what that gate prevents,
 confirming the content-hash design. Consequence recorded as a rule: attestation entries are cut
 ROW-ALIGNED on the render they hash-pin (the §5.3 round derives entry walls from the fired
-candidate's row-aligned walls, never hand-drawn); the S16 entry awaits re-cutting on the current
-render (candidate row-aligned walls [1042.40,1074.42], 32.02s ≤ the 35s chain cap) and re-measure-
-ment at its own walls before it can fire. The row-aligned re-cut was
-measured 2026-11-18 and FAILED differently (separation collapses on that
+candidate's row-aligned walls, never hand-drawn). The row-aligned re-cut of the then-current
+geometry was measured 2026-11-18 and failed differently (separation collapses on that
 composition: stream0 4 tokens vs 44, both needles absent — probe record
-addendum); the S16 route is geometrically blocked on today's render, root
-cause traced in `mega-row-investigation.md`: the region renders as one
-32s token-wall-less mega-row spanning two source chunks, and the unblock
-path is the deferred token-walls capability (fork issue #4) — S16 stays
-mixture (waiver covers it) until that lands.
+addendum); root cause traced in `mega-row-investigation.md`: the region rendered as one
+32s token-wall-less mega-row spanning two source chunks.
+
+UNBLOCKED 2026-11-20 (token-walls change landed 2026-11-19, archived
+`2026-11-19-render-token-walls`; its `handoff-note.md` carries the measured
+geometry): the render is now wall-bearing (census rows=269 walled=194
+null=75 violations=0), the mega-row carries a real per-word wall list, and
+the wall-split straddle policy dissolves the absorb-whole trap. The S16
+re-cut on the wall-bearing render is MEASURED (handoff probe, commit
+624d66b3): window [1024.75,1056.50] (~31.75s ≤ the 35s chain cap) — WEST
+edge 1024.75 row-aligned with the NULL-walled row's end (that row is NOT
+absorbed; the overlap predicate excludes a touching row; its 42s of
+outside-window text cannot be erased), EAST edge 1056.50 the token boundary
+nearest the attested wall 1057.30 on the walled mega-row (occurrence #1
+ends 1056.50 inside the window; occurrence #2 spans [1058.41,1059.17] and
+survives untouched in the east piece under its real walls). The two
+NULL-walled rows inside the window are absorbed whole and REPLACED by
+stream rows — their being wall-less is irrelevant to the splice. Baseline
+pins hold on the new render (S16 2/2, S18 7/7); builder outcomes unchanged;
+separation margins at the recorded shape identical to 2026-11-18
+(0.5777/0.2167). Entry walls for S16: [1024.75,1056.50] (derived — west
+row-aligned, east token-aligned — never hand-drawn, per the rule above).
+Two carried obligations from the handoff: (1) `render_sha256` SHOULD cover
+the wall payload — walls are part of the render's identity and
+regeneration re-derives them; (2) a decode re-measurement at the re-cut's
+own walls is owed before the S16 entry can fire (the 2026-11-18 margins
+were measured at the recorded shape; §3's wiring proceeds — the runtime
+hash gate keeps every un-re-measured entry fail-closed meanwhile). West
+rows [982.17,1024.75]…[1027.86,1032.31] stay NULL-walled (source chunk
+[1010.07,1032.31] fails the validator's backtrack tolerance) — a dial-
+adjacent question for the user, never a unilateral move; no §3 path needs
+a NULL-side split.
 
 **D5 — Census before render changes; review produces a dated artifact.**
 Task 1 extends the existing `overlap_census_probe.rs` (DRY) rather than starting a new probe, and enumerates from `engine_out.overlap_spans` — which is computed independent of enrollment, so detector precision is measurable on meetings without enrolled references. Every candidate flag is recorded token-only (wall position, overlap mass, duration, floors verdict, counts+sha256). The user reviews the census; the review produces a dated token-only note in the change folder (counts + ruling) that is a hard prerequisite for opening §3.

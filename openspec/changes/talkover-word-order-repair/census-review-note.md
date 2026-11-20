@@ -47,5 +47,10 @@ do; the repair change's attested-window seed route (design D4, amended
 
 ## Review outcome
 
-User review pending (STOP gate): no promotion wiring before this review. The
-offline decode-reliability stage (§2) proceeds — it touches no render path.
+[AMENDED 2026-11-18, review complete] The user reviewed the census findings
+and ruled: decode reliability first, then ear pins (2026-11-18) — the offline
+decode-reliability stage (§2) proceeded on that word and touched no render
+path; promotion wiring stayed shut. The follow-up rulings on the §2 probe
+outcomes (re-measure row-aligned → investigate the mega-row → token-walls
+change first, 2026-11-18) completed the review chain; the token-walls change
+landed 2026-11-19 and §3 resumed on the user's 2026-11-20 go.

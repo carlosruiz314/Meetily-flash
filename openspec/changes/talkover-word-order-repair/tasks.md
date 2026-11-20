@@ -11,11 +11,18 @@
       position-sorted record pinned by sha256) and run live on the reference
       meeting — record sha256 ebcd986c958382b2066e84495dabdd7e4671f8cfc5e7
       ad06b166e9a2b87b9f2e; note written to `census-review-note.md`.]
-- [ ] 1.2 Review the recorded census with the user (STOP gate); the review
+- [x] 1.2 Review the recorded census with the user (STOP gate); the review
       produces a dated token-only note in the change folder (counts +
-      ruling) — a hard prerequisite for opening §3.
-- [ ] COMMIT CHECKPOINT: commit the census record + note before §2 (the
-      dropped predecessor lost everything; §7's rule).
+      ruling) — a hard prerequisite for opening §3. [DONE 2026-11-18:
+      the user's review ran through the census findings to the decode-
+      reliability ruling ("decode reliability first, then ear pins",
+      2026-11-18) and the three follow-up rulings on the probe outcomes
+      (re-measure row-aligned / investigate the mega-row / token-walls
+      change first); census-review-note.md review-outcome section
+      amended with the dated ruling — no promotion wiring before it.]
+- [x] COMMIT CHECKPOINT: commit the census record + note before §2 (the
+      dropped predecessor lost everything; §7's rule). [DONE 2026-11-18:
+      83548572.]
 
 ## 2. Decode reliability — offline, red-first, measured lever ladder
 
@@ -56,17 +63,25 @@
       vote bar (margin 0.046 < 0.05). STOP recorded: S16 entry awaits
       re-cutting row-aligned on the current render + re-measurement
       before §3 wires (probe-record-2-4.md).]
-- [ ] COMMIT CHECKPOINT: commit the probe record + chosen leg before §3.
+- [x] COMMIT CHECKPOINT: commit the probe record + chosen leg before §3.
+      [DONE 2026-11-18/19: 0846f2c1 + addendum 8666a906 + investigation
+      aef945fb; chosen leg A (no retry ships, leg B identical everywhere),
+      STOP on S16 recorded; pause commit 334f951a.]
 
 ## 3. Promotion wiring — rebuild from the archived sketches
 
-> **PAUSED 2026-11-18 (user ruling):** the S16 attested fix is measured
-> blocked on today's render geometry (probe-record-2-4.md + addendum,
-> mega-row-investigation.md) and the user ruled the token-walls change
-> runs FIRST — it is the unblock path (per-word walls from sources into
-> the render make the straddling mega-row splittable). This change stays
-> open at §2: decode reliability measured and recorded, machinery green,
-> all records landed. §3–§5 resume once the token-walls change lands.
+> **PAUSED 2026-11-18 (user ruling); RESUMED 2026-11-20 (user's go).**
+> The pause's gate is cleared: `render-token-walls` landed 2026-11-19
+> (15/15, reviewed to convergence, archived 2026-11-19-render-token-
+> walls; delta synced to the main spec). The render is wall-bearing
+> (census rows=269 walled=194 null=75 violations=0, two live runs
+> byte-identical). The S16 re-cut is measured on the wall-bearing render
+> — see `handoff-note.md` in the archived change: [1024.75,1056.50]
+> (~31.75s ≤ cap), west edge row-aligned with the NULL-walled row's end
+> (no absorb, no erase), east edge token-aligned at 1056.50 on the
+> walled mega-row (occurrence #2's tokens survive in the east piece);
+> baseline pins hold (S16 2/2, S18 7/7), builder outcomes unchanged,
+> margins identical to 2026-11-18. §3 wires on that geometry.
 
 - [ ] 3.1 RED: two seed routes — (a) a duration-passing span whose
       separated decode trips rate-fiction or stutter; (b) an attested-window
