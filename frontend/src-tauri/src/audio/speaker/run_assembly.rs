@@ -1602,6 +1602,7 @@ pub fn rescue_candidates(
 /// One separated stream's evidence for an overlap span. Stream identity is
 /// the array index (0/1) — the separation port's stream ORDER carries no
 /// meaning, so the caller owns the index→stream binding.
+#[derive(Clone)]
 pub struct StreamEvidence {
     pub cluster: u32,
     pub margin: f32,
@@ -1622,6 +1623,7 @@ pub struct StreamEvidence {
 
 /// One utterance chunk of a separated stream: walls relative to the span
 /// start (seconds) and the chunk's post-audit decode (None = dropped).
+#[derive(Clone)]
 pub struct StreamUtterance {
     pub offset_s: (f64, f64),
     pub text: Option<String>,
@@ -1669,6 +1671,7 @@ pub fn is_class_e_fiction(s: &SpanSynthesis) -> bool {
 /// A span's both-stream synthesis evidence. Spans are seconds (the
 /// trigger's unit); rows and covered atoms are milliseconds (the
 /// alignment's unit).
+#[derive(Clone)]
 pub struct SpanSynthesis {
     pub span: (f64, f64),
     pub streams: [StreamEvidence; 2],
@@ -2822,12 +2825,88 @@ pub fn talkover_attested_seeds(
             .any(|&(s, t)| s >= e.start_s && t <= e.end_s)
         {
             out.push(TalkoverSeed {
-                span: ((e.start_s * 1000.0) as i64, (e.end_s * 1000.0) as i64),
+                span: entry_walls_ms(e),
                 kind: TalkoverSeedKind::Attested,
             });
         }
     }
     out
+}
+
+/// Entry walls in milliseconds — the ONE seconds→milliseconds conversion
+/// both the seed route and the splice gate use (a second, divergent
+/// rounding here would break exact-wall equality).
+fn entry_walls_ms(e: &AttestedWindowEntry) -> (i64, i64) {
+    ((e.start_s * 1000.0) as i64, (e.end_s * 1000.0) as i64)
+}
+
+/// The splice-side attestation gate (talkover-word-order-repair 3.2/3.3,
+/// delta spec: exact-wall matching only, within the same meeting): a
+/// talkover-classed repair applies ONLY when its window exactly equals one
+/// meeting-scoped entry's walls. Overlapping-but-unequal, straddling,
+/// cross-meeting, and entry-less windows are all unpinned — the repair
+/// keeps the mixture render (byte-identical).
+pub fn attested_entry_for_span<'a>(
+    span_ms: (i64, i64),
+    entries: &'a [AttestedWindowEntry],
+    meeting_id: &str,
+) -> Option<&'a AttestedWindowEntry> {
+    entries
+        .iter()
+        .find(|e| e.meeting_id == meeting_id && entry_walls_ms(e) == span_ms)
+}
+
+/// Fold-level composition (talkover-word-order-repair 3.2): both seed
+/// routes feed the class-aware builder — decode-tripped seeds from the
+/// duration-passing synthesis evidence, attested seeds from the pre-floor
+/// trigger spans inside meeting-scoped allowlist entries. All existing
+/// rejection guards (manual rows, synth atoms, caps, chain rules) apply
+/// inside the builder, unchanged.
+pub fn talkover_repair_candidates(
+    rows: &[AlignedSegment],
+    synths: &[SpanSynthesis],
+    trigger_spans: &[(f64, f64)],
+    entries: &[AttestedWindowEntry],
+    meeting_id: &str,
+    manual_spans: &[(i64, i64)],
+    max_span_secs: f64,
+) -> Vec<LoopRepairCandidate> {
+    let mut seeds = talkover_decode_tripped_seeds(synths);
+    seeds.extend(talkover_attested_seeds(trigger_spans, entries, meeting_id));
+    repair_windows_from_talkover_seeds(rows, &seeds, manual_spans, max_span_secs)
+}
+
+/// Apply order for the repair batch (talkover-word-order-repair 3.2): an
+/// attested window claims its region first (its walls are immovable), the
+/// legacy list keeps its own seed-priority order (stutter seeds before
+/// loop rows), decode-tripped windows go last. A loser overlaps an
+/// already-applied region and stands down at the region-already-per-voice
+/// check — never the reverse. Returns the repairs WITH their classes
+/// reordered in lockstep (the splice gate reads the class per repair).
+pub fn order_repairs_for_apply(
+    repairs: Vec<SpanSynthesis>,
+    classes: &[RepairSeedClass],
+) -> (Vec<SpanSynthesis>, Vec<RepairSeedClass>) {
+    assert_eq!(
+        repairs.len(),
+        classes.len(),
+        "one class per repair — the fold builds them in parallel"
+    );
+    let rank = |c: RepairSeedClass| match c {
+        RepairSeedClass::TalkoverAttested => 0,
+        RepairSeedClass::Legacy => 1,
+        RepairSeedClass::TalkoverDecodeTripped => 2,
+    };
+    let mut indexed: Vec<(usize, SpanSynthesis)> = repairs.into_iter().enumerate().collect();
+    indexed.sort_by_key(|(i, _)| rank(classes[*i]));
+    let ordered_classes: Vec<RepairSeedClass> = indexed
+        .iter()
+        .map(|(i, _)| classes[*i])
+        .collect();
+    (
+        indexed.into_iter().map(|(_, s)| s).collect(),
+        ordered_classes,
+    )
 }
 /// selection rule between a rebuilt window's decode passes. Pass 1 stands
 /// unless it tripped a rejection guard AND the single alternate pass
@@ -4898,6 +4977,113 @@ mod tests {
                 .iter()
                 .all(|c| c.seed_class == RepairSeedClass::Legacy),
             "legacy candidates are never talkover-classed: {legacy:?}"
+        );
+    }
+
+    // ---- talk-over fold routing (talkover-word-order-repair 3.2) ----
+
+    #[test]
+    fn talkover_candidates_compose_both_routes_and_manual_wins() {
+        // The fold-level composition: decode-tripped evidence and an
+        // attested entry both seed; a seed standing on a manual row is
+        // refused (manual-row-wins), and the attested entry's windows are
+        // exact — no chain drift.
+        let rows = union_rows();
+        let synths = vec![synth_cov(
+            (36.0, 36.5),
+            ev(1, 0.30, None),
+            ev(3, 0.20, Some("yeah man yeah man")),
+            &[(36_000, 36_500)],
+        )];
+        let trigger = vec![(21.2, 21.6)];
+        let entries = vec![attested_entry("meet-1", 21.0, 24.0)];
+        let out = talkover_repair_candidates(
+            &rows,
+            &synths,
+            &trigger,
+            &entries,
+            "meet-1",
+            &[],
+            20.0,
+        );
+        // Both routes seed; the decode-tripped window overlapping the
+        // attested one DEDUPES into it (attested walls are immovable —
+        // the 2.3 rule the composition inherits).
+        assert_eq!(out.len(), 1, "attested claims the overlapping region: {out:?}");
+        assert_eq!(out[0].seed_class, RepairSeedClass::TalkoverAttested);
+        assert_eq!(out[0].span, (21_000, 24_000));
+
+        // Without the attested entry, the same decode evidence builds its
+        // own window under the decode-tripped class.
+        let out = talkover_repair_candidates(&rows, &synths, &trigger, &[], "meet-1", &[], 20.0);
+        assert_eq!(out.len(), 1, "decode-tripped route seeds on its own: {out:?}");
+        assert_eq!(out[0].seed_class, RepairSeedClass::TalkoverDecodeTripped);
+
+        // A manual row inside the attested walls stands that seed down.
+        let manual = vec![(21_000i64, 24_000i64)];
+        let out = talkover_repair_candidates(
+            &rows,
+            &synths,
+            &trigger,
+            &entries,
+            "meet-1",
+            &manual,
+            20.0,
+        );
+        assert!(
+            !out.iter().any(|c| c.seed_class == RepairSeedClass::TalkoverAttested),
+            "manual-row-wins applies to the attested route: {out:?}"
+        );
+    }
+
+    #[test]
+    fn talkover_repairs_apply_only_on_exact_entry_match() {
+        // The splice-side gate: exact wall equality within the SAME
+        // meeting. Overlapping-but-unequal, cross-meeting, straddling, and
+        // entry-less windows are all unpinned (None) — the repair keeps
+        // the mixture render.
+        let entries = vec![attested_entry("meet-1", 21.0, 24.0)];
+        let exact = attested_entry_for_span((21_000, 24_000), &entries, "meet-1");
+        assert!(exact.is_some(), "exact walls match");
+        assert!(attested_entry_for_span((21_000, 25_000), &entries, "meet-1").is_none(),
+            "overlapping-but-unequal is unpinned");
+        assert!(attested_entry_for_span((20_000, 23_000), &entries, "meet-1").is_none(),
+            "straddling west is unpinned");
+        assert!(attested_entry_for_span((21_000, 24_000), &entries, "meet-2").is_none(),
+            "cross-meeting is unpinned");
+        assert!(attested_entry_for_span((21_000, 24_000), &[], "meet-1").is_none(),
+            "no entries — nothing is pinned");
+        // Millisecond conversion matches the seed route's (one definition).
+        let fractional = vec![attested_entry("meet-1", 1024.75, 1056.50)];
+        assert!(attested_entry_for_span((1_024_750, 1_056_500), &fractional, "meet-1").is_some(),
+            "the S16 re-cut walls round-trip through one conversion");
+    }
+
+    #[test]
+    fn repairs_apply_attested_first_then_legacy_then_decode_tripped() {
+        // Batch order: an attested window claims its region before a
+        // legacy loop window overlapping it; decode-tripped windows go
+        // last (a loser stands down at the region-already-per-voice
+        // check — never the reverse).
+        let mk = |span: (f64, f64)| synth_cov(span, ev(1, 0.3, None), ev(3, 0.2, Some("alpha beta gamma")), &[]);
+        let repairs = vec![mk((20.0, 22.0)), mk((0.0, 5.0)), mk((40.0, 42.0))];
+        let classes = [
+            RepairSeedClass::Legacy,
+            RepairSeedClass::TalkoverAttested,
+            RepairSeedClass::TalkoverDecodeTripped,
+        ];
+        let ordered = order_repairs_for_apply(repairs, &classes);
+        assert_eq!(ordered.0[0].span, (0.0, 5.0), "attested first");
+        assert_eq!(ordered.0[1].span, (20.0, 22.0), "legacy keeps seed-priority order");
+        assert_eq!(ordered.0[2].span, (40.0, 42.0), "decode-tripped last");
+        assert_eq!(
+            ordered.1,
+            [
+                RepairSeedClass::TalkoverAttested,
+                RepairSeedClass::Legacy,
+                RepairSeedClass::TalkoverDecodeTripped,
+            ],
+            "classes ride the reorder in lockstep"
         );
     }
 

@@ -648,7 +648,7 @@ pub async fn run_diarization_for_meeting(
     let references_for_repair = references.clone();
     let transcripts_for_repair = transcripts.clone();
     let embedding_path_for_repair = embedding_path.clone();
-    let (segments, centroids, engine_turns, rescue_seams, voice_votes, span_synthesis, stutter_seeds) =
+    let (segments, centroids, engine_turns, rescue_seams, voice_votes, span_synthesis, stutter_seeds, overlap_spans) =
         tokio::task::spawn_blocking(move || {        // SUCCESS PATH (design D5): the run-assembly engine derives the final
         // turns from ONE full-meeting pyannote pass. The chunk grid, temporal
         // smoothing, and refine_pass2 are NOT invoked here. Runs only when
@@ -783,7 +783,7 @@ pub async fn run_diarization_for_meeting(
                     stutter_seeds.len()
                 );
             }
-            return Ok::<_, anyhow::Error>((segments, centroids, Some(turns), seams, votes, span_synthesis, stutter_seeds));
+            return Ok::<_, anyhow::Error>((segments, centroids, Some(turns), seams, votes, span_synthesis, stutter_seeds, engine_out.overlap_spans));
         }
 
         // FALLBACK (only on model-load failure): legacy grid path, unchanged.
@@ -845,7 +845,7 @@ pub async fn run_diarization_for_meeting(
             }
         }
         let turns: Option<Vec<super::run_engine::EngineTurn>> = None;
-        Ok::<_, anyhow::Error>((segments, centroids, turns, Vec::new(), Vec::new(), Vec::new(), Vec::new()))
+        Ok::<_, anyhow::Error>((segments, centroids, turns, Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()))
     })
     .await
     .map_err(|e| format!("Diarization blocking task failed: {}", e))?
@@ -1065,14 +1065,51 @@ pub async fn run_diarization_for_meeting(
         &manual_spans,
         crate::audio::speaker::run_assembly::OVERLAP_MAX_SPAN_SECS,
     );
-    if !repair_candidates.is_empty() {
-        let repair_spans: Vec<(f64, f64)> = repair_candidates
+    // Talk-over promotion (talkover-word-order-repair 3.2, design D4):
+    // both seed routes feed the class-aware builder — decode-tripped
+    // (duration-passing decodes tripping rate-fiction or stutter) and
+    // attested-window (trigger-fired spans inside allowlist entries; the
+    // census proved the attested moments stand down at the duration
+    // floor, so only this route sees them). The allowlist is read from
+    // the local store in 3.3 — until that lands this runs fail-closed
+    // with no entries: windows build and their decode evidence collects,
+    // nothing splices.
+    let attested_entries: Vec<crate::audio::speaker::run_assembly::AttestedWindowEntry> =
+        Vec::new();
+    let talkover_candidates = crate::audio::speaker::run_assembly::talkover_repair_candidates(
+        &aligned,
+        &span_synthesis,
+        &overlap_spans,
+        &attested_entries,
+        meeting_id,
+        &manual_spans,
+        crate::audio::speaker::run_assembly::OVERLAP_MAX_SPAN_SECS,
+    );
+    if !talkover_candidates.is_empty() {
+        log::warn!(
+            "DIARIZATION: {} talk-over repair window(s) promoted (decode-tripped/attested)",
+            talkover_candidates.len()
+        );
+    }
+    // One re-synthesis batch: legacy windows keep seed priority, talk-over
+    // windows ride the same separation + decode; each window's seed class
+    // rides its index for the gated apply below.
+    let repair_classes: Vec<crate::audio::speaker::run_assembly::RepairSeedClass> =
+        repair_candidates
+            .iter()
+            .map(|_| crate::audio::speaker::run_assembly::RepairSeedClass::Legacy)
+            .chain(talkover_candidates.iter().map(|c| c.seed_class))
+            .collect();
+    let mut all_candidates = repair_candidates;
+    all_candidates.extend(talkover_candidates);
+    if !all_candidates.is_empty() {
+        let repair_spans: Vec<(f64, f64)> = all_candidates
             .iter()
             .map(|c| (c.span.0 as f64 / 1000.0, c.span.1 as f64 / 1000.0))
             .collect();
         log::warn!(
             "DIARIZATION: {} phrase-loop repair window(s) → re-synthesis",
-            repair_candidates.len()
+            all_candidates.len()
         );
         let centroids_for_repair = centroids.clone();
         let repairs = tokio::task::spawn_blocking(
@@ -1111,8 +1148,35 @@ pub async fn run_diarization_for_meeting(
         let cluster_speaker = |c: u32| -> Option<String> {
             Some(resolve_label(&format!("Speaker {c}"), &label_map))
         };
+        // Apply order (talkover-word-order-repair 3.2): attested windows
+        // claim their region first, legacy windows keep seed priority,
+        // decode-tripped last — a loser stands down at the
+        // region-already-per-voice check, never the reverse.
+        let (ordered_repairs, ordered_classes) =
+            crate::audio::speaker::run_assembly::order_repairs_for_apply(repairs, &repair_classes);
+        // The splice-side gate: talk-over windows apply ONLY on an exact
+        // entry match (same meeting, exact walls). Unattested windows drop
+        // here — the render keeps the mixture rows byte-identically; their
+        // decode evidence feeds the census (3.4).
+        let applicable: Vec<crate::audio::speaker::run_assembly::SpanSynthesis> =
+            ordered_repairs
+                .into_iter()
+                .zip(&ordered_classes)
+                .filter(|(s, c)| match c {
+                    crate::audio::speaker::run_assembly::RepairSeedClass::Legacy => true,
+                    _ => {
+                        crate::audio::speaker::run_assembly::attested_entry_for_span(
+                            ((s.span.0 * 1000.0) as i64, (s.span.1 * 1000.0) as i64),
+                            &attested_entries,
+                            meeting_id,
+                        )
+                        .is_some()
+                    }
+                })
+                .map(|(s, _)| s)
+                .collect();
         let (next, applied, rejected) =
-            crate::audio::speaker::run_assembly::apply_loop_repairs(aligned, &repairs, &cluster_speaker);
+            crate::audio::speaker::run_assembly::apply_loop_repairs(aligned, &applicable, &cluster_speaker);
         for (span, reason) in &rejected {
             log::warn!(
                 "DIARIZATION: repair window [{:.2}-{:.2}] degraded: {}",
@@ -1123,8 +1187,8 @@ pub async fn run_diarization_for_meeting(
         }
         if applied > 0 {
             log::warn!(
-                "DIARIZATION: repaired {applied}/{} phrase-loop window(s) per-voice",
-                repairs.len()
+                "DIARIZATION: repaired {applied}/{} repair window(s) per-voice",
+                applicable.len()
             );
         }
         aligned = next;

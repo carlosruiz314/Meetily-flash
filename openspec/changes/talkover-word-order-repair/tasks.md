@@ -112,12 +112,29 @@
       talkover-classed), overlapping different-badge pair survives
       duplicate resolution (pinned existing guard — green immediately).
       Lib 810 green at -j 2.]
-- [ ] 3.2 GREEN: route the promoted window through the live repair-window
+- [x] 3.2 GREEN: route the promoted window through the live repair-window
       builder (separation + per-stream decode + per-voice splice with
       `synth_parent` links); all existing rejection guards apply unchanged
       (margin-gated distinct-voice votes, hallucination guards, RMS
       eligibility, duration floor, w/s ceilings, manual-row-wins,
-      byte-identical degrade, `transcript_sources` byte-identity).
+      byte-identical degrade, `transcript_sources` byte-identity). [DONE
+      2026-11-20: the fold routes talk-over candidates through the SAME
+      re-synthesis batch as the legacy windows (one separation + decode
+      pass; `overlap_spans` threaded out of the engine blocking task as
+      the 8th tuple element) — `talkover_repair_candidates` composes both
+      seed routes into the class-aware builder (all guards live inside it,
+      unchanged); apply order attested → legacy (seed priority) →
+      decode-tripped (`order_repairs_for_apply` returns classes in
+      lockstep); the splice-side gate filters talk-over windows to exact
+      entry matches (`attested_entry_for_span` — the ms conversion is ONE
+      shared fn with the seed route, the S16 re-cut walls round-trip
+      pinned). INTERIM FAIL-CLOSED STATE, noted in the fold: the allowlist
+      store read lands in 3.3 — until then entries are empty, so talk-over
+      windows build + collect decode evidence but NOTHING splices (the
+      render stays byte-identical at this commit). Tests: composition
+      (both routes seed; decode-tripped overlapping attested dedupes into
+      it; manual-row-wins), exact-match gate quadruple + fractional-walls
+      round-trip, apply ordering + class lockstep. Lib 813 green at -j 2.]
 - [ ] 3.3 RED→GREEN: the attestation gate — `attestedRepairWindows` in the
       Tauri store (`settings.json` scheduler-settings mechanism): entries
       exactly `{meeting_id, start_s, end_s, attested_date, render_sha256,
