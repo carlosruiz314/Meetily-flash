@@ -228,12 +228,27 @@
       lint (no concurrent cargo during live runs). [DONE 2026-11-20: all
       30 test targets ok, exit 0 — lib 819 + integration + doc-tests; the
       ear-gate target ran within the suite; zero FAILED lines.]
-- [ ] 5.2 Production Speakers re-run (heartbeat): verify via the
+- [x] 5.2 Production Speakers re-run (heartbeat): verify via the
       replay/oracle harnesses — fired spans render per-voice ONLY where
       attested (meeting+walls+hash+fingerprint all matching); every seed
       outcome present in the census (including rebuild-aborted); unpinned
       and stale spans byte-identical to mixture rows; `transcript_sources`
-      byte-identity.
+      byte-identity. [DONE 2026-11-20: live run 2607s, exit 0 (log
+      live-speakers-talkover.log). The promotion fired live for the first
+      time: 2 decode-tripped talk-over windows promoted
+      ([1421.21-1453.63], [2535.17-2559.11]), both rebuilt through the
+      full separation+decode machinery and BOTH awaited attestation —
+      mixture kept; TALKOVER-SEED-CENSUS total=2 attested=0 awaiting=2
+      stale=0 stood=0 notbuilt=0 separation=0 aborted=0 (every seed
+      outcome present, the global outcomes exercised nowhere — no
+      failure); TOKENWALLS-CENSUS rows=269 walled=194 null=75
+      violations=0; render diff vs the pre-run snapshot: 269 rows both
+      sides, total diffs 0 (text/span/badge/synth all 0) — the unpinned
+      spans are byte-identical to the mixture render; transcript_sources
+      sha256 unchanged (87974a8d…); S16 window verified holding 0 synth
+      rows (stays mixture, no entry). The legacy phrase-loop path
+      re-derived its own repair idempotently within the identical
+      render.]
 - [ ] 5.3 Attestation round: cut before/after clips ONLY for fired spans
       (evidence home or meeting folder), token-only manifest per the
       design's exhaustive field list (walls, clip sha256, clip duration_s,
@@ -242,7 +257,7 @@
       dated verdicts become fixture pins (`repair_attestation` kind) +
       allowlist entries (user's word each time). Stands-down on verdict
       keep mixture rows permanently.
-- [ ] 5.4 Smoke-spec deliverable decision (AGENTS.md §3, made at proposal
+- [x] 5.4 Smoke-spec deliverable decision (AGENTS.md §3, made at proposal
       time): the promotion adds NO new frontend wiring — the visible
       outcome (rows replaced by finer distinct-speaker rows after a
       Speakers run: event → refetch → distinct badges) is already pinned by
@@ -253,6 +268,8 @@
       selection is structurally invisible to Playwright and is covered by
       the cargo byte-identity gates + ear-gate pins. No new smoke spec;
       this rationale recorded; the covering specs verified passing.
+      [VERIFIED 2026-11-20: both covering specs pass — 2 passed / 0
+      failed, chromium.]
 - [ ] 5.5 Before archive: re-read the live spec + design against what
       landed; amend the delta/design first if the implementation evolved
       (the two scenario amendments in the delta apply at archive).

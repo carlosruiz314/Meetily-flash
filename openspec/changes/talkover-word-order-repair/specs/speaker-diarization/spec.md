@@ -136,11 +136,22 @@ walls to match an `attestedRepairWindows` entry (for rebuilt windows).
   (validated, mangled/row-removed, control)
 - **WHEN** the offline lever-ladder probe drives the full builder+splice
   path against the evidence-home attested sequences under the frozen
-  comparison operator
+  comparison operator (the gate's own pin semantics — needles at attested
+  multiplicity, measured 2026-11-18)
 - **THEN** each attested shape's rebuilt render matches its attested
   sequence verbatim on the measured minimal leg
 - **AND** a shape that no leg recovers is a recorded STOP — no wiring ships
   until the user re-plans
+- **AND** the measured outcome stands as recorded: the clean shape
+  recovered 7/7 hard pins end-to-end on leg A (leg B identical everywhere —
+  no retry shipped); the S16 shape STOP'd on the then-current render
+  geometry (absorb-whole erase, then separation collapse on the row-aligned
+  re-cut — probe record + addendum), the user ruled the token-walls change
+  the unblock path, and its re-cut [1024.75,1056.50] is measured on the
+  wall-bearing render (no erase, both needles covered, margins unchanged)
+  with its entry firing only after its own decode re-measurement at those
+  walls (design D4's carried obligation — the runtime hash gate keeps it
+  fail-closed meanwhile)
 
 #### Scenario: Candidate census precedes render changes
 
