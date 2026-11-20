@@ -224,8 +224,10 @@
 
 ## 5. Verification + closure
 
-- [ ] 5.1 Full `cargo test` green at `-j 2` including the ear-gate fixture
-      lint (no concurrent cargo during live runs).
+- [x] 5.1 Full `cargo test` green at `-j 2` including the ear-gate fixture
+      lint (no concurrent cargo during live runs). [DONE 2026-11-20: all
+      30 test targets ok, exit 0 — lib 819 + integration + doc-tests; the
+      ear-gate target ran within the suite; zero FAILED lines.]
 - [ ] 5.2 Production Speakers re-run (heartbeat): verify via the
       replay/oracle harnesses — fired spans render per-voice ONLY where
       attested (meeting+walls+hash+fingerprint all matching); every seed
