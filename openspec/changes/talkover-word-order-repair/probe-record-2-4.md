@@ -318,3 +318,35 @@ the entry goes into the scheduler store and the production Speakers
 re-run ships it. Accepted cost stands: the crosstalk-buried first
 occurrence stays swallowed (word loss of overlapped speech, per the
 amended pin).
+
+## Addendum 5 — certification: certified with limitation; the render mapping corrected (2026-11-21)
+
+The certification listen (the user, 2026-11-21, against earcheck-3 and
+the raw audio) corrected the render mapping claimed in addenda 3–4:
+NOTHING is swallowed. The needle run the question-needle token list ×1 that renders sits
+in the USER's stream row — it is the third speaker's FIRST (clean)
+occurrence (walls 1053.62–1054.08) bled into the user's stream, rendered
+between the user's two sentence halves (the timeline fits exactly). The
+third speaker's SECOND (broken) occurrence is what the other stream
+caught at the window tail: decoded as a one-word fiction under the WRONG
+badge. Addendum 3's "buried first occurrence" and addendum 4's "accepted
+word loss" are WRONG — both occurrences render, both misattributed; the
+2026-11-20 amendment reason's word-loss framing is superseded.
+
+The user's verdicts: (1) the needle the or-needle token list
+renders correctly — yes; (2) the fiction tail is the third speaker's
+clipped second occurrence, not the second stream's own speaker —
+confirmed by ear; (3) the fiction is STRUCTURAL, measured: trimming the
+east edge before the occurrence loses the needle (addendum 3's c3
+got=0), extending east past the utterance decoded byte-identical (c2),
+and the retry leg was identical — needle and bleed share the same
+talkover audio (3 voices, 2 streams).
+
+RULING (2026-11-21): **certify with limitation + file the follow-up.**
+The allowlist entry goes into the scheduler store (walls
+[1024.61,1057.30], render_sha256=08f55d47…, profile_fp
+repair/strict/no-retry/width-30-chain-35/model-large-v3-turbo-q5_0); the
+production Speakers re-run ships it; a follow-up issue (wall-payload
+provenance guard sketch + the 3-voices/2-streams root cause) goes to the
+fork. Ship is reversible-in-effect: a future render with a different
+hash fails closed to mixture (stale-attestation) until re-attested.

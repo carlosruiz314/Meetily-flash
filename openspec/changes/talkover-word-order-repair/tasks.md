@@ -285,10 +285,18 @@
       render pins pin0 want=1 got=1 PASS + pin1 want=1 got=1 PASS.
       Attestation coords captured: render_sha256=08f55d47…,
       profile_fp=repair/strict/no-retry/width-30-chain-35/model-large-v3-
-      turbo-q5_0. Certification listen PENDING: the user hears the winning
-      render rows against the raw audio, and on their certification word
-      the allowlist entry goes into the scheduler store and the production
-      Speakers re-run ships it. The two decode-tripped windows
+      turbo-q5_0. [CERTIFIED 2026-11-21, with limitation: the user's
+      certification listen CORRECTED the render mapping (probe record
+      addendum 5) — nothing is swallowed; the rendered needle run is the
+      third speaker's first occurrence bled into the user's stream, and
+      the third speaker's broken second occurrence renders as a one-word
+      fiction under the wrong badge in the other stream's row. The
+      fiction is structural (3 voices, 2 streams — measured: c3 loses
+      the needle, c2 byte-identical, retry leg identical). RULING:
+      certify with limitation + file the follow-up (wall-payload
+      provenance guard sketch + root cause) in the fork; store entry +
+      production re-run proceed. Ship is reversible-in-effect
+      (stale-attestation fail-closed).] The two decode-tripped windows
       ([1421.21-1453.63], [2535.17-2559.11]) still await the user's ear:
       their attestation round (clip cuts + listens) runs on the user's
       word naming which windows they want heard — the rebuild evidence
