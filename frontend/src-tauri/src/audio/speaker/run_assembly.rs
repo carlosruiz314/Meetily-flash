@@ -2998,7 +2998,17 @@ pub fn repairs_admissible_for_splice(
         match c {
             RepairSeedClass::Legacy => admissible.push(s.clone()),
             RepairSeedClass::TalkoverAttested | RepairSeedClass::TalkoverDecodeTripped => {
-                let span_ms = ((s.span.0 * 1000.0) as i64, (s.span.1 * 1000.0) as i64);
+                // ROUND, never truncate: the synthesis span crossed ms→s
+                // (repair_spans), and truncation loses 1ms on values like
+                // 1024609/1000.0 (1024.609×1000 = 1024608.999…→1024608) —
+                // exact-wall equality then fails against the entry. Rounding
+                // recovers the integer ms exactly; the entry side keeps its
+                // own truncation (start_s decimals like 1024.61 cut AT the
+                // truncated value — the certified coordinates).
+                let span_ms = (
+                    (s.span.0 * 1000.0).round() as i64,
+                    (s.span.1 * 1000.0).round() as i64,
+                );
                 match attestation_verdict(span_ms, &repair_render_sha256(s), &fp, entries, meeting_id)
                 {
                     AttestationVerdict::Attested(_) => admissible.push(s.clone()),
@@ -5593,6 +5603,41 @@ mod tests {
             }
             other => panic!("model mismatch is Stale: {other:?}"),
         }
+    }
+
+    #[test]
+    fn gate_walls_survive_the_seconds_round_trip() {
+        // Found by the first production ship (2026-11-21): the candidate
+        // span is ms (1024609), the synthesis path carries seconds
+        // (1024609/1000.0 = 1024.609), and the gate re-derived ms by
+        // TRUNCATION — (1024.609 * 1000.0) as i64 = 1024608, one ms short
+        // of the entry's 1024609, so exact-wall equality failed and the
+        // certified window rendered awaiting-attestation. The entry side
+        // MUST keep truncation (start_s 1024.61 × 1000 = 1024609.999…, and
+        // the certified coords were cut at the truncated value), so the
+        // re-derivation rounds — which recovers any integer ms exactly
+        // (f64's 1e-13-relative error is orders below half-ulp at ms
+        // magnitudes). The real certified walls are the test values.
+        let synth = synth_cov(
+            (1024609f64 / 1000.0, 1057300f64 / 1000.0),
+            ev(1, 0.3, Some("alpha")),
+            ev(3, 0.2, Some("beta")),
+            &[],
+        );
+        let mut entry = attested_entry("meet-1", 1024.61, 1057.3);
+        entry.render_sha256 = repair_render_sha256(&synth);
+        entry.profile_fp = repair_profile_fp("model-x");
+        let entries = vec![entry];
+        let classes = [RepairSeedClass::TalkoverAttested];
+        let (admissible, rejected) = repairs_admissible_for_splice(
+            std::slice::from_ref(&synth),
+            &classes,
+            &entries,
+            "meet-1",
+            "model-x",
+        );
+        assert_eq!(admissible.len(), 1, "the certified walls must survive the round trip: {rejected:?}");
+        assert!(rejected.is_empty(), "{rejected:?}");
     }
 
     // ---- per-seed census (talkover-word-order-repair 3.4) ----

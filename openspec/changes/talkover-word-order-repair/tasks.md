@@ -296,7 +296,17 @@
       certify with limitation + file the follow-up (wall-payload
       provenance guard sketch + root cause) in the fork; store entry +
       production re-run proceed. Ship is reversible-in-effect
-      (stale-attestation fail-closed).] The two decode-tripped windows
+      (stale-attestation fail-closed).] [SHIP VERIFY 2026-11-21: the
+      first production re-run found the certified window
+      awaiting-attestation — a 1ms ms→s→ms round-trip bug at the splice
+      gate's wall re-derivation (probe record addendum 6): truncation
+      lost 1024609 → 1024608 against the entry's exact walls. Fixed: the
+      gate re-derives by rounding (recovers integer ms exactly); the
+      entry side keeps its truncation (the certified coordinate). Red
+      test gate_walls_survive_the_seconds_round_trip; module 144/144, lib
+      820/820. Outside-window byte-identity, sources immutability, and
+      the seed route all verified clean in that run. Re-run with the fix
+      in flight.] The two decode-tripped windows
       ([1421.21-1453.63], [2535.17-2559.11]) still await the user's ear:
       their attestation round (clip cuts + listens) runs on the user's
       word naming which windows they want heard — the rebuild evidence

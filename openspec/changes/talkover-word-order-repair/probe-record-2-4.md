@@ -350,3 +350,39 @@ production Speakers re-run ships it; a follow-up issue (wall-payload
 provenance guard sketch + the 3-voices/2-streams root cause) goes to the
 fork. Ship is reversible-in-effect: a future render with a different
 hash fails closed to mixture (stale-attestation) until re-attested.
+
+## Addendum 6 — the first production ship found a 1ms gate round-trip bug (2026-11-21)
+
+The first production Speakers re-run with the entry live (37.5 min,
+harness `live_speakers_run` reading the allowlist straight from the
+scheduler store) measured the certified window **awaiting-attestation —
+mixture kept** (census: total=3 attested=0 awaiting=3 stale=0; the two
+decode-tripped windows await their ear round as expected). Everything
+else verified clean: outside-window rows byte-identical (265 rows),
+row count 269 before/after, transcript_sources unchanged, 3 windows
+promoted (the attested route DID fire — the seed match held).
+
+Root cause — an ms→s→ms round trip at the splice gate: the candidate
+span is ms (1024609, from the seed = entry_walls_ms), the synthesis path
+carries seconds (1024609/1000.0 = 1024.609), and the gate re-derived ms
+by TRUNCATION: (1024.609 × 1000.0) as i64 = **1024608** — one ms short
+of the entry's 1024609, so exact-wall equality failed → Unpinned →
+awaiting. The end wall (1057300) round-trips exactly; only the start
+loses the ms. The probe's SHIPPED-PATH outcome=would-fire compared the
+CANDIDATE walls against the seed walls (exact) and never exercised the
+gate's re-derivation — that approximation gap is why the probe passed
+while production failed.
+
+Fix: the gate's re-derivation ROUNDS (`(s * 1000.0).round() as i64`) —
+f64's 1e-13-relative error is orders below half-ulp at ms magnitudes, so
+rounding recovers any integer ms exactly. The ENTRY side keeps its
+truncation on purpose: decimal seconds (1024.61 × 1000 = 1024609.999…)
+cut AT the truncated value — that IS the certified coordinate the probe,
+the fixture pin, and the store entry all carry. Red test
+`gate_walls_survive_the_seconds_round_trip` pins the real certified
+walls; run_assembly module 144/144, lib suite 820/820.
+
+Re-run in flight. Note: the wall fix also un-gates the hash check for
+the first time — the production decode's render_sha256 must equal the
+certified 08f55d47… or the gate goes stale-attestation (fail-closed,
+loud, both hashes logged).
