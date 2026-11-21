@@ -80,14 +80,31 @@ walls.** The rebuild decodes cleanly (stream_tokens=[44, 39], guards
 clean, splice ok, leg B identical — the wiring is measured correct) but
 the spliced render FAILS the ear gate's own pins: occurrence #1 want=1
 got=0, occurrence #2 want=2 got=1 — the handoff's predicted needle
-coverage is falsified by the decode+pin evaluation. **STOP stands; the
-S16 entry cannot be cut on this geometry** — the user re-plans before any
-S16 entry ships (the runtime gate never admits one meanwhile). Two open
-re-plan questions recorded: the census trigger [1056.90,1057.30] sits
-east of the re-cut window (the attested route seeds on trigger
-containment — this entry could not fire even with pins held), and the
-east-edge token alignment (1056.50 vs attested 1057.30) interacts with
-the pin window's joined scope. West
+coverage is falsified by the decode+pin evaluation. **STOP stood on that
+geometry; the user re-planned (2026-11-20) and the re-plan RESOLVED
+(2026-11-21):** the pin amended 2→1 with the dated ruling (both fixture
+amendment + probe record addendum 3), the window re-aimed at the
+originally attested walls [1024.61,1057.30] on the wall-bearing render,
+and a three-candidate search measured there (addendum 3) — the winner
+[1024.61,1057.30] re-measured against the AMENDED oracle RECOVERED=YES
+(2026-11-21, record sha 9fd102a2…: builder walls_match at
+[1024609,1057300], shipped-path would-fire on the REAL census trigger
+[1056.90,1057.30] — the trigger-containment re-plan question resolved
+itself by aiming at the attested walls, which contain it — leg A-strict
+stands with leg B identical, both render pins PASS). The certification
+listen (2026-11-21, addendum 5) ruled **CERTIFY WITH LIMITATION**: the
+third speaker's two interjections render misattributed (the first bled
+into the user's stream row, the second as a one-word fiction under the
+other stream's badge) — structural at 2-stream separation, measured
+(needle and bleed share the same talkover audio: c2 byte-identical, c3
+loses the needle, retry leg identical), documented and filed as fork
+issue #7 (wall-payload provenance guard sketch + the 3-voices/2-streams
+root cause). The entry ships on the certified coords
+(render_sha256=08f55d47…, profile_fp repair/strict/no-retry/width-30-
+chain-35/model-large-v3-turbo-q5_0) and is reversible-in-effect — any
+future render change fails closed to mixture (stale-attestation) until
+re-attested. The east-edge-alignment re-plan question is resolved the
+same way: the attested east wall 1057.30 IS the shipped edge. West
 rows [982.17,1024.75]…[1027.86,1032.31] stay NULL-walled (source chunk
 [1010.07,1032.31] fails the validator's backtrack tolerance) — a dial-
 adjacent question for the user, never a unilateral move; no §3 path needs

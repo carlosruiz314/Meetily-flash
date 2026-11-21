@@ -87,13 +87,41 @@ async fn live_speakers_run_cde5c264() {
     .await
     .unwrap();
 
+    // The attestation allowlist, read straight from the app's store — the
+    // UI-free standalone flow passes exactly what the store holds (the
+    // Tauri-command callers read the same file via load_attested_windows).
+    let store_path = dirs::data_dir()
+        .expect("no user data dir")
+        .join("com.meetily.ai")
+        .join("scheduler_settings.json");
+    let store_body = std::fs::read_to_string(&store_path).expect("scheduler store reads");
+    let store_json: serde_json::Value =
+        serde_json::from_str(&store_body).expect("scheduler store parses");
+    let attested_windows =
+        app_lib::audio::speaker::run_assembly::attested_repair_windows_from_value(
+            store_json.get("attestedRepairWindows"),
+        );
+    eprintln!("allowlist loaded: {} entry(ies)", attested_windows.len());
+
+    // Full-row snapshot — the run's ONLY visible change must be inside the
+    // certified window (5.2 proved byte-identity outside rebuild windows).
+    let rows_before: Vec<(Option<f64>, Option<f64>, Option<String>, String)> = sqlx::query_as(
+        "SELECT audio_start_time, audio_end_time, speaker_label, transcript \
+         FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time, audio_end_time",
+    )
+    .bind(MEETING_ID)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    eprintln!("snapshot before: {} rows", rows_before.len());
+
     let t0 = std::time::Instant::now();
     let result = app_lib::audio::speaker::commands::run_speakers_reset_standalone(
         &pool,
         MEETING_ID,
         threshold_fp,
         registry,
-        Vec::new(),
+        attested_windows,
     )
     .await
     .expect("diarization run failed");
@@ -124,8 +152,9 @@ async fn live_speakers_run_cde5c264() {
         );
     }
 
-    // DB-layer verification (terminal-only rule): the S16 window carries the
-    // per-voice synth pair; transcript_sources is untouched.
+    // DB-layer verification (terminal-only rule): the certified window
+    // carries the spliced synth rows; transcript_sources is untouched;
+    // everything OUTSIDE the certified window is byte-identical.
     let sources_after: Vec<(String, String)> = sqlx::query_as(
         "SELECT id, transcript FROM transcript_sources WHERE meeting_id = ? ORDER BY id",
     )
@@ -135,20 +164,53 @@ async fn live_speakers_run_cde5c264() {
     .unwrap();
     assert_eq!(sources_after, sources_before, "transcript_sources must be byte-identical across the run");
 
-    let s16_rows: Vec<(Option<i64>, Option<String>, String)> = sqlx::query_as(
-        "SELECT synth_atom, speaker_label, transcript FROM transcripts          WHERE meeting_id = ? AND audio_start_time >= 1054.0 AND audio_end_time <= 1059.0          ORDER BY audio_start_time, audio_end_time",
+    let rows_after: Vec<(Option<f64>, Option<f64>, Option<String>, String)> = sqlx::query_as(
+        "SELECT audio_start_time, audio_end_time, speaker_label, transcript \
+         FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time, audio_end_time",
     )
     .bind(MEETING_ID)
     .fetch_all(&pool)
     .await
     .unwrap();
-    eprintln!("--- S16 window rows (1054-1059s) ---");
-    for r in &s16_rows {
-        eprintln!("synth={:?} badge={:?} | {}", r.0, r.1, r.2);
-    }
-    let synth_count = s16_rows.iter().filter(|r| r.0 == Some(1)).count();
+    eprintln!("snapshot after: {} rows (before: {})", rows_after.len(), rows_before.len());
+    let in_window =
+        |s: &Option<f64>| s.map_or(false, |v| (1024.0..=1058.0).contains(&v));
+    let out_before: Vec<_> = rows_before.iter().filter(|r| !in_window(&r.0)).collect();
+    let out_after: Vec<_> = rows_after.iter().filter(|r| !in_window(&r.0)).collect();
+    assert_eq!(
+        out_before, out_after,
+        "rows outside the certified window must be byte-identical"
+    );
     eprintln!(
-        "VERIFY: S16 window holds {synth_count} synth row(s) of {} total",
+        "VERIFY: outside-window rows byte-identical ({} rows)",
+        out_before.len()
+    );
+
+    let s16_rows: Vec<(Option<f64>, Option<f64>, Option<i64>, Option<String>, String)> =
+        sqlx::query_as(
+            "SELECT audio_start_time, audio_end_time, synth_atom, speaker_label, transcript \
+             FROM transcripts \
+             WHERE meeting_id = ? AND audio_start_time >= 1024.0 AND audio_end_time <= 1058.5 \
+             ORDER BY audio_start_time, audio_end_time",
+        )
+        .bind(MEETING_ID)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    eprintln!("--- certified window rows (1024-1058.5s) ---");
+    for r in &s16_rows {
+        eprintln!(
+            "[{:.2},{:.2}] synth={:?} badge={:?} | {}",
+            r.0.unwrap_or(0.0),
+            r.1.unwrap_or(0.0),
+            r.2,
+            r.3,
+            r.4
+        );
+    }
+    let synth_count = s16_rows.iter().filter(|r| r.2 == Some(1)).count();
+    eprintln!(
+        "VERIFY: certified window holds {synth_count} synth row(s) of {} total",
         s16_rows.len()
     );
 

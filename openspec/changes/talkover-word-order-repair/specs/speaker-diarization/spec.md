@@ -151,10 +151,22 @@ walls to match an `attestedRepairWindows` entry (for rebuilt windows).
   was measured 2026-11-20 at its own walls and RECOVERED=NO — the rebuild
   decodes cleanly (stream_tokens=[44, 39], guards clean) but the spliced
   render fails the ear gate's own pins (occurrence #1 want=1 got=0,
-  occurrence #2 want=2 got=1): STOP stands, the S16 entry cannot be cut on
-  this geometry, and the user re-plans before any S16 entry ships (the
-  runtime hash gate never admits one meanwhile — probe record addendum,
-  sha 4cdafb01…)
+  occurrence #2 want=2 got=1): STOP stood on that geometry — the user
+  re-planned (2026-11-20: pin amended 2→1 with the dated ruling, window
+  re-aimed at the originally attested walls [1024.61,1057.30] on the
+  wall-bearing render) and the re-measurement at those walls against the
+  AMENDED oracle RECOVERED=YES (2026-11-21, record sha 9fd102a2…: leg
+  A-strict stands with leg B identical, both render pins PASS, shipped-
+  path would-fire on the REAL census trigger). The certification listen
+  (2026-11-21) ruled CERTIFY WITH LIMITATION: the third speaker's two
+  interjections render misattributed — the first bled into the user's
+  stream row, the second as a one-word fiction under the other stream's
+  badge — structural at 2-stream separation (needle and bleed share the
+  same talkover audio: extending east decoded byte-identical, trimming
+  east loses the needle, retry leg identical), documented and filed as
+  fork issue #7; the entry ships on the certified coords and is
+  reversible-in-effect (any future render change fails closed to mixture
+  via stale-attestation until re-attested — probe record addenda 4–5)
 
 #### Scenario: Candidate census precedes render changes
 
