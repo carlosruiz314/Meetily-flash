@@ -282,3 +282,39 @@ occurrence staying swallowed (word loss of crosstalk-buried words); or
 (b) keep S16 mixture — the limitation stands documented. The runtime
 hash gate keeps every un-amended entry fail-closed meanwhile; trigger
 containment holds for c1/c2.
+
+## Addendum 4 — the user ruled: amend pin, ship c1; winner measured RECOVERED=YES (2026-11-21)
+
+The user ruled (2026-11-20): **amend pin1 want 2→1 and ship c1
+[1024.61,1057.30]**, with ONE certification listen before it goes live.
+The fixture was amended the same day (pin_2 ×2→×1; dated amendment block
+S16_ads_overlap_1056 carrying the ear ruling — first occurrence clean,
+second broken with the sorry tail — and the measured unattainability of
+want=2 per-stream).
+
+The winner re-measured against the AMENDED oracle (record sha
+9fd102a2…, 2026-11-21):
+- BASELINE (mixture): pin0 got=1 PASS, pin1 got=2 FAIL — the mixture
+  carries the duplicated/broken run; that is the defect the amended
+  oracle rejects.
+- Builder: candidates=1 walls_match=true walls=[1024609,1057300];
+  shipped-path outcome=would-fire — the REAL census trigger
+  [1056.90,1057.30] is contained in the window, so the production
+  trigger route fires this window (no hand-drawn span).
+- Legs: A-strict = B-repair, stream_tokens=[44, 40], stutter=false,
+  fiction=false, splice=ok, guards clean — leg A stands (no retry
+  shipped).
+- Identity: stream0 top=userB margin=0.58; stream1 top=userA margin=0.22.
+- RENDER-PIN pin0 want=1 got=1 PASS; RENDER-PIN pin1 want=1 got=1 PASS
+  → **SHAPE-VERDICT name=validated recovered=YES**.
+- Attestation coords captured for the store entry:
+  render_sha256=08f55d47275deedf6abfda25112b8873baf6284de6d3ac025e29cea
+  d30808f21, profile_fp=repair/strict/no-retry/width-30-chain-35/
+  model-large-v3-turbo-q5_0.
+
+Certification pending: the user hears the winning render rows against
+the raw audio (earcheck clips) and gives the certification word; then
+the entry goes into the scheduler store and the production Speakers
+re-run ships it. Accepted cost stands: the crosstalk-buried first
+occurrence stays swallowed (word loss of overlapped speech, per the
+amended pin).

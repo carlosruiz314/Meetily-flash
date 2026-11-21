@@ -272,7 +272,27 @@
       attestation round (clip cuts + listens) runs on the user's word
       naming which windows they want heard — the rebuild evidence must
       be re-derived per window (probe run) before clips are cut.
-      Awaiting the search results + the user's certification listens.]
+      [STATE 2026-11-21: the search closed — the user ruled (2026-11-20)
+      **amend pin1 want 2→1 and ship c1 [1024.61,1057.30]**, with ONE
+      certification listen before it goes live. The fixture was amended
+      the same day (pin_2 ×2→×1; dated amendment block S16_ads_overlap_1056
+      carrying the ear ruling + the measured unattainability of want=2).
+      Winner measured against the AMENDED oracle: RECOVERED=YES (probe
+      record addendum 4; record sha 9fd102a2…) — builder walls_match=true
+      walls=[1024609,1057300], shipped-path outcome=would-fire (the REAL
+      census trigger [1056.90,1057.30] contained), leg A-strict stands
+      (stream_tokens=[44,40], leg B identical, guards clean, no retry),
+      render pins pin0 want=1 got=1 PASS + pin1 want=1 got=1 PASS.
+      Attestation coords captured: render_sha256=08f55d47…,
+      profile_fp=repair/strict/no-retry/width-30-chain-35/model-large-v3-
+      turbo-q5_0. Certification listen PENDING: the user hears the winning
+      render rows against the raw audio, and on their certification word
+      the allowlist entry goes into the scheduler store and the production
+      Speakers re-run ships it. The two decode-tripped windows
+      ([1421.21-1453.63], [2535.17-2559.11]) still await the user's ear:
+      their attestation round (clip cuts + listens) runs on the user's
+      word naming which windows they want heard — the rebuild evidence
+      must be re-derived per window (probe run) before clips are cut.]
 - [x] 5.4 Smoke-spec deliverable decision (AGENTS.md §3, made at proposal
       time): the promotion adds NO new frontend wiring — the visible
       outcome (rows replaced by finer distinct-speaker rows after a

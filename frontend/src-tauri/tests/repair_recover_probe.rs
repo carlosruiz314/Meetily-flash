@@ -720,6 +720,17 @@ async fn repair_recover_probe() {
                 0 => &spliced_a,
                 _ => &spliced_b,
             };
+            // The attestation-entry coordinates for this shape's selected
+            // render (token-only, repo-safe): the content hash the runtime
+            // splice gate recomputes (repair_render_sha256 semantics) and
+            // the decode-profile fingerprint — exactly what an
+            // attestedRepairWindows entry carries.
+            let synth_sel = if leg_idx == 0 { &synth_a } else { &synth_b };
+            record.push(format!(
+                "RENDER-ATTESTATION-COORDS render_sha256={} profile_fp={}",
+                app_lib::audio::speaker::run_assembly::repair_render_sha256(synth_sel),
+                app_lib::audio::speaker::run_assembly::repair_profile_fp(&model),
+            ));
             match spliced_sel {
                 Ok(next) => {
                     let (absorbed, straddling, west_e, east_e) =
@@ -756,8 +767,9 @@ async fn repair_recover_probe() {
                     ));
                     shape_ok = shape_ok && pass;
                 }
-                // Verbatim mismatch diagnostics — terminal only.
-                if print_verbatim && !shape_ok {
+                // Verbatim row diagnostics — terminal only. Also dumped on a
+                // PASS so the certification listen can show the winning rows.
+                if print_verbatim {
                     let w0 = (p.window_s.0 * 1000.0) as i64;
                     let w1 = (p.window_s.1 * 1000.0) as i64;
                     for r in render
