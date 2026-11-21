@@ -306,7 +306,16 @@
       test gate_walls_survive_the_seconds_round_trip; module 144/144, lib
       820/820. Outside-window byte-identity, sources immutability, and
       the seed route all verified clean in that run. Re-run with the fix
-      in flight.] The two decode-tripped windows
+      in flight. [RE-BIND 2026-11-21: the second run reached the hash
+      check and went stale-attestation (addendum 7) — root cause the 1ms
+      carve offset, probe re-aligned, production render re-measured
+      RECOVERED=YES with hash bb7f9b19…; the re-bind to the production
+      hash proceeds under the user's existing class ruling (the fiction
+      tail = the documented limitation; only whisper's guess at the
+      clipped fragment changed letters — the user's row byte-identical
+      across carves, both pins PASS). Fixture pin + store entry re-bound;
+      ledger lint 6/6. Final verification run in flight.] The two
+      decode-tripped windows
       ([1421.21-1453.63], [2535.17-2559.11]) still await the user's ear:
       their attestation round (clip cuts + listens) runs on the user's
       word naming which windows they want heard — the rebuild evidence
