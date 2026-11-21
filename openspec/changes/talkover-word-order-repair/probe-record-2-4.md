@@ -386,3 +386,41 @@ Re-run in flight. Note: the wall fix also un-gates the hash check for
 the first time — the production decode's render_sha256 must equal the
 certified 08f55d47… or the gate goes stale-attestation (fail-closed,
 loud, both hashes logged).
+
+## Addendum 7 — the stale-attestation root cause: the carve offset; production render re-measured RECOVERED=YES (2026-11-21)
+
+The second production run (after the 1ms gate fix) reached the hash
+check for the first time and went **stale-attestation, fail-closed**
+(entry sha 08f55d47… vs decode sha bb7f9b19…, fingerprint matching, both
+logged loud, mixture kept). Investigation:
+
+1. **Audio provenance ruled out**: the probe re-run on the PRODUCTION
+   audio path (MEETIFY_PROBE_AUDIO=production: decode_audio_file
+   (audio.mp4) → to_whisper_format — the app's own decode calls)
+   produced the SAME 08f55d47… as the cache provenance, byte-identical
+   record. The samples_16k.f32 cache and the fresh production decode
+   yield decode-identical floats.
+2. **The real cause — a 1ms carve offset**: the probe separated at the
+   DECIMAL-second window (1024.61 s) while the production fold separates
+   at the entry's round-tripped ms (1024609/1000.0 = 1024.609 s) — the
+   stream audio differs by 16 samples at the west edge, enough to flip
+   whisper's decode of the window tail.
+3. **The probe re-run at production's carve coordinates**
+   (window = 1024609/1000.0, 1057300/1000.0; window_ms by rounding,
+   matching the gate fix) produced **render_sha256=bb7f9b19… — EXACTLY
+   the live run's decode hash**: two independent executions (production
+   fold + probe) agree byte-for-byte on the same carve, which is the
+   decode-determinism evidence. Both render pins PASS on this render
+   (pin0 got=1, pin1 got=1) → **RECOVERED=YES on production's actual
+   render**.
+
+The production render differs from the 2026-11-21 certified render in
+exactly ONE spot — the fiction tail. The decimal carve decoded the third speaker's
+clipped second occurrence as a one-word fragment; the production carve
+decodes the same bleed as "the fiction tail fragment" (three words, same structural
+3-voices/2-streams fiction, fork issue #7). The user's row is byte-
+identical across both carves ("…the question needle the or-needle.").
+The certification therefore RE-BINDS to the production carve: the user
+re-certifies the production render (one listen), the fixture pin + store
+entry take hash bb7f9b19… at the same walls/fingerprint, and the final
+production run verifies fired+attested.

@@ -80,9 +80,16 @@ struct Shape {
     pin_entry: Option<&'static str>,
 }
 const SHAPES: [Shape; 7] = [
+    // The certified ship window in PRODUCTION carve coordinates: the entry
+    // walls (1024609, 1057300) ms round-trip to these seconds, and the
+    // production fold separates at THIS span — carving at the decimal
+    // seconds (1024.61) would offset the stream audio by 16 samples (1ms)
+    // and decode differently (2026-11-21: probe carve 08f55d47… vs
+    // production bb7f9b19… — the certification must bind the carve
+    // production actually makes).
     Shape {
         name: "validated",
-        window: (1024.61, 1057.30),
+        window: (1024609f64 / 1000.0, 1057300f64 / 1000.0),
         trigger: (1056.90, 1057.30),
         pin_entry: Some("S16_ads_overlap_1056"),
     },
@@ -486,23 +493,49 @@ async fn repair_recover_probe() {
         .expect("titanet extractor");
 
         // Samples cache (guard probe pattern) — read once for the refs.
+        // MEETIFY_PROBE_AUDIO=production overrides to the PRODUCTION audio
+        // provenance (decode the meeting's audio.mp4 through the app's own
+        // decoder + sinc resample — the exact calls the Speakers run makes),
+        // because the store entry's hash must bind the render production
+        // actually splices, and the cache file is a snapshot of an earlier
+        // decode (2026-11-21: cache-provenance hash 08f55d47… vs
+        // production bb7f9b19… — the gate went stale-attestation, exactly
+        // as designed).
         let meeting = std::env::var("MEETIFY_MEETING_DIR").expect("MEETIFY_MEETING_DIR");
         let home = std::env::var("USERPROFILE").expect("USERPROFILE");
         let music = std::path::Path::new(&home).join("Music");
-        let mut cache = None;
-        for entry in std::fs::read_dir(&music).expect("read Music") {
-            let p = entry.expect("dir entry").path();
-            if p.is_dir() && p.join(&meeting).join("samples_16k.f32").exists() {
-                cache = Some(p.join(&meeting).join("samples_16k.f32"));
-                break;
+        let production_audio = std::env::var("MEETIFY_PROBE_AUDIO")
+            .map(|v| v == "production")
+            .unwrap_or(false);
+        let all: Vec<f32> = if production_audio {
+            let mut audio = None;
+            for entry in std::fs::read_dir(&music).expect("read Music") {
+                let p = entry.expect("dir entry").path();
+                if p.is_dir() && p.join(&meeting).join("audio.mp4").exists() {
+                    audio = Some(p.join(&meeting).join("audio.mp4"));
+                    break;
+                }
             }
-        }
-        let cache = cache.expect("samples_16k.f32 cache not found under Music");
-        let raw = std::fs::read(&cache).expect("read samples cache");
-        let all: Vec<f32> = raw
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
-            .collect();
+            let audio = audio.expect("audio.mp4 not found under Music");
+            eprintln!("PROBE-AUDIO provenance=production path={}", audio.display());
+            let decoded = app_lib::audio::decoder::decode_audio_file(&audio)
+                .expect("production audio decode");
+            decoded.to_whisper_format()
+        } else {
+            let mut cache = None;
+            for entry in std::fs::read_dir(&music).expect("read Music") {
+                let p = entry.expect("dir entry").path();
+                if p.is_dir() && p.join(&meeting).join("samples_16k.f32").exists() {
+                    cache = Some(p.join(&meeting).join("samples_16k.f32"));
+                    break;
+                }
+            }
+            let cache = cache.expect("samples_16k.f32 cache not found under Music");
+            let raw = std::fs::read(&cache).expect("read samples cache");
+            raw.chunks_exact(4)
+                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+                .collect()
+        };
 
         // Reference embeddings (the census-validated identity geometry).
         let refs: Vec<Vec<f32>> = REF_WALLS
@@ -564,8 +597,12 @@ async fn repair_recover_probe() {
             // SHIPPED-PATH level: the attested builder over the persisted
             // rows (synth flags intact), then the runtime fold's
             // region-already-per-voice check.
-            let window_ms =
-                ((shape.window.0 * 1000.0) as i64, (shape.window.1 * 1000.0) as i64);
+            // Round, matching the gate's re-derivation (truncation loses 1ms
+            // on round-tripped seconds — 1024609/1000.0 × 1000 → 1024608).
+            let window_ms = (
+                (shape.window.0 * 1000.0).round() as i64,
+                (shape.window.1 * 1000.0).round() as i64,
+            );
             let seeds = [TalkoverSeed {
                 span: window_ms,
                 kind: TalkoverSeedKind::Attested,
