@@ -460,3 +460,40 @@ east edge stays at the attested 1057.30; trigger still contained;
 139ms-shorter west context changes the decode, so this is a NEW shape
 needing the full measurement (probe in flight) and — if it recovers the
 pins — a NEW certification listen before any entry ships.
+
+## Addendum 9 — the geometry space is exhausted: STOP; S16 keeps the mixture render (2026-11-22)
+
+The west-aligned re-cut **validated-west-aligned [1024.75,1057.30]**
+measured **RECOVERED=NO**: the 139ms-shorter west context flipped the
+window-tail decode — the user's row reads "…the question needle, then the or-needle phrase" with NO "or" (RENDER-PIN pin0 want=1 got=0 FAIL; pin1 PASS;
+erase_west_s=0.28 measured against the transient post-ship DB, which
+still held the spliced rows — the erase accounting needs the restored
+state, but the pin failure is decisive regardless: the stream decode
+depends only on audio+span).
+
+The geometry space is now exhaustively measured:
+- **c1 [1024.61,1057.30]** (the certified shape): needle recovers, both
+  pins PASS — but the splice absorbs the west atom
+  [1010.07,1024.748] WHOLE and erases 14.5s of out-of-window speech
+  (addendum 8). DEAD.
+- **west-aligned [1024.75,1057.30]**: no west absorb — but the needle
+  dies on the west truncation (the c3 failure class: west/east edge
+  shifts flip the window-tail decode). DEAD.
+- **full west coverage [1010.07,1057.30]** (the only geometry that
+  neither truncates context nor absorbs the west atom partially):
+  47.23s — over the repair-chain cap (REPAIR_CHAIN_CAP_SECS=35), refused
+  at the splice by construction. STRUCTURALLY IMPOSSIBLE.
+
+**STOP (the change's own rule: a shape that no leg recovers ships
+nothing until the user re-plans).** Under the current design constants
+there is no window geometry that recovers the attested needles without
+erasing out-of-window speech. S16 keeps the mixture render (the restore
+run returns the persisted state byte-identically; the store entry stays
+withdrawn; the fixture pins stay as the historical record). The real
+fixes live in fork issue #7: the wall-payload provenance guard (catch
+contradictory absorbed-row fragments instead of absorbing whole atoms)
+or 3-stream separation (the root cause of the whole talk-over class).
+The promotion machinery itself is validated — it fired end-to-end
+(attested=1) and every gate did its job: the 1ms round-trip bug (caught
+by the second run), the carve-offset mismatch (caught by the hash gate),
+and the erase (caught by the harness assertion).
