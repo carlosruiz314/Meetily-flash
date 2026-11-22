@@ -424,3 +424,39 @@ The certification therefore RE-BINDS to the production carve: the user
 re-certifies the production render (one listen), the fixture pin + store
 entry take hash bb7f9b19… at the same walls/fingerprint, and the final
 production run verifies fired+attested.
+
+## Addendum 8 — the final verification caught absorb-whole erase: the entry is withdrawn, the ship is blocked (2026-11-22)
+
+The final production run (entry re-bound to the production carve hash
+bb7f9b19…) SPAWNED the attested window — census `attested=1 awaiting=2`,
+the synth pair landed in the persisted render byte-identical to the
+certified production rows — and then the harness's outside-window
+byte-identity assertion FAILED: the splice had erased real speech.
+
+Mechanism (the splice's absorb predicate, `repair_overlap_rows_checked`):
+ANY atom overlapping the window is absorbed WHOLE — no straddler-keep.
+The west NULL-walled atom [1010.07,1024.748] overlaps the window
+[1024.609,1057.299] by 139ms, so its entire text was replaced by a
+decode that only covers the window. Its out-of-window content —
+14.5 seconds, the user's mercenary-work sentence ("…the user's mercenary-work sentence") — vanished from the persisted render (zero matches on re-query;
+the zone [1010.07,1024.608] holds no row at all). The erase metric in
+every c1 record (erase_west_s=42.44) was recording exactly this loss;
+it was never checked for meaning. The east survived byte-identical.
+
+Actions taken:
+- The store entry is WITHDRAWN (`attestedRepairWindows` emptied — the
+  fail-closed default); the fixture pin stays as the historical record.
+- A restore run (no entry) is returning the persisted render to the
+  mixture state, byte-identical to the pre-ship state (verified 269
+  rows twice before).
+- The ship is BLOCKED on the geometry: a window whose west edge absorbs
+  out-of-window speech can never ship.
+
+The geometry candidate: **validated-west-aligned [1024.75,1057.30]** —
+the west edge at the REAL row boundary (the west atom ends 1024.748, so
+nothing west of the window is absorbed — no loss, no duplication; the
+east edge stays at the attested 1057.30; trigger still contained;
+1024.75 is exactly representable so the ms round trip is exact). The
+139ms-shorter west context changes the decode, so this is a NEW shape
+needing the full measurement (probe in flight) and — if it recovers the
+pins — a NEW certification listen before any entry ships.

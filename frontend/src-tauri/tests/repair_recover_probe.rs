@@ -79,7 +79,7 @@ struct Shape {
     trigger: (f64, f64),
     pin_entry: Option<&'static str>,
 }
-const SHAPES: [Shape; 7] = [
+const SHAPES: [Shape; 8] = [
     // The certified ship window in PRODUCTION carve coordinates: the entry
     // walls (1024609, 1057300) ms round-trip to these seconds, and the
     // production fold separates at THIS span — carving at the decimal
@@ -90,6 +90,21 @@ const SHAPES: [Shape; 7] = [
     Shape {
         name: "validated",
         window: (1024609f64 / 1000.0, 1057300f64 / 1000.0),
+        trigger: (1056.90, 1057.30),
+        pin_entry: Some("S16_ads_overlap_1056"),
+    },
+    // The west-aligned re-cut of the certified window (2026-11-22): the
+    // final production verification caught the splice absorbing the west
+    // NULL-walled atom [1010.07,1024.748] WHOLE (any overlap absorbs the
+    // whole atom), erasing 14.5s of out-of-window speech — the user's
+    // mercenary-work sentence (addendum 8). This shape starts the window
+    // at the real row boundary 1024.75: the west atom ends 1024.748, so
+    // nothing west of the window is absorbed, no loss, no duplication.
+    // East edge unchanged (the attested 1057.30); trigger still contained.
+    // 1024.75 is exactly representable, so the ms round trip is exact.
+    Shape {
+        name: "validated-west-aligned",
+        window: (1024750f64 / 1000.0, 1057300f64 / 1000.0),
         trigger: (1056.90, 1057.30),
         pin_entry: Some("S16_ads_overlap_1056"),
     },
