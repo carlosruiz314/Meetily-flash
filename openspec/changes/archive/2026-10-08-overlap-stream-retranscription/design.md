@@ -97,13 +97,13 @@ Design: extend the same synthesis path with a phrase-loop trigger.
 ## Stutter-retry as repair promotion (ear ruling 2026-10-02)
 
 The user attested the mixed row [192.94-199.50] ("Alpha beta gamma delta."
-= Participant B / "***REMOVED*** out..." = Participant A; fixture S18 amendment).
+= Participant B / "Alpha beta gamma delta..." = Participant A; fixture S18 amendment).
 The crosstalk span covering her phrase [192.91-193.76] stood down because
 its SHORT-window separated decode stuttered. Probe ladder (2026-10-02):
 span ±1.3s (3.45s total) decodes clean but GARBLED ("binders", "little
 wolves") — wrong trade; span ±4.5s (9.85s) and the 11s window decode
 BOTH streams clean AND correct ("Alpha beta gamma delta." in Participant B's
-stream; "***REMOVED*** out. Yeah, we'll have to alpha beta gamma. But
+stream; "Alpha beta gamma delta. Yeah, we'll have to alpha beta gamma. But
 worst case..." in Participant A's). Decode quality grows with context; the
 retry needs a ~9-12s MINIMUM window, not a fixed ±1.3s.
 

@@ -6512,7 +6512,7 @@ mod tests {
     #[test]
     fn stutter_span_promotes_to_a_repair_window() {
         // Ear ruling 2026-10-02: "Alpha beta gamma delta" = Participant B,
-        // "***REMOVED*** out" = Participant A — the mixed row at [192.94-199.50]
+        // "Alpha beta gamma delta" = Participant A — the mixed row at [192.94-199.50]
         // is two voices under one badge, and its crosstalk span
         // [192.91-193.76] stood down because the SHORT separated decode
         // stuttered. The span must promote to a repair seed: the window
@@ -6524,7 +6524,7 @@ mod tests {
             seg("w0", "Alpha beta gamma delta epsilon.", 191_820, 192_940, "Participant B Wu"),
             seg(
                 "mixed",
-                "Alpha beta gamma delta. ***REMOVED*** out. Yeah, we'll have to alpha beta gamma. But worst case, alpha beta gamma.",
+                "Alpha beta gamma delta. Epsilon zeta ***REMOVED***. Iota, kappa lambda mu nu xi omicron. Pi alpha beta, gamma delta epsilon.",
                 192_940,
                 199_500,
                 "Participant A",
@@ -6582,7 +6582,7 @@ mod tests {
             ),
             seg(
                 "mixed",
-                "Alpha beta gamma delta. ***REMOVED*** out. Yeah, we'll have to alpha beta gamma. But worst case, alpha beta gamma.",
+                "Alpha beta gamma delta. Epsilon zeta ***REMOVED***. Iota, kappa lambda mu nu xi omicron. Pi alpha beta, gamma delta epsilon.",
                 192_940,
                 199_500,
                 "Speaker 0",

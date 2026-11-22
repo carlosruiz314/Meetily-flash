@@ -161,7 +161,7 @@ evidence home, never repo-committed).
 
 - [ ] DEFERRED (ear round 2026-09-30, clip 01): split pieces INHERIT the old
       row's badge; the user's ear attests the inherited badge can be wrong
-      ("point. ***REMOVED*** out..." under Participant A; ear says the speaker is
+      ("point. Alpha beta gamma delta..." under Participant A; ear says the speaker is
       the other participant). Pre-existing attribution error, not introduced
       by surgery — the parent link keeps it reconstructable. Candidate fix:
       re-attest piece badges with the wall-atom voice-vote machinery.
@@ -189,7 +189,7 @@ evidence home, never repo-committed).
       dictated exchange).
 - [x] STUTTER PROMOTION RESOLVED THE RESIDUAL (2026-10-02, attempts
       9-11): the user's follow-up ruling ("Participant B does say 'That's the
-      alpha beta' and I say '***REMOVED*** out'") drove the
+      alpha beta' and I say 'Alpha beta gamma delta'") drove the
       stutter-seed promotion (design: Stutter-retry as repair
       promotion). Two silent-kill bugs found and fixed on the way:
       (1) the mass-span exclusion ate every stutter seed (8acc4417);
@@ -202,7 +202,7 @@ evidence home, never repo-committed).
       11): the mixed row is GONE; [172.01-199.50] renders two per-voice
       rows — Participant B: "...alpha beta gamma delta epsilon. That's the whole
       point." / Participant A: "...On hybrid, it would have been Participant E.
-      ***REMOVED*** out. Yeah, we'll have to alpha beta gamma. But worst
+      Alpha beta gamma delta. Yeah, we'll have to alpha beta gamma. But worst
       case, alpha beta gamma." — exactly the user's ruling; 6/6
       attested needles, fabrication absent. 12 per-voice regions total
       (6 mass + 6 repair); 6 word-loss flags carried to the ear round
