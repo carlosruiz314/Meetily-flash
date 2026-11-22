@@ -164,9 +164,30 @@ walls to match an `attestedRepairWindows` entry (for rebuilt windows).
   badge — structural at 2-stream separation (needle and bleed share the
   same talkover audio: extending east decoded byte-identical, trimming
   east loses the needle, retry leg identical), documented and filed as
-  fork issue #7; the entry ships on the certified coords and is
-  reversible-in-effect (any future render change fails closed to mixture
-  via stale-attestation until re-attested — probe record addenda 4–5)
+  fork issue #7; the entry shipped on the certified coords and proved
+  reversible-in-effect (any render change fails closed to mixture via
+  stale-attestation until re-attested — probe record addenda 4–7). The
+  FINAL outcome (2026-11-22): the production verification caught the
+  splice's absorb-whole erase — 14.5s of out-of-window speech (the west
+  atom [1010.07,1024.748] absorbed whole for a 139ms overlap) erased from
+  the persisted render (addendum 8); the entry was WITHDRAWN and the
+  render restored byte-for-byte; the geometry space measured exhausted
+  (addendum 9: the west-aligned re-cut [1024.75,1057.30] loses the "or"
+  needle to the 139ms west truncation, and full west coverage
+  [1010.07,1057.30] is 47.2s — over the repair-chain cap, refused by
+  construction); a recorded STOP stands, and the user ruled (2026-11-22,
+  the fewer-hallucinations metric) that S16 KEEPS THE MIXTURE RENDER as
+  the documented limitation — the mixture's remaining defects are
+  attribution problems, not invented words, while the repair adds two
+  possible fabrications; no window geometry ships under the current
+  design constants, the store entry stays withdrawn, and the real fixes
+  (wall-payload provenance guard, 3-stream separation) live in fork
+  issue #7. The promotion machinery itself validated end-to-end: the
+  attested route fired in production (census attested=1) and every gate
+  caught a real defect — the 1ms ms→s→ms round-trip bug (fixed, red
+  test), the carve-offset hash mismatch (stale-attestation, fail-closed),
+  and the erase (caught by the harness's outside-window byte-identity
+  assertion)
 
 #### Scenario: Candidate census precedes render changes
 

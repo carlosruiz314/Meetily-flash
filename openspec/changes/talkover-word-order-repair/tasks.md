@@ -249,7 +249,7 @@
       rows (stays mixture, no entry). The legacy phrase-loop path
       re-derived its own repair idempotently within the identical
       render.]
-- [ ] 5.3 Attestation round: cut before/after clips ONLY for fired spans
+- [x] 5.3 Attestation round: cut before/after clips ONLY for fired spans
       (evidence home or meeting folder), token-only manifest per the
       design's exhaustive field list (walls, clip sha256, clip duration_s,
       seed evidence, outcome token, per-pass token counts, guard-trip
@@ -314,12 +314,27 @@
       tail = the documented limitation; only whisper's guess at the
       clipped fragment changed letters — the user's row byte-identical
       across carves, both pins PASS). Fixture pin + store entry re-bound;
-      ledger lint 6/6. Final verification run in flight.] The two
-      decode-tripped windows
-      ([1421.21-1453.63], [2535.17-2559.11]) still await the user's ear:
-      their attestation round (clip cuts + listens) runs on the user's
-      word naming which windows they want heard — the rebuild evidence
-      must be re-derived per window (probe run) before clips are cut.]
+      ledger lint 6/6. Final verification run in flight. [CLOSE-OUT
+      2026-11-22, the user's final ruling: the final verification caught
+      the splice's absorb-whole erase (14.5s of out-of-window speech,
+      probe record addendum 8) — the entry was withdrawn and the render
+      restored byte-for-byte; the geometry space measured exhausted
+      (addendum 9: the west-aligned re-cut loses the "or" needle, full
+      west coverage exceeds the repair-chain cap), a recorded STOP; and
+      on the trade-off presented with both renders side by side the user
+      ruled by the fewer-hallucinations metric — the mixture's remaining
+      S16 defects are attribution problems (wrong badge, interleaved
+      voices, the duplicated run), not invented words, while the repair
+      would add two possible fabrications (an unverified head re-roll
+      "the head re-roll phrase" vs the audio's the real head phrase, and the
+      fiction tail) — so S16 KEEPS THE MIXTURE RENDER as the documented
+      limitation, closed with zero further listens. The store entry stays
+      withdrawn; the fixture repair_attestation pin is the historical
+      record of the attempted ship; the decode-tripped windows
+      ([1421.21-1453.63], [2535.17-2559.11]) stand down permanently at
+      the fail-closed awaiting-attestation default unless a future user
+      request reopens their attestation round — that inert-by-default
+      state IS the shipped behavior, not unfinished work.]
 - [x] 5.4 Smoke-spec deliverable decision (AGENTS.md §3, made at proposal
       time): the promotion adds NO new frontend wiring — the visible
       outcome (rows replaced by finer distinct-speaker rows after a
@@ -344,5 +359,13 @@
       containment east of the window; east-edge token alignment vs the
       pin window's joined scope); probe record addendum written. Validator
       green.]
-- [ ] 5.6 `/opsx:archive` on the user's go (commits and pushes only on the
-      user's explicit word).
+- [x] 5.6 `/opsx:archive` on the user's go (commits and pushes only on the
+      user's explicit word). [DONE 2026-11-22: the user gave the archive
+      go ("Ok archive and close") after the S16 close-out ruling. Delta
+      synced to the main spec (the two ADDED requirements appended; the
+      two scenario amendments applied — the decisive-span GIVEN now
+      requires the attested-window match for rebuilt windows, and the
+      no-skip-list clause is superseded for rebuilt windows);
+      artifacts validated green; the change folder moved to
+      archive/2026-11-22-talkover-word-order-repair. Pushes remain
+      gated on the user's explicit word.]
