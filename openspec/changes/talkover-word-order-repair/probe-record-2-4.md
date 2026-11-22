@@ -497,3 +497,13 @@ The promotion machinery itself is validated — it fired end-to-end
 (attested=1) and every gate did its job: the 1ms round-trip bug (caught
 by the second run), the carve-offset mismatch (caught by the hash gate),
 and the erase (caught by the harness assertion).
+
+**Restore verified (2026-11-22):** the persisted render is back to the
+pre-ship state — 269 rows, the 265 outside-window rows byte-identical to
+the pre-ship snapshot (zero diffs), the west atom's full text (the
+mercenary-work sentence) restored, transcript_sources untouched, and the
+only synth rows are the legacy per-voice pair at [161.71,191.05] (the
+pre-existing overlap-span path, not the talk-over promotion). The
+restore run's exit-101 is the harness assertion false-alarming on the
+restore direction (its before-snapshot was the spliced 268-row state) —
+inapplicable for restores, the DB verification above is the evidence.
