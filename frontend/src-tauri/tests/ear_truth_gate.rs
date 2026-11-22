@@ -1854,37 +1854,43 @@ async fn ear_truth_gate_cde5c264() {
         // RENDER-TEXT acceptance (task 4.3, re-pinned to the current decode
         // after ear verdict 2026-09-20): the user reads PERSISTED TEXT, not
         // spans — proportional wall placement shifts ~1 s across long rows,
-        // so a span window can pass vacuously while the "Alpha, beta." words
+        // so a span window can pass vacuously while the S2b needle words
         // render under UserA (the exact S2b regression the user caught).
-        // Anchor on the TEXT: every fragment containing "Alpha, beta" must carry
-        // UserB's cluster (1 = UserB in this fixture's cluster order;
-        // 0 = UserA speaks first at 1.11 s).
+        // Anchor on the TEXT: every fragment containing the S2b needle must
+        // carry UserB's cluster (1 = UserB in this fixture's cluster order;
+        // 0 = UserA speaks first at 1.11 s). The needle text is verbatim
+        // from THIS local fixture — never code.
         {
+            let needles = fixture
+                .entries
+                .iter()
+                .find(|e| e.id == "S2b_oh_man_cynthia")
+                .map(|e| e.needles.clone())
+                .unwrap_or_default();
+            let is_match = |text: &str| {
+                needles
+                    .iter()
+                    .any(|n| text.to_lowercase().contains(&n.to_lowercase()))
+            };
             let bad: Vec<&app_lib::audio::speaker::alignment::AlignedSegment> = merged
                 .iter()
-                .filter(|s| {
-                    let norm = s.text.to_lowercase();
-                    norm.contains("alpha, beta") || norm.contains("alpha beta")
-                })
+                .filter(|s| is_match(&s.text))
                 .filter(|s| s.speaker != "Speaker 1")
                 .collect();
             let total: Vec<&app_lib::audio::speaker::alignment::AlignedSegment> = merged
                 .iter()
-                .filter(|s| {
-                    let norm = s.text.to_lowercase();
-                    norm.contains("alpha, beta") || norm.contains("alpha beta")
-                })
+                .filter(|s| is_match(&s.text))
                 .collect();
             let ok = !total.is_empty() && bad.is_empty();
             eprintln!(
-                "RENDER-TEXT 'Alpha, beta' -> {} fragment(s), labels {:?}: {}",
+                "RENDER-TEXT S2b -> {} fragment(s), labels {:?}: {}",
                 total.len(),
                 total.iter().map(|s| s.speaker.as_str()).collect::<Vec<_>>(),
                 if ok { "OK" } else { "MISMATCH" }
             );
             if !ok {
                 render_failures.push(format!(
-                    "render-text acceptance failed: 'Alpha, beta' fragment(s) not under UserB (Speaker 1): labels {:?}",
+                    "render-text acceptance failed: the S2b needle fragment(s) not under UserB (Speaker 1): labels {:?}",
                     total.iter().map(|s| s.speaker.as_str()).collect::<Vec<_>>()
                 ));
             }
@@ -1954,14 +1960,26 @@ async fn ear_truth_gate_cde5c264() {
             }
         }
         // RENDER-TEXT acceptance (ear ruling 2026-09-24, task 4.4 resolved):
-        // "Alpha, beta gamma delta epsilon-zeta" inside the 45.19-55.12 row is
-        // USERA's — TitaNet's sustained-split vote there was wrong and the
-        // render must keep the row whole under Speaker 0.
+        // the t-shirt phrase inside the 45.19-55.12 row is USERA's —
+        // TitaNet's sustained-split vote there was wrong and the render
+        // must keep the row whole under Speaker 0. The needle text is
+        // verbatim from THIS local fixture — never code.
         {
+            let needles = fixture
+                .entries
+                .iter()
+                .find(|e| e.id == "S15_tshirt_row_carlos")
+                .map(|e| e.needles.clone())
+                .unwrap_or_default();
+            let is_match = |text: &str| {
+                needles
+                    .iter()
+                    .any(|n| text.to_lowercase().contains(&n.to_lowercase()))
+            };
             let total: Vec<&app_lib::audio::speaker::alignment::AlignedSegment> = merged
                 .iter()
                 .filter(|s| {
-                    s.text.to_lowercase().contains("alpha beta gamma-delta")
+                    is_match(&s.text)
                         && s.audio_start_ms > 44_000
                         && s.audio_start_ms < 56_000
                 })
@@ -1971,14 +1989,14 @@ async fn ear_truth_gate_cde5c264() {
             > = total.iter().copied().filter(|s| s.speaker != "Speaker 0").collect();
             let ok = !total.is_empty() && bad.is_empty();
             eprintln!(
-                "RENDER-TEXT 't-shirt' -> {} fragment(s), labels {:?}: {}",
+                "RENDER-TEXT S15 -> {} fragment(s), labels {:?}: {}",
                 total.len(),
                 total.iter().map(|s| s.speaker.as_str()).collect::<Vec<_>>(),
                 if ok { "OK" } else { "MISMATCH" }
             );
             if !ok {
                 render_failures.push(
-                    "render-text acceptance failed: 'alpha beta gamma-delta' not under UserA (Speaker 0)"
+                    "render-text acceptance failed: the S15 needle not under UserA (Speaker 0)"
                         .to_string(),
                 );
             }
@@ -2491,12 +2509,12 @@ fn pin_leak_fragment_under_unattested_badge_fails() {
     // the phrase occurs more times than attested, under an unattested
     // badge.
     let groups = vec![
-        pin_group("Speaker 1", 0, 4_000, "alpha Beta gamma delta epsilon, zeta"),
-        pin_group("Speaker 2", 4_000, 5_000, "alpha Beta gamma delta epsilon"),
+        pin_group("Speaker 1", 0, 4_000, "alpha beta gamma delta epsilon, done"),
+        pin_group("Speaker 2", 4_000, 5_000, "alpha beta gamma delta epsilon"),
     ];
     let e = pin_entry(vec![row_pin(
         Some("Speaker 1"),
-        &["or", "idp", "rather", "than", "search"],
+        &["alpha", "beta", "gamma", "delta", "epsilon"],
         1,
         "row",
         true,
@@ -2507,7 +2525,7 @@ fn pin_leak_fragment_under_unattested_badge_fails() {
     );
     let e = pin_entry(vec![row_pin(
         None,
-        &["or", "idp", "rather", "than", "search"],
+        &["alpha", "beta", "gamma", "delta", "epsilon"],
         1,
         "row",
         true,
@@ -2517,12 +2535,12 @@ fn pin_leak_fragment_under_unattested_badge_fails() {
     // A tail fragment SHORTER than the pinned run matches nothing — the
     // run must appear whole.
     let groups = vec![
-        pin_group("Speaker 1", 0, 4_000, "alpha Beta gamma delta epsilon, zeta"),
-        pin_group("Speaker 2", 4_000, 5_000, "alpha, Beta gamma delta epsilon"),
+        pin_group("Speaker 1", 0, 4_000, "alpha beta gamma delta epsilon, done"),
+        pin_group("Speaker 2", 4_000, 5_000, "wait, beta gamma delta epsilon"),
     ];
     let e = pin_entry(vec![row_pin(
         None,
-        &["or", "idp", "rather", "than", "search"],
+        &["alpha", "beta", "gamma", "delta", "epsilon"],
         1,
         "row",
         true,
@@ -2538,12 +2556,12 @@ fn pin_chop_point_straddles_only_in_joined_scope() {
     // The phrase is chopped across two rows by consolidation. Row scope
     // cannot see it; joined scope must.
     let groups = vec![
-        pin_group("Speaker 1", 0, 4_000, "alpha beta gamma delta"),
+        pin_group("Speaker 1", 0, 4_000, "tell me the alpha beta"),
         pin_group("Speaker 1", 4_000, 8_000, "are going to cost"),
     ];
     let e = pin_entry(vec![row_pin(
         None,
-        &["what", "skins", "are", "going", "to", "cost"],
+        &["the", "alpha", "beta", "are", "going", "to", "cost"],
         1,
         "joined",
         true,
@@ -2551,7 +2569,7 @@ fn pin_chop_point_straddles_only_in_joined_scope() {
     assert!(check_row_pins(&groups, &e).is_empty(), "chop points are not pinned in joined scope");
     let e = pin_entry(vec![row_pin(
         None,
-        &["what", "skins", "are", "going", "to", "cost"],
+        &["the", "alpha", "beta", "are", "going", "to", "cost"],
         1,
         "row",
         true,
