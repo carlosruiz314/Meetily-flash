@@ -1978,7 +1978,10 @@ condition holds. Windows not rebuilt under this requirement remain governed
 by that requirement unchanged. A span that is both gate-decisive under that
 requirement and a promotion seed under this one is governed by this
 requirement's gate. The gate binds ONLY to the talk-over seed class: live
-phrase-loop repairs splice WITHOUT an allowlist entry, unchanged.
+phrase-loop repairs splice WITHOUT an allowlist entry, through the same
+tail-provenance guard as every other route (census-logged before trim
+enactment, per the "Rebuilt-window tails carry mixture-payload provenance"
+requirement).
 
 A rebuilt window SHALL splice per-voice rows ONLY when every existing
 per-voice condition holds AND the window matches an `attestedRepairWindows`
@@ -1991,12 +1994,15 @@ evidence fixture; the allowlist is its only runtime surface. The census
 SHALL enumerate SEEDS upstream of candidate filtering and record every seed
 outcome token-only: `fired+attested`, `awaiting-attestation`,
 `stale-attestation`, `stood-down:<guard>` (manual-row-wins mapped here),
-`window-not-built`, `separation-unavailable`, `rebuild-aborted`. A rebuild
+`window-not-built`, `separation-unavailable`, `rebuild-aborted` — and a
+seed whose window the tail-provenance guard trimmed (once enacted) SHALL
+additionally record the token-only note `tail-trimmed:<n>` beside its
+outcome token. These outcomes extend the existing trigger-fired census
+record. A rebuild
 panic or join error SHALL be recorded as `rebuild-aborted`, never silently
 continued. Union windows re-run the manual-row and synth-atom checks on the
 unioned interval; a refused union falls back to the individual windows if
-individually clean, else `window-not-built`. These outcomes extend the
-existing trigger-fired census record.
+individually clean, else `window-not-built`.
 
 Before any promotion wiring ships: the candidate census SHALL run on the
 reference meeting and the user SHALL review it, producing a dated
@@ -2066,7 +2072,10 @@ walls to match an `attestedRepairWindows` entry (for rebuilt windows).
 
 - **GIVEN** a phrase-loop repair window with no allowlist entry
 - **WHEN** the repair fold applies
-- **THEN** the phrase-loop repair splices as it does today
+- **THEN** the phrase-loop repair splices without an allowlist entry
+- **AND** its window passes the tail-provenance guard like every route:
+  census-logged only before trim enactment, contradictory tails stood down
+  after it
 
 #### Scenario: Repair-scoped decode leaves untouched paths byte-identical
 
@@ -2076,89 +2085,125 @@ walls to match an `attestedRepairWindows` entry (for rebuilt windows).
 - **THEN** both paths' decode profile, walls, and output are byte-identical
   to the pre-change pipeline
 
-#### Scenario: Retry recovers the attested shapes before wiring ships
 
-- **GIVEN** the three kept window shapes from the archived evidence record
-  (validated, mangled/row-removed, control)
-- **WHEN** the offline lever-ladder probe drives the full builder+splice
-  path against the evidence-home attested sequences under the frozen
-  comparison operator (the gate's own pin semantics — needles at attested
-  multiplicity, measured 2026-11-18)
-- **THEN** each attested shape's rebuilt render matches its attested
-  sequence verbatim on the measured minimal leg
-- **AND** a shape that no leg recovers is a recorded STOP — no wiring ships
-  until the user re-plans
-- **AND** the measured outcome stands as recorded: the clean shape
-  recovered 7/7 hard pins end-to-end on leg A (leg B identical everywhere —
-  no retry shipped); the S16 shape STOP'd on the then-current render
-  geometry (absorb-whole erase, then separation collapse on the row-aligned
-  re-cut — probe record + addendum), the user ruled the token-walls change
-  the unblock path, and its wall-bearing-render re-cut [1024.75,1056.50]
-  was measured 2026-11-20 at its own walls and RECOVERED=NO — the rebuild
-  decodes cleanly (stream_tokens=[44, 39], guards clean) but the spliced
-  render fails the ear gate's own pins (occurrence #1 want=1 got=0,
-  occurrence #2 want=2 got=1): STOP stood on that geometry — the user
-  re-planned (2026-11-20: pin amended 2→1 with the dated ruling, window
-  re-aimed at the originally attested walls [1024.61,1057.30] on the
-  wall-bearing render) and the re-measurement at those walls against the
-  AMENDED oracle RECOVERED=YES (2026-11-21, record sha 9fd102a2…: leg
-  A-strict stands with leg B identical, both render pins PASS, shipped-
-  path would-fire on the REAL census trigger). The certification listen
-  (2026-11-21) ruled CERTIFY WITH LIMITATION: the third speaker's two
-  interjections render misattributed — the first bled into the user's
-  stream row, the second as a one-word fiction under the other stream's
-  badge — structural at 2-stream separation (needle and bleed share the
-  same talkover audio: extending east decoded byte-identical, trimming
-  east loses the needle, retry leg identical), documented and filed as
-  fork issue #7; the entry shipped on the certified coords and proved
-  reversible-in-effect (any render change fails closed to mixture via
-  stale-attestation until re-attested — probe record addenda 4–7). The
-  FINAL outcome (2026-11-22): the production verification caught the
-  splice's absorb-whole erase — 14.5s of out-of-window speech (the west
-  atom [1010.07,1024.748] absorbed whole for a 139ms overlap) erased from
-  the persisted render (addendum 8); the entry was WITHDRAWN and the
-  render restored byte-for-byte; the geometry space measured exhausted
-  (addendum 9: the west-aligned re-cut [1024.75,1057.30] loses the "or"
-  needle to the 139ms west truncation, and full west coverage
-  [1010.07,1057.30] is 47.2s — over the repair-chain cap, refused by
-  construction); a recorded STOP stands, and the user ruled (2026-11-22,
-  the fewer-hallucinations metric) that S16 KEEPS THE MIXTURE RENDER as
-  the documented limitation — the mixture's remaining defects are
-  attribution problems, not invented words, while the repair adds two
-  possible fabrications; no window geometry ships under the current
-  design constants, the store entry stays withdrawn, and the real fixes
-  (wall-payload provenance guard, 3-stream separation) live in fork
-  issue #7. The promotion machinery itself validated end-to-end: the
-  attested route fired in production (census attested=1) and every gate
-  caught a real defect — the 1ms ms→s→ms round-trip bug (fixed, red
-  test), the carve-offset hash mismatch (stale-attestation, fail-closed),
-  and the erase (caught by the harness's outside-window byte-identity
-  assertion)
+### Requirement: Rebuilt-window tails carry mixture-payload provenance
 
-#### Scenario: Candidate census precedes render changes
+A repair window's synthesized streams SHALL pass a tail-provenance guard
+before the window's content hash is computed, before the attestation
+verdict evaluates it, and before any splice — all acceptance guards and
+verdicts evaluate the post-guard synthesis. The guard walks each stream's
+pieces (a stream utterance when `utterances` is non-empty, else the
+whole-span text piece) from the LAST token backwards, and trims a
+trailing token only when a POSITIVE contradiction holds: the token,
+whose proportional wall is its character-fraction position within its
+piece span and whose derived interval is spanned by consecutive tokens'
+proportional positions, is overlapped — for at least half of that
+interval — by a single absorbed-row payload word whose wall width is at
+least the census-dialed floor, whose row's badge differs from the
+stream's, and which normalizes differently under the frozen comparison
+operator (Unicode NFC, lowercase, non-alphanumeric stripped, whitespace
+collapsed, exact equality). Cover evaluation is half-open
+(`[start_ms, end_ms)`); multi-cover resolves by max interval-overlap,
+then the splice's donor row, then earliest start. Tokens at intervals the
+payload does not so cover (recovery zones) and same-badge differences
+SHALL stay; mid-row tokens SHALL never be examined; absorbed rows whose
+wall payload is absent SHALL contribute no walls (per-row fail-open — the
+attestation hash/fingerprint verdict remains the fail-closed layer). An
+emptied piece SHALL be dropped and the walk SHALL continue into the
+previous piece; an emptied stream SHALL read as the absent decode (never
+an empty text) and follow the existing empty-decode acceptance gates.
+After the guard, each stream's text SHALL equal the join of its pieces'
+texts, and the content hash SHALL be computed from that post-guard state,
+so a pinned hash is always the hash of the render that ships. The guard
+SHALL run for every repair route (legacy phrase-loop, attested-window,
+decode-tripped rebuild) through one public pre-pass invoked before
+admissibility, and SHALL be structurally unreachable from the normal
+transcription chunk path and the mass overlap pre-pass. AT MERGE the
+guard SHALL run in census (log-only) mode for every route; trim enactment
+on any route SHALL be unlocked only after the env-gated offline census
+meets its acceptance bar (would-trims tail-only, predominantly
+single-token, zero events inside certified-content regions, placement
+error measured below the covering-word scale) on the reference meeting
+AND a second meeting, with the user's dated review. A seed whose window
+spliced with an enacted trim (or a census-mode would-trim) SHALL
+additionally record a token-only evidence note `tail-trimmed:<n>` beside
+its outcome token in the seed's census record — the outcome token remains
+one of the enumerated outcomes — recorded only for windows whose splice
+applied; legacy windows SHALL record the equivalent token-only log line.
+Every log line the guard emits SHALL be token-only (indices, wall
+positions, counts) and SHALL NOT contain synthesized or mixture row text.
 
-- **GIVEN** the reference meeting's engine output
-- **WHEN** the env-gated census pass runs
-- **THEN** every overlap-span candidate flag is recorded token-only with
-  overlap mass, duration, and floors verdict, enumerated independent of
-  enrollment
-- **AND** the recorded census is reviewed by the user before promotion
-  wiring lands, producing the dated review note
+#### Scenario: Contradictory tail token stands down
 
-#### Scenario: Rebuild abort is recorded, not swallowed
+- **GIVEN** a rebuilt window whose absorbed mixture row carries populated
+  per-word walls under badge A, and whose second stream (badge B, B ≠ A)
+  decodes a populated-utterance piece whose final token's derived interval
+  is majority-covered by one width-above-floor payload word that
+  normalizes differently
+- **WHEN** the pre-pass runs
+- **THEN** the stream's utterance text renders without that trailing
+  token, the stream's text field equals the join of its post-trim piece
+  texts, and the content hash binds that post-trim state
+- **AND** the mid-row tokens of every stream piece are byte-identical to
+  the unguarded decode
 
-- **GIVEN** a promoted window whose rebuild panics or fails to join
-- **WHEN** the repair pass handles the seed
-- **THEN** the census records `rebuild-aborted` for that seed
-- **AND** the span renders byte-identical to the mixture render
+#### Scenario: Recovery zones, same-voice differences, and sub-threshold overlaps survive
 
-#### Scenario: Empty stream decode never replaces non-empty mixture rows
+- **GIVEN** a stream's final token whose derived interval is uncovered by
+  the payload, or covered only by same-badge words, or majority-covered by
+  a below-floor sliver word, or differently-cased/punctuation-carrying
+  same-word payload text under a different badge
+- **WHEN** the guard runs
+- **THEN** the token stays and the decode renders unchanged
 
-- **GIVEN** a promoted window whose rebuilt stream decodes to empty text
-  while the span's mixture rows are non-empty
-- **WHEN** the splice evaluates the window
-- **THEN** the window stands down and renders byte-identical to the mixture
-  render
+#### Scenario: Rows without walls contribute nothing, walled rows still judge
+
+- **GIVEN** a rebuilt window whose absorbed rows mix populated wall
+  payloads with absent ones, and a contradicted tail inside a walled
+  row's coverage
+- **WHEN** the guard runs
+- **THEN** the trailing token is trimmed on the strength of the walled row
+  alone, and a window whose every absorbed row lacks walls trims nothing
+
+#### Scenario: Piece drop continues the walk; stream empties read as absent
+
+- **GIVEN** a stream whose last piece trims to empty while earlier pieces
+  survive, whose previous piece's tail token also contradicts
+- **WHEN** the guard runs
+- **THEN** the empty piece's row is removed, the walk trims the previous
+  piece's tail, and the surviving tokens render byte-identical
+- **AND** a stream whose every piece empties reads as the absent decode
+  and never replaces non-empty mixture rows
+
+#### Scenario: Pinned hash binds the post-guard render
+
+- **GIVEN** a rebuilt window whose streams the guard trims, and an
+  `attestedRepairWindows` entry pinned to the pre-guard content hash
+- **WHEN** the attestation verdict evaluates the guarded synthesis
+- **THEN** the verdict is `stale-attestation` and the window keeps the
+  mixture render byte-identically
+- **AND** an entry pinned to the post-guard content hash splices the
+  trimmed render, whose seed records the token-only note
+  `tail-trimmed:<n>` beside `fired+attested` in its census record
+
+#### Scenario: Census mode at merge; enactment is census-gated
+
+- **GIVEN** a legacy phrase-loop window and a decode-tripped rebuild whose
+  streams decode identical contradictory tails, before trim enactment
+- **WHEN** the repair path runs at merge
+- **THEN** both routes splice their renders byte-identical to the
+  unguarded pipeline and both record token-only would-trim evidence
+- **AND** no route trims until the census acceptance bar is met on the
+  reference meeting and a second named meeting with the user's dated
+  review; after enactment both routes splice the trimmed render and
+  record `tail-trimmed:<n>`
+
+#### Scenario: Guard logs never carry words
+
+- **GIVEN** any guard decision — trim, would-trim, or no-op
+- **WHEN** the guard emits log or census-evidence lines
+- **THEN** every line carries indices, wall positions, and counts only —
+  no synthesized token, no payload word, no row text
 
 ### Requirement: Repair-window attestations are auditable
 
