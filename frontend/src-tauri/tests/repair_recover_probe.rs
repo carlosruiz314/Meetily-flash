@@ -52,8 +52,8 @@ use app_lib::audio::speaker::ports::{SeparatedStream, VoiceSeparationPort};
 use app_lib::audio::speaker::run_assembly::{
     decode_stream_utterances, is_class_e_fiction, is_stuttering_decode, join_utterance_texts,
     repair_overlap_rows_checked, repair_windows_from_talkover_seeds, select_repair_pass,
-    tail_guard_census_trace, tail_provenance_pass, LoopRepairCandidate, RepairPassEvidence,
-    SelectedRepairPass, SpanSynthesis, StreamEvidence, TailGuardMode, TalkoverSeed,
+    tail_guard_census_trace, LoopRepairCandidate, RepairPassEvidence,
+    SelectedRepairPass, SpanSynthesis, StreamEvidence, TalkoverSeed,
     TalkoverSeedKind, OVERLAP_MAX_SPAN_SECS,
 };
 use app_lib::audio::speaker::turns::detokenize;
@@ -763,10 +763,6 @@ async fn repair_recover_probe() {
                     r.audio_end_ms as f64 / 1000.0,
                 ));
             }
-            let mut synth_a = synth_a;
-            let mut synth_b = synth_b;
-            tail_provenance_pass(&mut synth_a, &splice_rows, &ref_speaker, TailGuardMode::Census);
-            tail_provenance_pass(&mut synth_b, &splice_rows, &ref_speaker, TailGuardMode::Census);
             let spliced_a =
                 repair_overlap_rows_checked(&splice_rows, &synth_a, &|c: u32| {
                     REF_NAMES.get(c as usize).map(|s| s.to_string())

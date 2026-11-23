@@ -2303,11 +2303,14 @@ pub struct TailGuardReport {
 }
 
 /// Token-only per-window census evidence (design D8 fields; walls, counts
-/// and buckets — never text). `trims_point_rule` counts, over the SAME
-/// visited tail tokens, contradictions under the original bare-point rule
-/// (a covering word containing the token's proportional point) so the
-/// census can compare the two candidate rules' firing distributions on one
-/// corpus.
+/// and buckets — never text). `trims` is the stood-down token count in
+/// Trim posture and the would-trim count in Census (the only posture the
+/// sink rides). `trims_point_rule` counts bare-point contradictions over
+/// EVERY visited tail token — trims plus the terminal keep — so a value
+/// above `trims` marks exactly the tokens the bare-point rule would stand
+/// down but the shipped interval-majority rule keeps (design D8's
+/// rule-selection comparison); a trace with `trims == 0` and a positive
+/// `trims_point_rule` records exactly that divergence-only stream.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TailGuardTrace {
     pub stream: usize,
@@ -2431,9 +2434,12 @@ fn tail_provenance_pass_mut(
                 .enumerate()
                 .filter_map(|(idx, u)| {
                     let text = u.text.as_deref()?;
-                    let a = ((span_ms.0 as f64 + u.offset_s.0 * 1000.0) as i64)
+                    // ROUND, never truncate — same 1ms round-trip lesson as
+                    // the span walls above (piece end = the last token's
+                    // interval end).
+                    let a = ((span_ms.0 as f64 + u.offset_s.0 * 1000.0).round() as i64)
                         .clamp(span_ms.0, span_ms.1);
-                    let b = ((span_ms.0 as f64 + u.offset_s.1 * 1000.0) as i64)
+                    let b = ((span_ms.0 as f64 + u.offset_s.1 * 1000.0).round() as i64)
                         .clamp(span_ms.0, span_ms.1);
                     (b > a).then(|| PieceWork {
                         start_ms: a,
@@ -2452,6 +2458,7 @@ fn tail_provenance_pass_mut(
         let mut terminal_punct_trim = false;
         let mut point_rule_fires = 0usize;
         let mut stream_trims_start = report.trims;
+        let mut stream_would_start = report.would_trims;
         let mut walk_continues = true;
         for piece in pieces.iter_mut().rev() {
             if !walk_continues {
@@ -2551,23 +2558,12 @@ fn tail_provenance_pass_mut(
                         }
                     }
                 }
-                if best.is_none() {
-                    break; // first keep ends the walk
-                }
-                // Census evidence: the decisive word's coverage and width
-                // (max-coverage among trimmed tokens), terminal punctuation
-                // of the trimmed token, and the bare-point rule's verdict
-                // over the SAME visited tokens (design D8's rule-selection
-                // comparison).
-                if let Some((cov, _, _, w)) = best {
-                    decisive = Some(match decisive {
-                        Some((c, wms)) if c >= cov => (c, wms),
-                        _ => (cov, w.end_ms - w.start_ms),
-                    });
-                }
-                if tok.terminal_punct {
-                    terminal_punct_trim = true;
-                }
+                // The bare-point rule's verdict is taken over EVERY visited
+                // token — including the terminal keep below. Judging only
+                // the trimmed tokens would make the rule comparison
+                // one-sided: a keep that bare-point would stand down is
+                // exactly the divergence the census exists to measure
+                // (design D8's rule-selection comparison).
                 let point_fire = absorbed.iter().any(|r| {
                     let Some(walls) = r.token_walls.as_ref() else {
                         return false;
@@ -2584,6 +2580,21 @@ fn tail_provenance_pass_mut(
                 });
                 if point_fire {
                     point_rule_fires += 1;
+                }
+                if best.is_none() {
+                    break; // first keep ends the walk
+                }
+                // Census evidence: the decisive word's coverage and width
+                // (max-coverage among trimmed tokens) and terminal
+                // punctuation of the trimmed token.
+                if let Some((cov, _, _, w)) = best {
+                    decisive = Some(match decisive {
+                        Some((c, wms)) if c >= cov => (c, wms),
+                        _ => (cov, w.end_ms - w.start_ms),
+                    });
+                }
+                if tok.terminal_punct {
+                    terminal_punct_trim = true;
                 }
                 piece_trims += 1;
                 // The walk moves westward; every assignment lands on the
@@ -2615,8 +2626,21 @@ fn tail_provenance_pass_mut(
             walk_continues = fully_trimmed;
         }
         if let Some(tr) = traces.as_mut() {
-            let trims = report.trims - stream_trims_start;
-            if trims > 0 {
+            // The trace sink only ever rides Census posture, where
+            // report.trims cannot move (no mutation) — the delta must read
+            // the would-trim counter there, or the sink is structurally
+            // dead and the census fields can never materialize.
+            let trims = if mode == TailGuardMode::Trim {
+                report.trims - stream_trims_start
+            } else {
+                report.would_trims - stream_would_start
+            };
+            // Push on trims — and on a keep-side bare-point fire: a stream
+            // that kept its whole tail yet shows point_rule > trims is the
+            // exact over-firing divergence the interval-majority floor was
+            // chosen to prevent, and dropping it would make the census
+            // comparison one-sided again.
+            if trims > 0 || point_rule_fires > trims {
                 tr.push(TailGuardTrace {
                     stream: si,
                     trims,
@@ -3594,16 +3618,29 @@ pub fn talkover_seed_census(i: TalkoverCensusInputs) -> Vec<TalkoverSeedCensusRo
     };
     i.seeds
         .iter()
-        .map(|seed| TalkoverSeedCensusRow {
-            seed_span_ms: seed.span,
-            kind: seed.kind,
-            outcome: outcome_for(seed),
-            tail_trims: i
-                .tail_trims
-                .iter()
-                .filter(|((s, e), _)| span_overlaps_seed(seed.span, *s, *e))
-                .map(|(_, n)| *n)
-                .sum(),
+        .map(|seed| {
+            let outcome = outcome_for(seed);
+            // D6: the note rides APPLIED windows only — a seed whose window
+            // died at the attestation gate or an apply guard must never
+            // claim a trim that never shipped. (Two overlapping repair
+            // windows could both overlap one seed span and sum here; the
+            // region guards make that a non-shape today — the sum is the
+            // honest total if it ever happens.)
+            let tail_trims = if outcome == TalkoverSeedOutcome::FiredAttested {
+                i.tail_trims
+                    .iter()
+                    .filter(|((s, e), _)| span_overlaps_seed(seed.span, *s, *e))
+                    .map(|(_, n)| *n)
+                    .sum()
+            } else {
+                0
+            };
+            TalkoverSeedCensusRow {
+                seed_span_ms: seed.span,
+                kind: seed.kind,
+                outcome,
+                tail_trims,
+            }
         })
         .collect()
 }
@@ -7185,9 +7222,10 @@ mod tests {
 
     #[test]
     fn tail_guard_never_examines_midrow_tokens() {
-        // "beta"'s interval [104545,105000] is majority-covered by "xi"
+        // "beta"'s interval [104545,104909] is majority-covered by "xi"
         // [104600,104900] — but the walk trims "delta" and stops at
-        // "gamma" (uncovered), never reaching mid-row "beta".
+        // "gamma" ([105000,105455], uncovered), never reaching mid-row
+        // "beta".
         let (rows, mut synthesis) =
             base_fixture(&[("kappa", 105_600, 105_950), ("xi", 104_600, 104_900)]);
         let report =
@@ -7372,8 +7410,11 @@ mod tests {
         // end) and a RE-INVOCATION may judge it against walls its original
         // evaluation never saw. Deepening it would re-judge a token whose
         // original evidence was clean — the deletion-side risk the panel
-        // barred — so the rule stays single-pass conservative, and the
-        // second invocation converges to zero (no unbounded cascade).
+        // barred — so the rule stays single-pass conservative. Convergence
+        // is a bounded cascade, not a one-step zero: r2 may deepen past b's
+        // single pass (each trim strictly inflates the next surviving
+        // interval westward, so the trim set shrinks every pass), and this
+        // fixture pins the THIRD invocation at zero.
         let r2 = tail_provenance_pass(&mut a, &rows, &cluster_map, TailGuardMode::Trim);
         let r3 = tail_provenance_pass(&mut a, &rows, &cluster_map, TailGuardMode::Trim);
         assert_eq!(r3.trims, 0, "converged — no unbounded re-trim cascade");
@@ -7578,5 +7619,129 @@ mod tests {
         assert!(guard_line.starts_with("REPAIR-GUARD span=[1.00,2.00]"));
         assert!(guard_line.contains("trimmed=0"));
         assert!(guard_line.contains("would_trim=3"));
+    }
+
+    #[test]
+    fn tail_guard_census_note_rides_applied_windows_only() {
+        // D6: a window that died at the attestation gate never claims a
+        // trim — the note joins against the APPLIED outcome, not raw span
+        // overlap (a stale seed with an overlapping raw count must read 0).
+        let seeds = vec![
+            TalkoverSeed { span: (1_000, 2_000), kind: TalkoverSeedKind::Attested },
+            TalkoverSeed { span: (3_000, 4_000), kind: TalkoverSeedKind::DecodeTripped },
+        ];
+        let candidates = vec![
+            LoopRepairCandidate { span: (1_000, 2_000), donor_original_id: "r".into(), seed_class: RepairSeedClass::TalkoverAttested },
+            LoopRepairCandidate { span: (3_000, 4_000), donor_original_id: "r".into(), seed_class: RepairSeedClass::TalkoverDecodeTripped },
+        ];
+        let rows = talkover_seed_census(TalkoverCensusInputs {
+            seeds: &seeds,
+            candidates: &candidates,
+            manual_spans: &[],
+            repairs_present: true,
+            separation_ok: true,
+            rebuilt_spans: &[(1.0, 2.0), (3.0, 4.0)],
+            gate_rejections: &[(
+                (3.0, 4.0),
+                AttestationRejection::Stale {
+                    entry_sha: "e".into(),
+                    decode_sha: "d".into(),
+                    entry_fp: "ef".into(),
+                    decode_fp: "df".into(),
+                },
+            )],
+            apply_rejections: &[],
+            applied_spans: &[(1.0, 2.0)],
+            rebuild_aborted: false,
+            tail_trims: &[((1.0, 2.0), 2), ((3.0, 4.0), 5)],
+        });
+        assert_eq!(rows[0].outcome, TalkoverSeedOutcome::FiredAttested);
+        assert_eq!(rows[0].tail_trims, 2, "applied window claims its trim");
+        assert_eq!(
+            rows[1].outcome,
+            TalkoverSeedOutcome::StaleAttestation {
+                entry_sha: "e".into(),
+                decode_sha: "d".into(),
+                entry_fp: "ef".into(),
+                decode_fp: "df".into(),
+            }
+        );
+        assert_eq!(
+            rows[1].tail_trims, 0,
+            "a dead window never claims a trim, raw count or not"
+        );
+        let line = format_talkover_seed_census(&rows);
+        assert!(line.contains("tail-trimmed:2"), "{line}");
+        assert!(!line.contains("tail-trimmed:5"), "stale seed carries no note: {line}");
+    }
+
+    #[test]
+    fn tail_guard_multi_cover_precedence_pinned() {
+        // One tail token, several qualifying payload words: EXISTS trims,
+        // precedence only picks the DECISIVE evidence word (design D2:
+        // max-coverage → donor → earliest start), pinned through the
+        // census trace's decisive fields. Plus the abutting-rows case:
+        // two words jointly covering the interval but each sub-majority
+        // never trim (coverage is not summed across words), and the
+        // resulting keep-side bare-point fire surfaces as a divergence
+        // trace.
+        let synth = SpanSynthesis {
+            span: (100.0, 108.0),
+            streams: [
+                segu(1, 0.3, &[(4.0, 6.0, "alpha beta gamma delta")]),
+                segu(3, 0.2, &[(0.5, 1.5, "epsilon zeta")]),
+            ],
+            covered_atoms: Vec::new(),
+        };
+
+        // Max coverage wins: tau (0.80) beats sigma (0.60), donor or not.
+        let rows = vec![
+            walled("r1", 96_000, 106_000, "Speaker 0", &[("sigma", 105_600, 105_873)]),
+            walled("r2", 100_000, 106_000, "Speaker 0", &[("tau", 105_545, 105_909)]),
+        ];
+        let (report, traces) = tail_guard_census_trace(&synth, &rows, &cluster_map);
+        assert_eq!(report.would_trims, 1, "EXISTS: one qualifying word trims");
+        assert_eq!(traces.len(), 1, "exactly the trimming stream surfaces");
+        assert_eq!(traces[0].stream, 0);
+        assert!((traces[0].decisive_coverage_frac - 364.0 / 455.0).abs() < 1e-12);
+        assert_eq!(traces[0].decisive_cover_width_ms, 364, "max-coverage word is decisive");
+
+        // Equal coverage: the donor row's word wins over the earlier-start
+        // straddler (tau is donor — larger span overlap with the window).
+        // sigma [105455,105818] straddles delta's west edge (width 363,
+        // overlap 273) without touching gamma [105000,105455] (half-open
+        // east edge == gamma's end → no cover).
+        let rows = vec![
+            walled("r1", 105_455, 105_818, "Speaker 0", &[("sigma", 105_455, 105_818)]),
+            walled("r2", 96_000, 106_000, "Speaker 0", &[("tau", 105_545, 105_818)]),
+        ];
+        let (report, traces) = tail_guard_census_trace(&synth, &rows, &cluster_map);
+        assert_eq!(report.would_trims, 1);
+        assert_eq!(traces[0].decisive_cover_width_ms, 273, "donor beats earliest-start at equal coverage");
+
+        // Equal coverage, neither row donor (a third row is the donor):
+        // the EARLIEST-START word wins (sigma starts 105455 before
+        // tau's 105600; decisive width 363).
+        let rows = vec![
+            walled("r1", 105_455, 105_818, "Speaker 0", &[("sigma", 105_455, 105_818)]),
+            walled("r2", 105_600, 105_873, "Speaker 0", &[("tau", 105_600, 105_873)]),
+            walled("r3", 96_000, 107_000, "Speaker 0", &[("omega", 101_000, 101_050)]),
+        ];
+        let (report, traces) = tail_guard_census_trace(&synth, &rows, &cluster_map);
+        assert_eq!(report.would_trims, 1);
+        assert_eq!(traces[0].decisive_cover_width_ms, 363, "earliest start breaks the non-donor tie");
+
+        // Abutting rows, each sub-majority: coverage is NEVER summed across
+        // words — the token keeps, and the keep-side bare-point fire (the
+        // divergence the floor prevents) surfaces as a trims=0 trace.
+        let rows = vec![
+            walled("r1", 96_000, 105_745, "Speaker 0", &[("sigma", 105_545, 105_745)]),
+            walled("r2", 105_745, 106_000, "Speaker 0", &[("tau", 105_745, 105_945)]),
+        ];
+        let (report, traces) = tail_guard_census_trace(&synth, &rows, &cluster_map);
+        assert_eq!(report.would_trims, 0, "no single word majority-covers: keep");
+        assert_eq!(traces.len(), 1, "divergence-only stream still surfaces");
+        assert_eq!(traces[0].trims, 0);
+        assert_eq!(traces[0].trims_point_rule, 1, "bare-point fires on the kept token");
     }
 }

@@ -614,3 +614,36 @@ proptest! {
     }
 }
 
+
+#[test]
+fn tail_guard_wired_only_in_commands() {
+    // Hash truth (wall-payload-provenance-guard D1): the guard pre-pass
+    // must run exactly once, between ordering and admissibility, inside
+    // commands.rs — the unit source-scan pin there is file-scoped, so this
+    // crate-wide scan catches a future second call site in any other
+    // module (the pass is pub because the integration harnesses call it).
+    // CWD for integration tests is the crate root.
+    let mut stack = vec![PathBuf::from("src")];
+    let commands_rs = PathBuf::from("src/audio/speaker/commands.rs");
+    let run_assembly_rs = PathBuf::from("src/audio/speaker/run_assembly.rs");
+    let mut offenders: Vec<String> = Vec::new();
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read src tree") {
+            let p = entry.expect("dir entry").path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().map(|e| e == "rs").unwrap_or(false) {
+                let text = std::fs::read_to_string(&p).expect("read rs source");
+                let wired = text.contains(concat!("tail_", "provenance_pass("));
+                let sanctioned = p == commands_rs || p == run_assembly_rs;
+                if wired && !sanctioned {
+                    offenders.push(p.display().to_string());
+                }
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "guard called outside the sanctioned batch site: {offenders:?}"
+    );
+}
