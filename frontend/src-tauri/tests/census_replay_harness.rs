@@ -28,7 +28,8 @@ use std::path::PathBuf;
 use app_lib::audio::speaker::alignment::{AlignedSegment, SpeakerSource};
 use app_lib::audio::speaker::commands::{apply_overlap_synthesis, decode_span_synthesis};
 use app_lib::audio::speaker::run_assembly::{
-    apply_loop_repairs, decode_stream_utterances, SpanSynthesis, StreamEvidence, StreamUtterance,
+    apply_loop_repairs, decode_stream_utterances, tail_provenance_pass, SpanSynthesis,
+    StreamEvidence, StreamUtterance, TailGuardMode,
 };
 use app_lib::audio::speaker::run_engine::{SpanSynthesisInput, SAMPLE_RATE};
 
@@ -518,8 +519,19 @@ proptest! {
             covered_atoms: repair.covered_atoms.clone(),
         };
         let cluster_speaker = |c: u32| Some(format!("spk{c}"));
+        // Guard pre-pass, census mode (wall-payload-provenance-guard D1/D5):
+        // the composition the production path runs — the pass sees the
+        // repair before the fold, changes no bytes, and must keep every
+        // property below intact.
+        let mut guarded = repair.clone();
+        let _guard_report = tail_provenance_pass(
+            &mut guarded,
+            &rows,
+            &cluster_speaker,
+            TailGuardMode::Census,
+        );
         let (out1, applied1, _) =
-            apply_loop_repairs(rows.clone(), &[repair], &cluster_speaker);
+            apply_loop_repairs(rows.clone(), &[guarded], &cluster_speaker);
         prop_assert_eq!(applied1, 1, "the window repairs once");
         let (out2, applied2, _) = apply_loop_repairs(out1.clone(), &[repair2], &cluster_speaker);
         prop_assert_eq!(applied2, 0, "re-applying is rejected: the region is already per-voice");

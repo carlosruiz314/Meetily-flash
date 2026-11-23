@@ -11,7 +11,7 @@
 //! Vecs only — no HashMap iteration may affect any decision; spec step 8).
 //! Model I/O lives in `pyannote_segmentation` and `nemo_extractor`.
 
-use crate::audio::speaker::alignment::{AlignedSegment, SpeakerSource};
+use crate::audio::speaker::alignment::{AlignedSegment, SpeakerSource, TokenWord};
 use crate::audio::speaker::pyannote_segmentation::{FrameMasses, SILENCE_LABEL};
 
 /// Speech gate: summed speaker mass above this = speech (spec step 1).
@@ -1602,7 +1602,7 @@ pub fn rescue_candidates(
 /// One separated stream's evidence for an overlap span. Stream identity is
 /// the array index (0/1) — the separation port's stream ORDER carries no
 /// meaning, so the caller owns the index→stream binding.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct StreamEvidence {
     pub cluster: u32,
     pub margin: f32,
@@ -1623,7 +1623,7 @@ pub struct StreamEvidence {
 
 /// One utterance chunk of a separated stream: walls relative to the span
 /// start (seconds) and the chunk's post-audit decode (None = dropped).
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct StreamUtterance {
     pub offset_s: (f64, f64),
     pub text: Option<String>,
@@ -1671,7 +1671,7 @@ pub fn is_class_e_fiction(s: &SpanSynthesis) -> bool {
 /// A span's both-stream synthesis evidence. Spans are seconds (the
 /// trigger's unit); rows and covered atoms are milliseconds (the
 /// alignment's unit).
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct SpanSynthesis {
     pub span: (f64, f64),
     pub streams: [StreamEvidence; 2],
@@ -2266,6 +2266,392 @@ fn synth_rows_for_streams(
     }
     rows.sort_by_key(|(start, si, _)| (*start, *si));
     rows.into_iter().map(|(_, _, r)| r).collect()
+}
+
+// ── Tail-provenance guard (wall-payload-provenance-guard) ──
+// A synthesized TAIL token whose derived interval the absorbed mixture
+// rows' wall payload majority-covers with a different-voice, different-
+// word above the width floor is fiction by the only oracle the render
+// has — the mixture decode the user reads. Mid-row tokens are never
+// examined (the attested needle run lives mid-row; tail positions are
+// where clipped utterances fabricate). Census mode at merge: every route
+// runs the pass log-only — zero render bytes change until the measured
+// enactment bar clears (design D8).
+
+/// Fraction of the token's derived interval one payload word must cover
+/// for a contradiction (design D2; census-dialed, never per-span).
+pub const TAIL_GUARD_MAJORITY_FRAC: f64 = 0.5;
+/// Payload words below this wall width are seam-clipping slivers
+/// (clean_source_walls manufactures 1ms walls at row seams) — never
+/// evidence (design D2).
+pub const TAIL_GUARD_MIN_COVER_WIDTH_MS: i64 = 50;
+
+/// Census mode = log-only (the merge posture); Trim = the enactment
+/// posture, unlocked only by the D8 census bar + user review.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TailGuardMode {
+    Census,
+    Trim,
+}
+
+/// Token-only outcome for one window: tokens stood down (Trim) or that
+/// WOULD have been (Census). No text ever rides this.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TailGuardReport {
+    pub trims: usize,
+    pub would_trims: usize,
+}
+
+/// Token-only per-window census evidence (design D8 fields; walls, counts
+/// and buckets — never text). `trims_point_rule` counts, over the SAME
+/// visited tail tokens, contradictions under the original bare-point rule
+/// (a covering word containing the token's proportional point) so the
+/// census can compare the two candidate rules' firing distributions on one
+/// corpus.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TailGuardTrace {
+    pub stream: usize,
+    pub trims: usize,
+    pub decisive_coverage_frac: f64,
+    pub decisive_cover_width_ms: i64,
+    pub terminal_punct_trim: bool,
+    pub trims_point_rule: usize,
+}
+
+/// The census entry point (design D8): census posture, with the token-only
+/// evidence sink. The probe's env-gated run logs these.
+pub fn tail_guard_census_trace(
+    synthesis: &SpanSynthesis,
+    rows: &[AlignedSegment],
+    cluster_speaker: &dyn Fn(u32) -> Option<String>,
+) -> (TailGuardReport, Vec<TailGuardTrace>) {
+    let mut owned = synthesis.clone();
+    let mut traces = Vec::new();
+    let report =
+        tail_provenance_pass_mut(&mut owned, rows, cluster_speaker, TailGuardMode::Census, Some(&mut traces));
+    (report, traces)
+}
+
+/// The guard pre-pass (design D1/D2/D3): runs BEFORE the content hash and
+/// the attestation verdict, so the pinned hash is always the hash of the
+/// render that ships. Edits the stream pieces AND re-derives each stream's
+/// `text` as the join of its pieces — the splice renders utterances, the
+/// hash reads `text`; both leave this function describing the same bytes.
+pub fn tail_provenance_pass(
+    synthesis: &mut SpanSynthesis,
+    rows: &[AlignedSegment],
+    cluster_speaker: &dyn Fn(u32) -> Option<String>,
+    mode: TailGuardMode,
+) -> TailGuardReport {
+    tail_provenance_pass_mut(synthesis, rows, cluster_speaker, mode, None)
+}
+
+/// The frozen comparison operator (design D2): Unicode NFC → detokenize →
+/// lowercase → non-alphanumerics stripped → exact equality. NFC is
+/// load-bearing HERE (unlike the ear gate's matcher it mirrors): a
+/// guard-side mismatch DELETES a real word, so NFD/NFC accent forms —
+/// routine in the ES/CA corpus — must never read as different words.
+fn tail_guard_normalized(text: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    crate::audio::speaker::turns::detokenize(&text.nfc().collect::<String>())
+        .to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect()
+}
+
+/// One piece of a stream during the guard walk: walls are absolute ms
+/// (clamped to the window, mirroring the splice's piece clamp), `utt_idx`
+/// links back to the utterance for the Trim-mode cut (None = the
+/// whole-span text-fallback shape).
+struct PieceWork {
+    start_ms: i64,
+    end_ms: i64,
+    text: String,
+    utt_idx: Option<usize>,
+}
+
+/// One whitespace token with its derived interval and its byte offset for
+/// the excision cut.
+struct TokenWork {
+    byte_start: usize,
+    norm: String,
+    start_ms: i64,
+    end_ms: i64,
+    terminal_punct: bool,
+}
+
+fn tail_provenance_pass_mut(
+    synthesis: &mut SpanSynthesis,
+    rows: &[AlignedSegment],
+    cluster_speaker: &dyn Fn(u32) -> Option<String>,
+    mode: TailGuardMode,
+    mut traces: Option<&mut Vec<TailGuardTrace>>,
+) -> TailGuardReport {
+    let mut report = TailGuardReport::default();
+    // ROUND, never truncate — the 1ms round-trip lesson (the gate's own
+    // re-derivation truncation cost a ship attempt).
+    let span_ms = (
+        (synthesis.span.0 * 1000.0).round() as i64,
+        (synthesis.span.1 * 1000.0).round() as i64,
+    );
+    let absorbed: Vec<&AlignedSegment> = rows
+        .iter()
+        .filter(|r| r.audio_start_ms < span_ms.1 && span_ms.0 < r.audio_end_ms)
+        .collect();
+    let donor = absorbed
+        .iter()
+        .copied()
+        .max_by_key(|r| r.audio_end_ms.min(span_ms.1) - r.audio_start_ms.max(span_ms.0));
+    // Badge knowledge: the pair's own deterministic gates (punctuation /
+    // stutter / rate / margin / RMS / collapse) vet the window exactly as
+    // the splice will. A failure here = no-op — the splice rejects the
+    // window downstream with the same reason, so the guard never acts on a
+    // window that cannot render.
+    let Ok((_, badges)) = vetted_stream_pair(synthesis, cluster_speaker) else {
+        return report;
+    };
+    for (si, st) in synthesis.streams.iter_mut().enumerate() {
+        // Pieces: the stream utterances when present (the production
+        // shape), else the single whole-span text piece (test helpers).
+        let fallback = st.utterances.is_empty();
+        let mut pieces: Vec<PieceWork> = if fallback {
+            st.text
+                .as_deref()
+                .map(|t| vec![PieceWork {
+                    start_ms: span_ms.0,
+                    end_ms: span_ms.1,
+                    text: t.to_string(),
+                    utt_idx: None,
+                }])
+                .unwrap_or_default()
+        } else {
+            st.utterances
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, u)| {
+                    let text = u.text.as_deref()?;
+                    let a = ((span_ms.0 as f64 + u.offset_s.0 * 1000.0) as i64)
+                        .clamp(span_ms.0, span_ms.1);
+                    let b = ((span_ms.0 as f64 + u.offset_s.1 * 1000.0) as i64)
+                        .clamp(span_ms.0, span_ms.1);
+                    (b > a).then(|| PieceWork {
+                        start_ms: a,
+                        end_ms: b,
+                        text: text.to_string(),
+                        utt_idx: Some(idx),
+                    })
+                })
+                .collect()
+        };
+        // Tail walk: from the LAST piece backwards; a piece that survives
+        // with any kept token ends the walk (mid-row is never examined);
+        // only a fully-dropped piece hands the walk to the previous one.
+        // Token-only census accumulators for this stream (design D8).
+        let mut decisive: Option<(f64, i64)> = None;
+        let mut terminal_punct_trim = false;
+        let mut point_rule_fires = 0usize;
+        let mut stream_trims_start = report.trims;
+        let mut walk_continues = true;
+        for piece in pieces.iter_mut().rev() {
+            if !walk_continues {
+                break;
+            }
+            let total_chars = piece.text.chars().count();
+            if total_chars == 0 {
+                continue;
+            }
+            let dur = piece.end_ms - piece.start_ms;
+            if dur <= 0 {
+                continue;
+            }
+            // Tokens: whitespace runs, with byte offsets for the cut.
+            let mut raw_tokens: Vec<(usize, &str)> = Vec::new();
+            let mut chars_iter = piece.text.char_indices().peekable();
+            while let Some((byte_start, c)) = chars_iter.next() {
+                if c.is_whitespace() {
+                    continue;
+                }
+                let mut byte_end = byte_start + c.len_utf8();
+                while let Some(&(nb, nc)) = chars_iter.peek() {
+                    if nc.is_whitespace() {
+                        break;
+                    }
+                    byte_end = nb + nc.len_utf8();
+                    chars_iter.next();
+                }
+                raw_tokens.push((byte_start, &piece.text[byte_start..byte_end]));
+            }
+            // Derived intervals: a token's position is its character
+            // fraction into the piece span; the LAST token's interval ends
+            // at the piece end (no rounding seam).
+            let pos = |c: usize| -> i64 {
+                piece.start_ms + ((c as f64 / total_chars as f64) * dur as f64).round() as i64
+            };
+            let mut tokens: Vec<TokenWork> = Vec::new();
+            for (n, (byte_start, tok_text)) in raw_tokens.iter().enumerate() {
+                let chars_before = piece.text[..*byte_start].chars().count();
+                let end_at_piece = n + 1 == raw_tokens.len();
+                tokens.push(TokenWork {
+                    byte_start: *byte_start,
+                    norm: tail_guard_normalized(tok_text),
+                    start_ms: pos(chars_before),
+                    end_ms: if end_at_piece {
+                        piece.end_ms
+                    } else {
+                        pos(chars_before + tok_text.chars().count())
+                    },
+                    terminal_punct: tok_text
+                        .chars()
+                        .last()
+                        .map(|c| matches!(c, '.' | '!' | '?' | '…' | ',' | ';' | ':'))
+                        .unwrap_or(false),
+                });
+            }
+            // Walk tokens from the tail; trim while contradicting, stop at
+            // the first keep.
+            let mut cut_byte: Option<usize> = None;
+            let mut piece_trims = 0usize;
+            for tok in tokens.iter().rev() {
+                if tok.end_ms <= tok.start_ms {
+                    break;
+                }
+                let interval = (tok.end_ms - tok.start_ms) as f64;
+                // The contradiction scan: one different-badge payload word
+                // (i) majority-covering the interval, (ii) above the width
+                // floor, (iii) normalizing differently — EXISTS semantics
+                // (design D2); precedence picks the EVIDENCE word only.
+                let mut best: Option<(f64, bool, i64, &TokenWord)> = None;
+                for r in &absorbed {
+                    let Some(walls) = r.token_walls.as_ref() else {
+                        continue;
+                    };
+                    if r.speaker == badges[si] {
+                        continue;
+                    }
+                    let is_donor = donor.map(|d| std::ptr::eq(d, *r)).unwrap_or(false);
+                    for w in walls {
+                        if w.end_ms - w.start_ms < TAIL_GUARD_MIN_COVER_WIDTH_MS {
+                            continue;
+                        }
+                        let overlap = w.end_ms.min(tok.end_ms) - w.start_ms.max(tok.start_ms);
+                        if overlap <= 0 {
+                            continue;
+                        }
+                        let coverage = overlap as f64 / interval;
+                        if coverage < TAIL_GUARD_MAJORITY_FRAC {
+                            continue;
+                        }
+                        if tail_guard_normalized(&w.word) == tok.norm {
+                            continue;
+                        }
+                        let rank = (coverage, is_donor, -w.start_ms);
+                        if best.map(|b| rank > (b.0, b.1, b.2)).unwrap_or(true) {
+                            best = Some((coverage, is_donor, -w.start_ms, w));
+                        }
+                    }
+                }
+                if best.is_none() {
+                    break; // first keep ends the walk
+                }
+                // Census evidence: the decisive word's coverage and width
+                // (max-coverage among trimmed tokens), terminal punctuation
+                // of the trimmed token, and the bare-point rule's verdict
+                // over the SAME visited tokens (design D8's rule-selection
+                // comparison).
+                if let Some((cov, _, _, w)) = best {
+                    decisive = Some(match decisive {
+                        Some((c, wms)) if c >= cov => (c, wms),
+                        _ => (cov, w.end_ms - w.start_ms),
+                    });
+                }
+                if tok.terminal_punct {
+                    terminal_punct_trim = true;
+                }
+                let point_fire = absorbed.iter().any(|r| {
+                    let Some(walls) = r.token_walls.as_ref() else {
+                        return false;
+                    };
+                    if r.speaker == badges[si] {
+                        return false;
+                    }
+                    walls.iter().any(|w| {
+                        w.end_ms - w.start_ms >= TAIL_GUARD_MIN_COVER_WIDTH_MS
+                            && w.start_ms <= tok.start_ms
+                            && tok.start_ms < w.end_ms
+                            && tail_guard_normalized(&w.word) != tok.norm
+                    })
+                });
+                if point_fire {
+                    point_rule_fires += 1;
+                }
+                piece_trims += 1;
+                // The walk moves westward; every assignment lands on the
+                // westernmost trimmed token — the cut must reach it (a
+                // multi-token trim drops the whole contradicted suffix).
+                cut_byte = Some(tok.byte_start);
+            }
+            // A piece is dropped only when EVERY token contradicted — a
+            // partial trim leaves a surviving piece (and ends the walk).
+            let fully_trimmed = !tokens.is_empty() && piece_trims == tokens.len();
+            if piece_trims > 0 && mode == TailGuardMode::Census {
+                report.would_trims += piece_trims;
+            }
+            if piece_trims > 0 && mode == TailGuardMode::Trim {
+                report.trims += piece_trims;
+                if fully_trimmed {
+                    piece.text.clear();
+                } else if let Some(byte) = cut_byte {
+                    piece.text = piece.text[..byte].trim_end().to_string();
+                }
+                if let Some(idx) = piece.utt_idx {
+                    st.utterances[idx].text = if fully_trimmed {
+                        None
+                    } else {
+                        Some(piece.text.clone())
+                    };
+                }
+            }
+            walk_continues = fully_trimmed;
+        }
+        if let Some(tr) = traces.as_mut() {
+            let trims = report.trims - stream_trims_start;
+            if trims > 0 {
+                tr.push(TailGuardTrace {
+                    stream: si,
+                    trims,
+                    decisive_coverage_frac: decisive.map(|(c, _)| c).unwrap_or(0.0),
+                    decisive_cover_width_ms: decisive.map(|(_, w)| w).unwrap_or(0),
+                    terminal_punct_trim,
+                    trims_point_rule: point_rule_fires,
+                });
+            }
+        }
+        // Hash truth: the text field re-derives from the pieces, so the
+        // hashed bytes and the rendered bytes are the same bytes.
+        if mode == TailGuardMode::Trim {
+            if fallback {
+                st.text = match pieces.first() {
+                    Some(p) if p.text.chars().any(|c| c.is_alphanumeric()) => {
+                        Some(p.text.clone())
+                    }
+                    _ => None,
+                };
+            } else {
+                st.text = join_utterance_texts(&st.utterances);
+            }
+        }
+    }
+    report
+}
+
+/// The legacy-route evidence line (design D6): mechanical strings only —
+/// walls and counts, never text.
+pub fn format_tail_guard_line(span: (f64, f64), trimmed: usize, would_trim: usize) -> String {
+    format!(
+        "REPAIR-GUARD span=[{:.2},{:.2}] trimmed={} would_trim={}",
+        span.0, span.1, trimmed, would_trim
+    )
 }
 
 /// Whole-row repair splice (phrase-loop repair): every row overlapping the
@@ -3063,11 +3449,32 @@ pub enum TalkoverSeedOutcome {
     RebuildAborted,
 }
 
+/// The outcome's census token (talkover-word-order-repair 3.4's exhaustive
+/// list; `stood-down` carries its guard name).
+impl TalkoverSeedOutcome {
+    pub fn token(&self) -> String {
+        match self {
+            TalkoverSeedOutcome::FiredAttested => "fired+attested".to_string(),
+            TalkoverSeedOutcome::AwaitingAttestation => "awaiting-attestation".to_string(),
+            TalkoverSeedOutcome::StaleAttestation { .. } => "stale-attestation".to_string(),
+            TalkoverSeedOutcome::StoodDown { guard } => format!("stood-down:{guard}"),
+            TalkoverSeedOutcome::WindowNotBuilt => "window-not-built".to_string(),
+            TalkoverSeedOutcome::SeparationUnavailable => "separation-unavailable".to_string(),
+            TalkoverSeedOutcome::RebuildAborted => "rebuild-aborted".to_string(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TalkoverSeedCensusRow {
     pub seed_span_ms: (i64, i64),
     pub kind: TalkoverSeedKind,
     pub outcome: TalkoverSeedOutcome,
+    /// Token-only note count for `tail-trimmed:<n>` (wall-payload-
+    /// provenance-guard): tokens the tail guard stood down (or would have,
+    /// census mode) for this seed's applied window. 0 = silent — the note
+    /// appears beside the outcome token only when nonzero.
+    pub tail_trims: usize,
 }
 
 /// Everything the fold accumulated about the promotion batch (talkover-
@@ -3092,6 +3499,10 @@ pub struct TalkoverCensusInputs<'a> {
     /// The rebuild join failed or panicked (replaces the old
     /// `unwrap_or_default` swallow).
     pub rebuild_aborted: bool,
+    /// Per-window tail-guard counts (wall-payload-provenance-guard), the
+    /// note source for `tail-trimmed:<n>` — joined against the APPLIED
+    /// spans, so a window that died downstream never claims a trim.
+    pub tail_trims: &'a [((f64, f64), usize)],
 }
 
 fn span_overlaps_seed(seed: (i64, i64), s: f64, e: f64) -> bool {
@@ -3187,6 +3598,12 @@ pub fn talkover_seed_census(i: TalkoverCensusInputs) -> Vec<TalkoverSeedCensusRo
             seed_span_ms: seed.span,
             kind: seed.kind,
             outcome: outcome_for(seed),
+            tail_trims: i
+                .tail_trims
+                .iter()
+                .filter(|((s, e), _)| span_overlaps_seed(seed.span, *s, *e))
+                .map(|(_, n)| *n)
+                .sum(),
         })
         .collect()
 }
@@ -3194,11 +3611,15 @@ pub fn talkover_seed_census(i: TalkoverCensusInputs) -> Vec<TalkoverSeedCensusRo
 /// The token-only census line (talkover-word-order-repair 3.4): outcome
 /// counts plus per-seed wall coordinates and outcome tokens — never text
 /// (D6's exhaustive schema: counts and ratios keyed by wall coordinates).
+/// Seeds carrying tail-guard counts append the token-only note
+/// `tail-trimmed:<n>` BESIDE their outcome token (wall-payload-provenance-
+/// guard D6) — the note never replaces the outcome, and appears only for
+/// nonzero counts.
 pub fn format_talkover_seed_census(rows: &[TalkoverSeedCensusRow]) -> String {
     let count = |p: &dyn Fn(&TalkoverSeedOutcome) -> bool| {
         rows.iter().filter(|r| p(&r.outcome)).count()
     };
-    format!(
+    let mut line = format!(
         "TALKOVER-SEED-CENSUS total={} attested={} awaiting={} stale={} stood={} notbuilt={} separation={} aborted={}",
         rows.len(),
         count(&|o| matches!(o, TalkoverSeedOutcome::FiredAttested)),
@@ -3208,7 +3629,17 @@ pub fn format_talkover_seed_census(rows: &[TalkoverSeedCensusRow]) -> String {
         count(&|o| matches!(o, TalkoverSeedOutcome::WindowNotBuilt)),
         count(&|o| matches!(o, TalkoverSeedOutcome::SeparationUnavailable)),
         count(&|o| matches!(o, TalkoverSeedOutcome::RebuildAborted)),
-    )
+    );
+    for r in rows.iter().filter(|r| r.tail_trims > 0) {
+        line.push_str(&format!(
+            " seed@[{:.2},{:.2}] {} tail-trimmed:{}",
+            r.seed_span_ms.0 as f64 / 1000.0,
+            r.seed_span_ms.1 as f64 / 1000.0,
+            r.outcome.token(),
+            r.tail_trims,
+        ));
+    }
+    line
 }
 
 /// Allowlist entries whose walls matched NO live window this run (design
@@ -5688,6 +6119,7 @@ mod tests {
             apply_rejections: &[((11.0, 12.0), "region already per-voice (synth atom inside)".to_string())],
             applied_spans: &[(1.0, 2.0)],
             rebuild_aborted: false,
+            tail_trims: &[],
         });
         let by_seed = |ms: (i64, i64)| {
             rows.iter()
@@ -5736,6 +6168,7 @@ mod tests {
             apply_rejections: &[],
             applied_spans: &[],
             rebuild_aborted: aborted,
+            tail_trims: &[],
         };
         let global_rows = talkover_seed_census(mk_inputs(false, false));
         assert!(
@@ -6641,5 +7074,509 @@ mod tests {
         // Touching edges (half-open: span end == manual start) is NOT an overlap.
         let out = synthesize_overlap_rows(&rows, &s, &[(102_000, 103_000)], &cluster_speaker);
         assert!(out.is_some());
+    }
+
+    // ── Tail-provenance guard (wall-payload-provenance-guard) ──
+    // Synthetic text only — no meeting-derived strings. Fixtures use the
+    // POPULATED-utterance production shape unless testing the fallback
+    // explicitly; token placement is in ABSOLUTE ms walls at non-zero
+    // offsets (a span-relative implementation finds no payload and these
+    // tests fail).
+
+    use crate::audio::speaker::alignment::TokenWord;
+
+    /// Utterance-bearing stream evidence (the production shape: the splice
+    /// renders per-utterance texts; `text` is their join).
+    fn segu(cluster: u32, margin: f32, pieces: &[(f64, f64, &str)]) -> StreamEvidence {
+        let utterances: Vec<StreamUtterance> = pieces
+            .iter()
+            .map(|(a, b, t)| StreamUtterance {
+                offset_s: (*a, *b),
+                text: Some(t.to_string()),
+            })
+            .collect();
+        let text = join_utterance_texts(&utterances);
+        StreamEvidence { cluster, margin, rms_ratio: 1.0, text, utterances }
+    }
+
+    /// An absorbed mixture row with populated (non-NULL, synthetic) walls.
+    fn walled(
+        id: &str,
+        start_ms: i64,
+        end_ms: i64,
+        speaker: &str,
+        words: &[(&str, i64, i64)],
+    ) -> AlignedSegment {
+        let mut r = seg(id, "alpha beta gamma delta epsilon", start_ms, end_ms, speaker);
+        r.token_walls = Some(
+            words
+                .iter()
+                .map(|(w, s, e)| TokenWord { word: w.to_string(), start_ms: *s, end_ms: *e })
+                .collect(),
+        );
+        r
+    }
+
+    fn cluster_map(c: u32) -> Option<String> {
+        Some(format!("Speaker {c}"))
+    }
+
+    /// The §1 base fixture: window [100,108]s; stream B (badge Speaker 1)
+    /// carries "alpha beta gamma delta" on [104,106]s; mixture row r1
+    /// (badge Speaker 0) holds payload word "kappa" on [105.60,105.95]s —
+    /// majority-covering "delta"'s derived interval (≈[105545,106000]ms,
+    /// coverage 350/455) with width 350ms ≥ floor.
+    fn base_fixture(words: &[(&str, i64, i64)]) -> (Vec<AlignedSegment>, SpanSynthesis) {
+        let rows = vec![walled("r1", 96_000, 106_000, "Speaker 0", words)];
+        let synthesis = SpanSynthesis {
+            span: (100.0, 108.0),
+            streams: [
+                segu(1, 0.3, &[(4.0, 6.0, "alpha beta gamma delta")]),
+                segu(3, 0.2, &[(0.5, 1.5, "epsilon zeta")]),
+            ],
+            covered_atoms: Vec::new(),
+        };
+        (rows, synthesis)
+    }
+
+    fn stream0_text(s: &SpanSynthesis) -> String {
+        s.streams[0].text.clone().unwrap_or_default()
+    }
+
+    #[test]
+    fn tail_guard_trims_contradicting_tail_token_and_rederives_text() {
+        let (rows, mut synthesis) = base_fixture(&[("kappa", 105_600, 105_950)]);
+        let report =
+            tail_provenance_pass(&mut synthesis, &rows, &cluster_map, TailGuardMode::Trim);
+        assert_eq!(
+            synthesis.streams[0].utterances[0].text.as_deref(),
+            Some("alpha beta gamma"),
+            "the trailing token is trimmed from the UTTERANCE text"
+        );
+        assert_eq!(
+            stream0_text(&synthesis),
+            "alpha beta gamma",
+            "the hashed text equals the join of the post-trim pieces"
+        );
+        assert_eq!(report.trims, 1);
+        assert_eq!(report.would_trims, 0);
+        let untouched = segu(3, 0.2, &[(0.5, 1.5, "epsilon zeta")]);
+        assert_eq!(
+            synthesis.streams[1].utterances, untouched.utterances,
+            "mid-row tokens of other streams are byte-identical"
+        );
+    }
+
+    #[test]
+    fn tail_guard_census_mode_counts_without_touching_bytes() {
+        let (rows, mut synthesis) = base_fixture(&[("kappa", 105_600, 105_950)]);
+        let before = synthesis.clone();
+        let report =
+            tail_provenance_pass(&mut synthesis, &rows, &cluster_map, TailGuardMode::Census);
+        assert_eq!(report.would_trims, 1, "census mode records the would-trim");
+        assert_eq!(report.trims, 0);
+        assert_eq!(
+            synthesis.streams[0].utterances[0].text.as_deref(),
+            Some("alpha beta gamma delta"),
+            "census mode changes no bytes (the merge posture)"
+        );
+        assert_eq!(synthesis, before, "no byte of the synthesis moves in census mode");
+    }
+
+    #[test]
+    fn tail_guard_never_examines_midrow_tokens() {
+        // "beta"'s interval [104545,105000] is majority-covered by "xi"
+        // [104600,104900] — but the walk trims "delta" and stops at
+        // "gamma" (uncovered), never reaching mid-row "beta".
+        let (rows, mut synthesis) =
+            base_fixture(&[("kappa", 105_600, 105_950), ("xi", 104_600, 104_900)]);
+        let report =
+            tail_provenance_pass(&mut synthesis, &rows, &cluster_map, TailGuardMode::Trim);
+        assert_eq!(
+            synthesis.streams[0].utterances[0].text.as_deref(),
+            Some("alpha beta gamma"),
+            "beta survives despite its own contradiction — tail walk only"
+        );
+        assert_eq!(report.trims, 1);
+    }
+
+    #[test]
+    fn tail_guard_keeps_recovery_zone_tail() {
+        // No payload covers the tail interval: recovery zones are the
+        // repair's whole purpose and stay.
+        let (rows, mut synthesis) = base_fixture(&[("jota", 100_200, 100_800)]);
+        let report =
+            tail_provenance_pass(&mut synthesis, &rows, &cluster_map, TailGuardMode::Trim);
+        assert_eq!(
+            synthesis.streams[0].utterances[0].text.as_deref(),
+            Some("alpha beta gamma delta")
+        );
+        assert_eq!(report.trims, 0);
+    }
+
+    #[test]
+    fn tail_guard_keeps_same_badge_difference() {
+        // The payload word sits on a row with the SAME badge as the stream —
+        // a stream re-decoding its own voice's words differently is
+        // recovery, not third-voice fiction.
+        let rows = vec![walled("r1", 96_000, 106_000, "Speaker 1", &[("kappa", 105_600, 105_950)])];
+        let mut synthesis = SpanSynthesis {
+            span: (100.0, 108.0),
+            streams: [
+                segu(1, 0.3, &[(4.0, 6.0, "alpha beta gamma delta")]),
+                segu(3, 0.2, &[(0.5, 1.5, "epsilon zeta")]),
+            ],
+            covered_atoms: Vec::new(),
+        };
+        let report = tail_provenance_pass(&mut synthesis, &rows, &cluster_map, TailGuardMode::Trim);
+        assert_eq!(
+            synthesis.streams[0].utterances[0].text.as_deref(),
+            Some("alpha beta gamma delta")
+        );
+        assert_eq!(report.trims, 0);
+    }
+
+    #[test]
+    fn tail_guard_keeps_sliver_and_submajority_covers() {
+        // A 1ms seam-sliver word never evidence (width floor); a word
+        // covering under half the interval never contradicts.
+        let (rows, mut synthesis) =
+            base_fixture(&[("kappa", 105_700, 105_701), ("kappa", 105_545, 105_700)]);
+        let report =
+            tail_provenance_pass(&mut synthesis, &rows, &cluster_map, TailGuardMode::Trim);
+        assert_eq!(
+            synthesis.streams[0].utterances[0].text.as_deref(),
+            Some("alpha beta gamma delta"),
+            "sliver + sub-majority coverage both keep the token"
+        );
+        assert_eq!(report.trims, 0);
+    }
+
+    #[test]
+    fn tail_guard_frozen_operator_case_punctuation_nfc() {
+        // Case-only, punctuation-carrying, and NFC/NFD accent-form
+        // differences are the SAME word under the frozen operator — a
+        // mismatch here deletes a real word, so accents must fold.
+        let nfd_cafe: &str = "cafe\u{301}";
+        let (rows, mut synthesis) =
+            base_fixture(&[("delta", 105_600, 105_950), ("café", 104_600, 104_900)]);
+        assert_eq!(tail_guard_normalized("Delta."), tail_guard_normalized("delta"));
+        assert_eq!(tail_guard_normalized("delta."), tail_guard_normalized("delta"));
+        assert_eq!(
+            tail_guard_normalized(nfd_cafe),
+            tail_guard_normalized("café"),
+            "NFD and NFC accent forms fold to one word"
+        );
+        // End-to-end: the payload carrying the token's own word keeps it.
+        let report =
+            tail_provenance_pass(&mut synthesis, &rows, &cluster_map, TailGuardMode::Trim);
+        assert_eq!(
+            synthesis.streams[0].utterances[0].text.as_deref(),
+            Some("alpha beta gamma delta"),
+            "the payload's word IS the token's word (case/punctuation-folded) — keep"
+        );
+        assert_eq!(report.trims, 0);
+    }
+
+    #[test]
+    fn tail_guard_trims_multi_token_walk_stops_at_first_keep() {
+        // "epsilon" AND "delta" contradict ("kappa" [105200,105900]
+        // majority-covers both intervals); "gamma" [104733,105133] is
+        // uncovered — the walk stops there.
+        let rows = vec![walled("r1", 96_000, 106_000, "Speaker 0", &[("kappa", 105_200, 105_900)])];
+        let mut synthesis = SpanSynthesis {
+            span: (100.0, 108.0),
+            streams: [
+                segu(1, 0.3, &[(4.0, 6.0, "alpha beta gamma delta epsilon")]),
+                segu(3, 0.2, &[(0.5, 1.5, "epsilon zeta")]),
+            ],
+            covered_atoms: Vec::new(),
+        };
+        let report =
+            tail_provenance_pass(&mut synthesis, &rows, &cluster_map, TailGuardMode::Trim);
+        assert_eq!(
+            synthesis.streams[0].utterances[0].text.as_deref(),
+            Some("alpha beta gamma"),
+            "both contradicting tail tokens trim; the first keep ends the walk"
+        );
+        assert_eq!(report.trims, 2);
+    }
+
+    #[test]
+    fn tail_guard_drops_emptied_piece_and_continues_walk() {
+        // Stream B: "sixx" alone on [206,208]s is exactly-majority-covered
+        // (pins the ≥ boundary) → the piece drops; the walk continues into
+        // the previous piece and trims "three" there.
+        let rows = vec![walled(
+            "r1",
+            201_000,
+            208_000,
+            "Speaker 9",
+            &[("lambda", 203_300, 203_900), ("lambda", 206_500, 207_500)],
+        )];
+        let mut synthesis = SpanSynthesis {
+            span: (200.0, 210.0),
+            streams: [
+                segu(1, 0.3, &[(2.0, 4.0, "one two three"), (6.0, 8.0, "sixx")]),
+                segu(3, 0.2, &[(0.5, 1.5, "epsilon zeta")]),
+            ],
+            covered_atoms: Vec::new(),
+        };
+        let report =
+            tail_provenance_pass(&mut synthesis, &rows, &cluster_map, TailGuardMode::Trim);
+        assert_eq!(synthesis.streams[0].utterances[1].text, None, "emptied piece is dropped");
+        assert_eq!(
+            synthesis.streams[0].utterances[0].text.as_deref(),
+            Some("one two"),
+            "the walk continues into the previous piece after a drop"
+        );
+        assert_eq!(stream0_text(&synthesis), "one two", "join skips dropped pieces");
+        assert_eq!(report.trims, 2);
+    }
+
+    #[test]
+    fn tail_guard_emptied_stream_reads_absent_and_gate_refuses() {
+        // A stream fully trimmed reads as the absent decode (None, never an
+        // empty string), and the existing empty-decode gate refuses to
+        // replace non-empty mixture rows with it.
+        let rows = vec![walled("r1", 296_000, 306_000, "Speaker 0", &[("sigma", 301_400, 302_600)])];
+        let mut synthesis = SpanSynthesis {
+            span: (300.0, 305.0),
+            streams: [
+                segu(1, 0.3, &[(1.0, 3.0, "omega")]),
+                segu(3, 0.2, &[(0.5, 1.5, "epsilon zeta")]),
+            ],
+            covered_atoms: Vec::new(),
+        };
+        let report =
+            tail_provenance_pass(&mut synthesis, &rows, &cluster_map, TailGuardMode::Trim);
+        assert_eq!(synthesis.streams[0].text, None, "absent decode, never Some(\"\")");
+        assert_eq!(report.trims, 1);
+        let mixture = vec![seg("m1", "mixture words", 299_000, 305_000, "Speaker 0")];
+        let err = repair_overlap_rows_checked(&mixture, &synthesis, &cluster_map)
+            .expect_err("an emptied stream never replaces non-empty mixture rows");
+        assert!(err.contains("abstained"), "{err}");
+    }
+
+    #[test]
+    fn tail_guard_deterministic_and_convergent() {
+        let (rows, mut a) = base_fixture(&[("kappa", 105_600, 105_950)]);
+        let mut b = a.clone();
+        let ra = tail_provenance_pass(&mut a, &rows, &cluster_map, TailGuardMode::Trim);
+        let rb = tail_provenance_pass(&mut b, &rows, &cluster_map, TailGuardMode::Trim);
+        assert_eq!(a.streams, b.streams, "same inputs → same trim (hash truth)");
+        assert_eq!(ra, rb);
+        // Cross-call convergence, NOT strict idempotence: the carved span
+        // is fixed while the text shrank, so the surviving tail token's
+        // derived interval inflates westward (last-token-owns-the-piece-
+        // end) and a RE-INVOCATION may judge it against walls its original
+        // evaluation never saw. Deepening it would re-judge a token whose
+        // original evidence was clean — the deletion-side risk the panel
+        // barred — so the rule stays single-pass conservative, and the
+        // second invocation converges to zero (no unbounded cascade).
+        let r2 = tail_provenance_pass(&mut a, &rows, &cluster_map, TailGuardMode::Trim);
+        let r3 = tail_provenance_pass(&mut a, &rows, &cluster_map, TailGuardMode::Trim);
+        assert_eq!(r3.trims, 0, "converged — no unbounded re-trim cascade");
+        let _ = r2; // r2 may deepen past b's single pass — documented above
+    }
+
+    #[test]
+    fn tail_guard_half_open_boundary() {
+        // A payload word ending EXACTLY at the token interval's start
+        // covers nothing (half-open [start,end)).
+        let (rows, mut synthesis) = base_fixture(&[("kappa", 105_100, 105_545)]);
+        let report =
+            tail_provenance_pass(&mut synthesis, &rows, &cluster_map, TailGuardMode::Trim);
+        assert_eq!(
+            synthesis.streams[0].utterances[0].text.as_deref(),
+            Some("alpha beta gamma delta"),
+            "a word ending at the interval start is no cover"
+        );
+        assert_eq!(report.trims, 0);
+    }
+
+    #[test]
+    fn tail_guard_survives_degenerate_and_abstained_streams() {
+        // Degenerate utterances (zero-width / reversed offsets — the only
+        // production shape is None text: a Some-text piece with ~0 duration
+        // fails the pair's utterance-rate gate before the guard runs) are
+        // skipped by the piece build and never panic; the valid piece still
+        // trims. An abstained stream (None text everywhere) no-ops the
+        // whole window: vetting fails and the splice rejects downstream
+        // regardless.
+        let (rows, mut synthesis) = base_fixture(&[("kappa", 105_600, 105_950)]);
+        synthesis.streams[0].utterances.insert(0, StreamUtterance {
+            offset_s: (5.0, 5.0),
+            text: None,
+        });
+        synthesis.streams[0].utterances.insert(1, StreamUtterance {
+            offset_s: (6.0, 5.0),
+            text: None,
+        });
+        let report =
+            tail_provenance_pass(&mut synthesis, &rows, &cluster_map, TailGuardMode::Trim);
+        assert_eq!(report.trims, 1, "no panic; the valid piece still trims");
+        assert_eq!(
+            synthesis.streams[0].utterances[2].text.as_deref(),
+            Some("alpha beta gamma"),
+        );
+        // Abstained stream: window no-ops entirely.
+        let (rows, mut synthesis) = base_fixture(&[("kappa", 105_600, 105_950)]);
+        synthesis.streams[0].text = None;
+        for u in &mut synthesis.streams[0].utterances {
+            u.text = None;
+        }
+        let before = synthesis.clone();
+        let report =
+            tail_provenance_pass(&mut synthesis, &rows, &cluster_map, TailGuardMode::Trim);
+        assert_eq!(report, TailGuardReport::default(), "abstained stream no-ops");
+        assert_eq!(synthesis, before, "nothing mutated");
+    }
+
+    #[test]
+    fn tail_guard_cjk_single_token_tail() {
+        // A CJK piece carries no internal whitespace — one token spanning
+        // the whole piece; a majority different-badge cover trims it whole
+        // (behavior pinned, no special case).
+        let rows = vec![walled("r1", 96_000, 106_000, "Speaker 0", &[("kappa", 104_600, 105_700)])];
+        let mut synthesis = SpanSynthesis {
+            span: (100.0, 108.0),
+            streams: [
+                segu(1, 0.3, &[(4.0, 6.0, "漢字仮名")]),
+                segu(3, 0.2, &[(0.5, 1.5, "epsilon zeta")]),
+            ],
+            covered_atoms: Vec::new(),
+        };
+        let report =
+            tail_provenance_pass(&mut synthesis, &rows, &cluster_map, TailGuardMode::Trim);
+        assert_eq!(synthesis.streams[0].utterances[0].text, None, "whole-token trim");
+        assert_eq!(synthesis.streams[0].text, None);
+        assert_eq!(report.trims, 1);
+    }
+
+    #[test]
+    fn tail_guard_mixed_payloads_null_rows_contribute_nothing() {
+        // A NULL-walls row contributes no evidence; a walled row beside it
+        // still judges (per-row fail-open, design D4).
+        let mut null_row = seg("r2", "words", 96_000, 106_000, "Speaker 0");
+        null_row.token_walls = None;
+        let (mut rows, mut synthesis) = base_fixture(&[("kappa", 105_600, 105_950)]);
+        rows.push(null_row);
+        let report =
+            tail_provenance_pass(&mut synthesis, &rows, &cluster_map, TailGuardMode::Trim);
+        assert_eq!(report.trims, 1, "the walled row judges even beside NULL rows");
+        // All-NULL payload: fail open.
+        let rows_null_only = vec![seg("r1", "alpha beta", 96_000, 106_000, "Speaker 0")];
+        let (rows_null, mut synthesis) = base_fixture(&[("kappa", 105_600, 105_950)]);
+        let _ = rows_null;
+        let report =
+            tail_provenance_pass(&mut synthesis, &rows_null_only, &cluster_map, TailGuardMode::Trim);
+        assert_eq!(
+            synthesis.streams[0].utterances[0].text.as_deref(),
+            Some("alpha beta gamma delta"),
+            "no walled evidence → no trim (fail open)"
+        );
+        assert_eq!(report.trims, 0);
+    }
+
+    #[test]
+    fn tail_guard_hash_binds_post_guard_render() {
+        let (rows, mut synthesis) = base_fixture(&[("kappa", 105_600, 105_950)]);
+        let raw_hash = repair_render_sha256(&synthesis);
+        tail_provenance_pass(&mut synthesis, &rows, &cluster_map, TailGuardMode::Trim);
+        let guarded_hash = repair_render_sha256(&synthesis);
+        assert_ne!(raw_hash, guarded_hash, "the hash binds the POST-guard state");
+        // An entry pinned to the post-guard hash splices; a pre-guard pin
+        // is stale and keeps the mixture.
+        let fp = repair_profile_fp("model-x");
+        let mut entry = attested_entry("meet-tail", 100.0, 108.0);
+        entry.render_sha256 = guarded_hash.clone();
+        entry.profile_fp = fp.clone();
+        let entries = vec![entry];
+        assert!(matches!(
+            attestation_verdict((100_000, 108_000), &guarded_hash, &fp, &entries, "meet-tail"),
+            AttestationVerdict::Attested(_)
+        ));
+        match attestation_verdict((100_000, 108_000), &raw_hash, &fp, &entries, "meet-tail") {
+            AttestationVerdict::Stale { .. } => {}
+            other => panic!("a pre-guard pin is stale: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tail_guard_composed_splice_renders_trimmed_rows_and_outside_identical() {
+        let (rows, mut synthesis) = base_fixture(&[("kappa", 105_600, 105_950)]);
+        let outside = seg("far", "outside words", 120_000, 130_000, "Speaker 2");
+        let mut all_rows = rows;
+        all_rows.push(outside.clone());
+        tail_provenance_pass(&mut synthesis, &all_rows, &cluster_map, TailGuardMode::Trim);
+        let out = repair_overlap_rows_checked(&all_rows, &synthesis, &cluster_map)
+            .expect("guarded evidence splices");
+        let stream0 = out
+            .iter()
+            .find(|r| r.synth_atom && r.speaker == "Speaker 1")
+            .expect("stream row present");
+        assert_eq!(stream0.text, "alpha beta gamma", "the trimmed render ships");
+        let kept = out.iter().find(|r| r.original_id == "far").expect("outside row kept");
+        assert_eq!(&kept.text, &outside.text, "outside rows byte-identical");
+        assert_eq!(kept.audio_start_ms, outside.audio_start_ms);
+        assert_eq!(kept.audio_end_ms, outside.audio_end_ms);
+        assert!(
+            !out.iter().any(|r| r.text.contains("delta")),
+            "the fiction token is gone from the render"
+        );
+    }
+
+    #[test]
+    fn tail_guard_census_note_and_legacy_line_grammar() {
+        // The seed census note `tail-trimmed:<n>` rides BESIDE the outcome
+        // token, only for seeds with counts, and the line never carries
+        // text.
+        let seeds = vec![TalkoverSeed { span: (1_000, 2_000), kind: TalkoverSeedKind::Attested }];
+        let candidates = vec![LoopRepairCandidate {
+            span: (1_000, 2_000),
+            donor_original_id: "r1".to_string(),
+            seed_class: RepairSeedClass::TalkoverAttested,
+        }];
+        let rows = talkover_seed_census(TalkoverCensusInputs {
+            seeds: &seeds,
+            candidates: &candidates,
+            manual_spans: &[],
+            repairs_present: true,
+            separation_ok: true,
+            rebuilt_spans: &[(1.0, 2.0)],
+            gate_rejections: &[],
+            apply_rejections: &[],
+            applied_spans: &[(1.0, 2.0)],
+            rebuild_aborted: false,
+            tail_trims: &[((1.0, 2.0), 2)],
+        });
+        assert_eq!(rows[0].outcome, TalkoverSeedOutcome::FiredAttested);
+        assert_eq!(rows[0].tail_trims, 2);
+        let line = format_talkover_seed_census(&rows);
+        assert!(line.contains("tail-trimmed:2"), "note beside the outcome: {line}");
+        assert!(line.contains("fired+attested"), "the outcome token names itself: {line}");
+        assert!(!line.contains("alpha"), "no row text in the census line: {line}");
+        // Zero counts → the note is absent.
+        let rows = talkover_seed_census(TalkoverCensusInputs {
+            tail_trims: &[],
+            seeds: &seeds,
+            candidates: &candidates,
+            manual_spans: &[],
+            repairs_present: true,
+            separation_ok: true,
+            rebuilt_spans: &[(1.0, 2.0)],
+            gate_rejections: &[],
+            apply_rejections: &[],
+            applied_spans: &[(1.0, 2.0)],
+            rebuild_aborted: false,
+        });
+        let line = format_talkover_seed_census(&rows);
+        assert!(!line.contains("tail-trimmed"), "no counts, no note: {line}");
+        // The legacy-route evidence line: mechanical strings only.
+        let guard_line = format_tail_guard_line((1.0, 2.0), 0, 3);
+        assert!(guard_line.starts_with("REPAIR-GUARD span=[1.00,2.00]"));
+        assert!(guard_line.contains("trimmed=0"));
+        assert!(guard_line.contains("would_trim=3"));
     }
 }

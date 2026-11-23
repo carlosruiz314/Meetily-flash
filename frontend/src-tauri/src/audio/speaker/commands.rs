@@ -1208,8 +1208,35 @@ pub async fn run_diarization_for_meeting(
         // claim their region first, legacy windows keep seed priority,
         // decode-tripped last — a loser stands down at the
         // region-already-per-voice check, never the reverse.
-        let (ordered_repairs, ordered_classes) =
+        let (mut ordered_repairs, ordered_classes) =
             crate::audio::speaker::run_assembly::order_repairs_for_apply(repairs, &repair_classes);
+        // Tail-provenance guard, census mode (wall-payload-provenance-guard,
+        // design D1/D5): log-only at merge. It runs BEFORE the admissibility
+        // gate — the content hash and the attestation verdict must evaluate
+        // the POST-guard synthesis, so a pinned hash is always the hash of
+        // the render that ships. Census mode changes no bytes until the D8
+        // enactment bar clears; every route inherits it, and the per-seed
+        // census note plus the REPAIR-GUARD line carry the counts.
+        let mut tail_guard_counts: Vec<((f64, f64), usize)> = Vec::new();
+        for synthesis in ordered_repairs.iter_mut() {
+            let report = crate::audio::speaker::run_assembly::tail_provenance_pass(
+                synthesis,
+                &aligned,
+                &cluster_speaker,
+                crate::audio::speaker::run_assembly::TailGuardMode::Census,
+            );
+            if report.would_trims > 0 {
+                log::warn!(
+                    "DIARIZATION: {}",
+                    crate::audio::speaker::run_assembly::format_tail_guard_line(
+                        synthesis.span,
+                        report.trims,
+                        report.would_trims,
+                    )
+                );
+                tail_guard_counts.push((synthesis.span, report.would_trims));
+            }
+        }
         // The splice-side gate (talkover-word-order-repair 3.3): legacy
         // windows keep their splice-without-entry status (the class-
         // scoping pin); talk-over windows need walls + content hash +
@@ -1292,6 +1319,7 @@ pub async fn run_diarization_for_meeting(
                 apply_rejections: &apply_rejections,
                 applied_spans: &applied_spans,
                 rebuild_aborted,
+                tail_trims: &tail_guard_counts,
             },
         );
         let census_line =
@@ -2277,6 +2305,37 @@ mod tests {
             src.matches(concat!("transcribe_span_", "repair")).count(),
             0,
             "the repair decode entry must not be bound outside the repair rebuild"
+        );
+    }
+
+    #[test]
+    fn tail_guard_pre_pass_wired_once_before_admissibility() {
+        // The guard runs between ordering and admissibility (wall-payload-
+        // provenance-guard D1): the content hash and the attestation
+        // verdict INSIDE repairs_admissible_for_splice must evaluate the
+        // POST-guard synthesis, so the pre-pass is wired exactly once and
+        // never after the gate. No other call site may appear (the chunk
+        // path and the mass overlap pre-pass never see it).
+        let src = include_str!("commands.rs");
+        // The identifier is split here so the scan does not count its own
+        // source (the include_str body carries this test too).
+        let needle = concat!("tail_", "provenance_pass");
+        let occurrences: Vec<usize> = src.match_indices(needle).map(|(i, _)| i).collect();
+        assert_eq!(
+            occurrences.len(),
+            1,
+            "the pre-pass is wired exactly once — call-site isolation"
+        );
+        let order_at = src
+            .find("order_repairs_for_apply")
+            .expect("the ordering marker exists");
+        let gate_at = src
+            .find("repairs_admissible_for_splice")
+            .expect("the admissibility marker exists");
+        let at = occurrences[0];
+        assert!(
+            at > order_at && at < gate_at,
+            "the guard runs between ordering and admissibility (hash truth)"
         );
     }
 

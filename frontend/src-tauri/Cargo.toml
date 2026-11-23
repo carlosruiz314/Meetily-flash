@@ -123,6 +123,11 @@ reqwest = { version = "0.11", features = ["blocking", "multipart", "json", "stre
 
 # Hallucination audit: Unicode script classes for non-Latin detection
 unicode-script = "0.5"
+# Tail guard's frozen comparison operator folds NFD/NFC accent forms — a
+# guard-side mismatch DELETES a real word, so ES/CA accents must never
+# read as different words (the ear gate's matcher lacks the fold; the
+# guard is the stricter superset)
+unicode-normalization = "0.1"
 
 # Directories
 dirs = "5.0.1"

@@ -52,8 +52,9 @@ use app_lib::audio::speaker::ports::{SeparatedStream, VoiceSeparationPort};
 use app_lib::audio::speaker::run_assembly::{
     decode_stream_utterances, is_class_e_fiction, is_stuttering_decode, join_utterance_texts,
     repair_overlap_rows_checked, repair_windows_from_talkover_seeds, select_repair_pass,
-    LoopRepairCandidate, RepairPassEvidence, SelectedRepairPass, SpanSynthesis, StreamEvidence,
-    TalkoverSeed, TalkoverSeedKind, OVERLAP_MAX_SPAN_SECS,
+    tail_guard_census_trace, tail_provenance_pass, LoopRepairCandidate, RepairPassEvidence,
+    SelectedRepairPass, SpanSynthesis, StreamEvidence, TailGuardMode, TalkoverSeed,
+    TalkoverSeedKind, OVERLAP_MAX_SPAN_SECS,
 };
 use app_lib::audio::speaker::turns::detokenize;
 use app_lib::whisper_engine::whisper_engine::WhisperEngine;
@@ -698,13 +699,78 @@ async fn repair_recover_probe() {
             let synth_a = pass_synthesis(shape.window, &sep, &identity, &|s| {
                 decode_leg(&engine, &lang, false, s)
             });
+            let synth_b = pass_synthesis(shape.window, &sep, &identity, &|s| {
+                decode_leg(&engine, &lang, true, s)
+            });
+            // Tail-provenance guard pre-pass, census mode (wall-payload-
+            // provenance-guard D1/D5): the SAME composition commands.rs
+            // runs — the pre-pass sees each synthesis before the splice,
+            // changes no bytes, and the census lines carry the design-D8
+            // fields (counts, buckets, walls — token-only) for the
+            // rule-selection measurement (interval-majority vs bare-point).
+            let ref_speaker = |c: u32| REF_NAMES.get(c as usize).map(|s| s.to_string());
+            for (leg_name, synth) in [("A-strict", &synth_a), ("B-repair", &synth_b)] {
+                let (report, traces) = tail_guard_census_trace(synth, &splice_rows, &ref_speaker);
+                record.push(format!(
+                    "GUARD-CENSUS shape={} leg={leg_name} would_trim={} point_rule={}",
+                    shape.name,
+                    report.would_trims,
+                    traces.iter().map(|t| t.trims_point_rule).sum::<usize>(),
+                ));
+                for t in &traces {
+                    record.push(format!(
+                        "GUARD-CENSUS-TRACE shape={} leg={leg_name} stream={} trims={} coverage={:.2} width_ms={} terminal_punct={} point_rule={}",
+                        shape.name,
+                        t.stream,
+                        t.trims,
+                        t.decisive_coverage_frac,
+                        t.decisive_cover_width_ms,
+                        t.terminal_punct_trim,
+                        t.trims_point_rule,
+                    ));
+                }
+            }
+            // Placement-error distribution (design D8 a0): proportional
+            // char-fraction walls vs REAL token walls on the persisted
+            // payload rows — the empirical bound for the last-token
+            // population the guard acts on.
+            for r in &splice_rows {
+                let Some(walls) = &r.token_walls else {
+                    continue;
+                };
+                let total = r.text.chars().count().max(1);
+                let dur = (r.audio_end_ms - r.audio_start_ms).max(1);
+                let mut last_err = 0i64;
+                let mut n = 0usize;
+                let mut char_cursor = 0usize;
+                for (i, tok) in r.text.split_whitespace().enumerate() {
+                    let chars_before = char_cursor;
+                    char_cursor += tok.chars().count() + 1;
+                    let prop = r.audio_start_ms
+                        + ((chars_before as f64 / total as f64) * dur as f64).round() as i64;
+                    let err = walls
+                        .get(i)
+                        .map(|w| (prop - w.start_ms).abs())
+                        .unwrap_or(0);
+                    n += 1;
+                    if i + 1 == r.text.split_whitespace().count() {
+                        last_err = err;
+                    }
+                }
+                record.push(format!(
+                    "GUARD-PLACEMENT row=[{:.2},{:.2}] tokens={n} last_err_ms={last_err}",
+                    r.audio_start_ms as f64 / 1000.0,
+                    r.audio_end_ms as f64 / 1000.0,
+                ));
+            }
+            let mut synth_a = synth_a;
+            let mut synth_b = synth_b;
+            tail_provenance_pass(&mut synth_a, &splice_rows, &ref_speaker, TailGuardMode::Census);
+            tail_provenance_pass(&mut synth_b, &splice_rows, &ref_speaker, TailGuardMode::Census);
             let spliced_a =
                 repair_overlap_rows_checked(&splice_rows, &synth_a, &|c: u32| {
                     REF_NAMES.get(c as usize).map(|s| s.to_string())
                 });
-            let synth_b = pass_synthesis(shape.window, &sep, &identity, &|s| {
-                decode_leg(&engine, &lang, true, s)
-            });
             let spliced_b =
                 repair_overlap_rows_checked(&splice_rows, &synth_b, &|c: u32| {
                     REF_NAMES.get(c as usize).map(|s| s.to_string())
