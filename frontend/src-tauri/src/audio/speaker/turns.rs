@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn detokenize_fixes_spacing_and_contractions() {
-        assert_eq!(detokenize("How 's it going ?"), "Alpha beta gamma?");
+        assert_eq!(detokenize("Alpha beta gamma ?"), "Alpha beta gamma?");
         assert_eq!(detokenize("Alpha don 't beta you 've gamma"), "Alpha don't beta you've gamma");
         assert_eq!(detokenize("Alpha , beta , beta"), "Alpha, beta, beta");
         assert_eq!(detokenize("wait ..."), "wait...");
@@ -194,7 +194,7 @@ mod tests {
     fn punctuation_only_rows_are_dropped() {
         let rows = [
             row(SP0, 0, 1_420, ","),
-            row(SP0, 5_870, 12_070, "How 's it going ?"),
+            row(SP0, 5_870, 12_070, "Alpha beta gamma ?"),
         ];
         let turns = assemble_turns(&rows);
         assert_eq!(turns.len(), 1, "comma-only row gone, silence keeps turns apart");
@@ -207,7 +207,7 @@ mod tests {
     fn assembly_preserves_alphanumeric_content() {
         let rows = [
             row(SP0, 0, 1_000, ","),
-            row(SP0, 1_000, 2_000, "How 's it going ?"),
+            row(SP0, 1_000, 2_000, "Alpha beta gamma ?"),
             row(SP1, 2_100, 3_000, "Yeah , fine"),
             row(SP0, 9_000, 10_000, ". Okay"),
         ];

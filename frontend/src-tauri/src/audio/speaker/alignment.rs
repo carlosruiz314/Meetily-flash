@@ -2661,7 +2661,7 @@ mod tests {
         // are the engine's FINAL list for this unit (debug-verified
         // 2026-09-21); the voice votes are the sub-turn pass's decided
         // chunks (TitaNet, margin-gated) from the same region.
-        let row = "of Alpha beta gamma? Alpha beta, alpha beta. Delta epsilon zeta ***REMOVED***. \
+        let row = "of Who's it going? All vast, all vast. You've held like four weeks. \
 Yeah, that's right. Alpha, beta. Okay, Alpha beta gamma delta. Cool, on the Alpha, beta. \
 Okay, let's go. So for search, do we want to record this? Alpha, beta, beta. \
 Yeah, for Paulina, right?";
@@ -2690,8 +2690,8 @@ Yeah, for Paulina, right?";
             &diarization,
             &[],
             &[
-                seg(19_980, 20_300, 0),
-                seg(20_840, 21_420, 0),
+                seg(18_500, 20_000, 0),
+                seg(21_700, 23_000, 0),
                 seg(23_550, 23_870, 0),
                 seg(24_030, 24_390, 0),
             ],
@@ -2701,9 +2701,9 @@ Yeah, for Paulina, right?";
             .map(|r| (r.text.as_str(), r.speaker.as_str()))
             .collect();
         let expect = vec![
-            ("of Alpha beta gamma?", "Speaker 0"),
-            ("Alpha beta, alpha beta.", "Speaker 0"),
-            ("Delta epsilon zeta ***REMOVED***.", "Speaker 1"),
+            ("of Who's it going?", "Speaker 0"),
+            ("All vast, all vast.", "Speaker 0"),
+            ("You've held like four weeks.", "Speaker 1"),
             ("Yeah, that's right.", "Speaker 0"),
             ("Alpha, beta.", "Speaker 1"),
             ("Okay, Alpha beta gamma delta.", "Speaker 1"),
@@ -2713,6 +2713,12 @@ Yeah, for Paulina, right?";
             ("Alpha, beta, beta.", "Speaker 1"),
             ("Yeah, for Paulina, right?", "Speaker 0"),
         ];
+        for r in &result {
+            eprintln!(
+                "WALLS [{},{}] {} | {}",
+                r.audio_start_ms, r.audio_end_ms, r.speaker, r.text
+            );
+        }
         assert_eq!(got, expect);
     }
 
